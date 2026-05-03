@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project",
+  "type": "object",
+  "required": ["id", "name", "source_type", "created_at", "updated_at", "stage_states", "voice_config", "video_config", "music_config"],
+  "properties": {
+    "id": { "type": "string" },
+    "name": { "type": "string" },
+    "source_type": { "type": "string" },
+    "source_reference": { "type": ["string", "null"] },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "chapter_metadata": { "type": "object" },
+    "stage_states": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["stage", "status", "progress", "updated_at"],
+        "properties": {
+          "stage": { "type": "string" },
+          "status": { "type": "string" },
+          "progress": { "type": "number" },
+          "message": { "type": ["string", "null"] },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "voice_config": { "type": "object" },
+    "video_config": { "type": "object" },
+    "music_config": { "type": "object" }
+  }
+}
+

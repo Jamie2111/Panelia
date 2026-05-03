@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+
+@dataclass(slots=True)
+class NarrationUnit:
+    index: int
+    panel_id: str
+    raw_text: str
+    story_text: str
+    spoken_text: str
+    language: str | None = None
+    emotion: str = "neutral narration"
+    pauses_ms: list[int] = field(default_factory=list)
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+class StoryPreprocessor:
+    _OPENERS = (
+        "Moments later,",
+        "Then,",
+        "A beat later,",
+        "Without warning,",
+        "At that moment,",
+    )
+
+    def process(
+        self,
+        script_lines: list[str],
+        panel_ids: list[str] | None = None,
+    ) -> list[NarrationUnit]:
+        units: list[NarrationUnit] = []
+        previous_subject = ""
+        for index, raw_line in enumerate(script_lines, start=1):
+            cleaned = self._normalize(raw_line)
+            panel_id = panel_ids[index - 1] if panel_ids and index - 1 < len(panel_ids) else f"panel_{index:03d}"
+            if not cleaned:
+                units.append(NarrationUnit(index=index, panel_id=panel_id, raw_text="", story_text="", spoken_text=""))
+                continue
+
+            softened = self._soften_repeated_subject(cleaned, previous_subject, index)
+            segments = self._segment_line(softened)
+            story_text = "\n\n".join(segment for segment in segments if segment).strip()
+            previous_subject = self._lead_subject(cleaned) or previous_subject
+            pauses_ms = [self._pause_for_segment(segment) for segment in segments[:-1]]
+            units.append(
+                NarrationUnit(
+                    index=index,
+                    panel_id=panel_id,
+                    raw_text=cleaned,
+                    story_text=story_text,
+                    spoken_text=story_text,
+                    pauses_ms=pauses_ms,
+                    metadata={"segments": segments},
+                )
+            )
+        return units
+
+    def _normalize(self, value: str) -> str:
+        return re.sub(r"\s+", " ", str(value or "").strip()).strip()
+
+    def _soften_repeated_subject(self, line: str, previous_subject: str, index: int) -> str:
+        subject = self._lead_subject(line)
+        if not subject or not previous_subject or subject.casefold() != previous_subject.casefold():
+            return line
+        first_name = subject.split()[0]
+        shortened = re.sub(rf"^{re.escape(subject)}\b", first_name, line, count=1)
+        if shortened != line:
+            return shortened
+        opener = self._OPENERS[(index - 1) % len(self._OPENERS)]
+        return f"{opener} {line[0].lower() + line[1:]}" if len(line) > 1 else f"{opener} {line}"
+
+    def _segment_line(self, line: str) -> list[str]:
+        # Pass the full sentence to Kokoro as a single unit so its prosody model
+        # handles pacing and intonation naturally. Splitting at conjunctions or
+        # word-count midpoints produces hard silence gaps that sound like random
+        # pauses mid-sentence.
+        return [self._cinematic_finish(line)]
+
+    def _cinematic_finish(self, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            return ""
+        if trimmed.endswith(("...", ".", "!", "?")):
+            return trimmed
+        if len(trimmed.split()) <= 3:
+            return f"{trimmed}..."
+        return f"{trimmed}."
+
+    def _lead_subject(self, line: str) -> str:
+        match = re.match(r"^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b", line)
+        return match.group(1).strip() if match else ""
+
+    def _pause_for_segment(self, segment: str) -> int:
+        word_count = max(len(segment.split()), 1)
+        if word_count <= 3:
+            return 450
+        if word_count <= 8:
+            return 320
+        return 220

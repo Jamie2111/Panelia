@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Panel",
+  "type": "object",
+  "required": ["id", "page", "panel", "x", "y", "width", "height", "order", "keep", "merged_from"],
+  "properties": {
+    "id": { "type": "string" },
+    "page": { "type": "integer", "minimum": 1 },
+    "panel": { "type": "integer", "minimum": 1 },
+    "x": { "type": "integer", "minimum": 0 },
+    "y": { "type": "integer", "minimum": 0 },
+    "width": { "type": "integer", "minimum": 1 },
+    "height": { "type": "integer", "minimum": 1 },
+    "order": { "type": "integer", "minimum": 1 },
+    "keep": { "type": "boolean" },
+    "duration_seconds": { "type": ["number", "null"] },
+    "narration": { "type": ["string", "null"] },
+    "zoom_hint": { "type": ["string", "null"] },
+    "merged_from": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}
+

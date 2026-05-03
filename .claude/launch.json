@@ -1,0 +1,32 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Backend (FastAPI)",
+      "runtimeExecutable": "/Users/jamieobala/Documents/Panelia/backend/.venv/bin/python",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
+      "cwd": "/Users/jamieobala/Documents/Panelia/backend",
+      "port": 8000
+    },
+    {
+      "name": "Frontend (Next.js)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "/Users/jamieobala/Documents/Panelia/frontend",
+      "port": 3000
+    },
+    {
+      "name": "Worker",
+      "runtimeExecutable": "/Users/jamieobala/Documents/Panelia/backend/.venv/bin/python",
+      "runtimeArgs": ["-m", "workers.worker"],
+      "cwd": "/Users/jamieobala/Documents/Panelia/backend",
+      "port": 0
+    },
+    {
+      "name": "Redis",
+      "runtimeExecutable": "redis-server",
+      "runtimeArgs": [],
+      "port": 6379
+    }
+  ]
+}

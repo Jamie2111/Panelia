@@ -1,0 +1,64 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - .env
+    environment:
+      FRONTEND_ORIGIN: http://localhost:3000
+      REDIS_URL: redis://redis:6379/0
+      PANELIA_DATA_DIR: /app/data
+    volumes:
+      - ./backend:/app/backend
+      - ./workers:/app/workers
+      - ./models:/app/models
+      - ./services:/app/services
+      - ./pipeline:/app/pipeline
+      - ./backend/data:/app/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: python -m workers.worker
+    env_file:
+      - .env
+    environment:
+      FRONTEND_ORIGIN: http://localhost:3000
+      REDIS_URL: redis://redis:6379/0
+      PANELIA_DATA_DIR: /app/data
+    volumes:
+      - ./backend:/app/backend
+      - ./workers:/app/workers
+      - ./models:/app/models
+      - ./services:/app/services
+      - ./pipeline:/app/pipeline
+      - ./backend/data:/app/data
+    depends_on:
+      - redis
+      - backend
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      PANELIA_BACKEND_PROXY_TARGET: http://backend:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend

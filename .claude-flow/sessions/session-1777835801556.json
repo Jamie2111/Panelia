@@ -1,0 +1,14 @@
+{
+  "id": "session-1777835801556",
+  "startedAt": "2026-05-03T19:16:41.556Z",
+  "cwd": "/Users/jamieobala/Documents/Panelia",
+  "context": {},
+  "metrics": {
+    "edits": 21,
+    "commands": 0,
+    "tasks": 0,
+    "errors": 0
+  },
+  "endedAt": "2026-05-03T20:21:53.926Z",
+  "duration": 3912376
+}

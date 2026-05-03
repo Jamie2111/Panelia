@@ -1,0 +1,98 @@
+{
+  "total_panels": 21,
+  "total_script_lines": 21,
+  "non_empty_lines": 14,
+  "blank_lines": 7,
+  "duplicate_lines": 0,
+  "first_person_lines": 0,
+  "generic_lines": 0,
+  "visual_lines": 0,
+  "raw_ocr_echo_lines": 0,
+  "fact_mismatch_lines": 0,
+  "repetitive_template_lines": 0,
+  "disconnected_pairs": 5,
+  "quality_score": 82,
+  "should_block_tts": true,
+  "thresholds": {
+    "blank": 2,
+    "duplicate": 3,
+    "generic": 12,
+    "raw_echo": 2,
+    "visual": 2,
+    "fact_mismatch": 8,
+    "score": 72
+  },
+  "risky_panels": [
+    {
+      "panel_id": "panel_3597ca917013",
+      "panel": 1,
+      "page": 6,
+      "reasons": [
+        "blank"
+      ],
+      "narration": "",
+      "extracted_text": ""
+    },
+    {
+      "panel_id": "recon_7ad07fc66721",
+      "panel": 2,
+      "page": 6,
+      "reasons": [
+        "blank"
+      ],
+      "narration": "",
+      "extracted_text": "The school is famous for three murders of chocolate. The cake is served only once a month. And since it's such a rare event, Everyone goes to the cafeteria right away at lunch. I'm always late there. I'm not as happy as everyone else."
+    },
+    {
+      "panel_id": "recon_add61a7b24eb",
+      "panel": 3,
+      "page": 6,
+      "reasons": [
+        "blank"
+      ],
+      "narration": "",
+      "extracted_text": "I'm always late there. çünküdiger herkes kadar hnzh degilim. But today, I have a good feeling!"
+    },
+    {
+      "panel_id": "recon_f154c1845bf6",
+      "panel": 4,
+      "page": 6,
+      "reasons": [
+        "blank"
+      ],
+      "narration": "",
+      "extracted_text": ""
+    },
+    {
+      "panel_id": "panel_87ed26005d60",
+      "panel": 1,
+      "page": 8,
+      "reasons": [
+        "blank"
+      ],
+      "narration": "",
+      "extracted_text": "Give me that. bana, pislik!"
+    },
+    {
+      "panel_id": "panel_9bd012d3adb8",
+      "panel": 2,
+      "page": 8,
+      "reasons": [
+        "blank"
+      ],
+      "narration": "",
+      "extracted_text": "istiyorsun?"
+    },
+    {
+      "panel_id": "panel_028d93b51e98",
+      "panel": 4,
+      "page": 9,
+      "reasons": [
+        "blank"
+      ],
+      "narration": "",
+      "extracted_text": ""
+    }
+  ],
+  "summary": "Script quality score 82/100 across 21 kept panels; 7 blank, 5 disconnected-pairs; blocked before TTS."
+}

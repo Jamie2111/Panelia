@@ -1,0 +1,21 @@
+[
+  {
+    "name": "Somewhere — Fuse",
+    "file": "somewhere-fuse.mp3",
+    "mood": "uplifting",
+    "duration_seconds": 180
+  },
+  {
+    "name": "French Fuse",
+    "file": "french-fuse.mp3",
+    "mood": "driving",
+    "duration_seconds": 190
+  },
+  {
+    "name": "Somewhere Fuse",
+    "file": "somewhere-fuse-alt.mp3",
+    "mood": "warm",
+    "duration_seconds": 175
+  }
+]
+

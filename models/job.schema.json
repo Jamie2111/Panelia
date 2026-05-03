@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Pipeline Job",
+  "type": "object",
+  "required": ["id", "project_id", "stage", "status", "progress", "created_at", "payload"],
+  "properties": {
+    "id": { "type": "string" },
+    "project_id": { "type": "string" },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "ingestion",
+        "panel_detection",
+        "panel_review",
+        "script_generation",
+        "narration_generation",
+        "video_rendering"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["queued", "running", "completed", "failed", "cancelled"]
+    },
+    "progress": { "type": "number", "minimum": 0, "maximum": 100 },
+    "message": { "type": ["string", "null"] },
+    "created_at": { "type": "string", "format": "date-time" },
+    "started_at": { "type": ["string", "null"], "format": "date-time" },
+    "finished_at": { "type": ["string", "null"], "format": "date-time" },
+    "error": { "type": ["string", "null"] },
+    "payload": { "type": "object" }
+  }
+}
+
