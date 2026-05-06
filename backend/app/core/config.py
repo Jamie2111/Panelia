@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     panel_detector_training_min_new_annotations: int = 10
     panel_detector_auto_train_enabled: bool = False
     panel_reconstruction_enabled: bool = True
+    panel_reconstruction_full_page_ocr_enabled: bool = Field(
+        default=False,
+        validation_alias="PANELIA_PANEL_RECONSTRUCTION_FULL_PAGE_OCR_ENABLED",
+    )
     panel_reconstruction_text_margin_ratio: float = 0.08
     panel_reconstruction_overlap_threshold: float = 0.18
     panel_reconstruction_cluster_distance_ratio: float = 0.085
@@ -70,6 +74,7 @@ class Settings(BaseSettings):
 
     magi_enabled: bool = True
     magi_model_id: str = "ragavsachdeva/magiv2"
+    magi_local_files_only: bool = Field(default=True, validation_alias="PANELIA_MAGI_LOCAL_FILES_ONLY")
     magi_batch_size: int = 1
     magi_max_image_edge: int = 1400
     magi_tall_page_ratio: float = 1.45

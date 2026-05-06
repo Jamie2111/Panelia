@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 import sys
 
+import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -13,8 +14,9 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.pipeline.stages import _should_recover_auto_skipped_panel_with_text
-from app.schemas.project import PanelBox
+from app.schemas.project import ChapterMetadata, PanelBox
 from app.services.panel_detection_service import DetectedPanel, PanelDetector, PanelDetectorAdapter, ReadingOrder
+from app.services.panel_reconstruction_engine import PanelReconstructionEngine
 from app.services.panel_training_annotations import changed_annotation_pages_for_detector_training
 
 
@@ -236,6 +238,141 @@ class PanelDetectorHeuristicTests(unittest.TestCase):
             },
         )
 
+    def test_cleanup_same_page_panels_skips_floating_speech_bubble_fragment(self) -> None:
+        adapter = PanelDetectorAdapter()
+        adapter._last_character_review_page_payloads = {
+            1: {
+                "characters": [
+                    {"bbox": [80, 80, 260, 260]},
+                    {"bbox": [460, 760, 300, 260]},
+                ]
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            page_path = Path(tmpdir) / "page.png"
+            image = Image.new("RGB", (900, 1200), "white")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((60, 60, 420, 420), fill=(70, 120, 150), outline="black", width=6)
+            draw.rectangle((420, 720, 820, 1040), fill=(80, 130, 160), outline="black", width=6)
+            draw.ellipse((190, 500, 330, 660), fill=(245, 245, 220), outline="black", width=4)
+            draw.line((300, 645, 430, 760), fill="black", width=3)
+            image.save(page_path)
+
+            panel_boxes = [
+                {
+                    "id": "upper-art",
+                    "page": 1,
+                    "panel": 1,
+                    "x": 60,
+                    "y": 60,
+                    "width": 360,
+                    "height": 360,
+                    "order": 1,
+                    "keep": True,
+                    "auto_skipped": False,
+                    "reconstruction_source": "detector",
+                },
+                {
+                    "id": "bubble-only",
+                    "page": 1,
+                    "panel": 2,
+                    "x": 180,
+                    "y": 490,
+                    "width": 170,
+                    "height": 190,
+                    "order": 2,
+                    "keep": True,
+                    "auto_skipped": False,
+                    "reconstruction_source": "detector+ocr_cluster",
+                },
+                {
+                    "id": "lower-art",
+                    "page": 1,
+                    "panel": 3,
+                    "x": 420,
+                    "y": 720,
+                    "width": 400,
+                    "height": 320,
+                    "order": 3,
+                    "keep": True,
+                    "auto_skipped": False,
+                    "reconstruction_source": "detector",
+                },
+            ]
+
+            cleaned = adapter._cleanup_same_page_panels(panel_boxes, [page_path])
+
+        bubble = next(panel for panel in cleaned if panel["id"] == "bubble-only")
+        self.assertTrue(bubble.get("auto_skipped", False))
+        self.assertFalse(bubble.get("keep", True))
+        self.assertEqual(bubble.get("skip_reason"), "floating speech-bubble/text fragment")
+
+    def test_cleanup_same_page_panels_preserves_large_text_title_panel(self) -> None:
+        adapter = PanelDetectorAdapter()
+        adapter._last_character_review_page_payloads = {1: {"characters": []}}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            page_path = Path(tmpdir) / "page.png"
+            image = Image.new("RGB", (900, 1200), "white")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((90, 140, 810, 470), fill=(248, 248, 238), outline="black", width=5)
+            draw.line((180, 240, 720, 240), fill="black", width=4)
+            draw.line((220, 310, 680, 310), fill="black", width=4)
+            image.save(page_path)
+
+            panel_boxes = [
+                {
+                    "id": "title-card",
+                    "page": 1,
+                    "panel": 1,
+                    "x": 90,
+                    "y": 140,
+                    "width": 720,
+                    "height": 330,
+                    "order": 1,
+                    "keep": True,
+                    "auto_skipped": False,
+                    "reconstruction_source": "detector+ocr_cluster",
+                }
+            ]
+
+            cleaned = adapter._cleanup_same_page_panels(panel_boxes, [page_path])
+
+        title = next(panel for panel in cleaned if panel["id"] == "title-card")
+        self.assertFalse(title.get("auto_skipped", False))
+        self.assertTrue(title.get("keep", True))
+
+    def test_split_composite_panels_splits_squarish_staggered_art_boxes(self) -> None:
+        detector = PanelDetector(reading_order=ReadingOrder.WESTERN)
+        image = np.full((1200, 900, 3), 255, dtype=np.uint8)
+
+        # Two real bordered art panels are staggered diagonally, with a speech
+        # bubble in the gutter. The old splitter skipped this because the
+        # merged box was not tall enough relative to its width.
+        cv2.rectangle(image, (80, 130), (560, 560), (20, 20, 20), 5)
+        cv2.rectangle(image, (95, 145), (545, 545), (90, 155, 180), -1)
+        cv2.circle(image, (650, 220), 95, (238, 238, 230), -1)
+        cv2.ellipse(image, (645, 220), (90, 95), 0, 0, 360, (35, 35, 35), 4)
+        cv2.rectangle(image, (450, 620), (830, 1060), (20, 20, 20), 5)
+        cv2.rectangle(image, (465, 635), (815, 1045), (95, 165, 185), -1)
+
+        merged = DetectedPanel(
+            x=55,
+            y=105,
+            width=800,
+            height=980,
+            confidence=0.75,
+            source="cv",
+        )
+
+        split = detector._split_composite_panels(image, [merged], page_w=900, page_h=1200)
+
+        self.assertEqual(len(split), 2)
+        self.assertLess(split[0].width, merged.width)
+        self.assertLess(split[1].width, merged.width)
+        self.assertLess(split[0].height, merged.height)
+        self.assertLess(split[1].height, merged.height)
+        self.assertLess(split[0].y, split[1].y)
+
     def test_traditional_manga_prefers_magi_layout_over_full_page_cv(self) -> None:
         detector = PanelDetector(reading_order=ReadingOrder.MANGA)
         detector._detect_trained_model = lambda image: []
@@ -326,6 +463,43 @@ class ScriptPreparationRecoveryTests(unittest.TestCase):
         ).model_copy(update={"skip_reason": "overlapping strip from same-page panel split"})
 
         self.assertTrue(_should_recover_auto_skipped_panel_with_text(panel, (1000, 1400)))
+
+
+class PanelReconstructionEngineTests(unittest.TestCase):
+    def test_reconstruction_uses_detector_text_boxes_without_full_page_ocr(self) -> None:
+        class FailingOCR:
+            def extract(self, *_args, **_kwargs):  # pragma: no cover - failure path is the assertion
+                raise AssertionError("full-page OCR should not run when detector text boxes are available")
+
+        engine = PanelReconstructionEngine(ocr_service=FailingOCR())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            page_path = Path(tmpdir) / "page.png"
+            image = Image.new("RGB", (600, 900), "white")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((40, 40, 420, 430), fill=(70, 130, 160), outline="black", width=5)
+            draw.ellipse((380, 60, 530, 220), fill=(245, 245, 235), outline="black", width=4)
+            image.save(page_path)
+
+            panels = [
+                _panel(
+                    "art-panel",
+                    x=40,
+                    y=40,
+                    width=380,
+                    height=390,
+                )
+            ]
+
+            reconstructed, report = engine.reconstruct(
+                [page_path],
+                panels,
+                metadata=ChapterMetadata(language="en"),
+                detector_text_boxes_by_page={1: [(390, 80, 120, 100)]},
+            )
+
+        self.assertEqual(report["pages"][0]["ocr_source"], "detector_text_boxes")
+        self.assertEqual(len(reconstructed), 1)
+        self.assertEqual(reconstructed[0].reconstruction_source, "detector+ocr_cluster")
 
 
 if __name__ == "__main__":

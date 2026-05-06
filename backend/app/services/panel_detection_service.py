@@ -262,9 +262,11 @@ class PanelDetector:
 
         # ── Stage 1: AI detection (trained checkpoint + Magi) ───
         trained_panels = self._detect_trained_model(image)
-        magi_panels, text_boxes, char_boxes = self._detect_magi(image)
-        if layout == PageLayout.WEBTOON and not self.config.magi_detect_webtoon_panels:
-            magi_panels = []
+        should_run_magi = layout != PageLayout.WEBTOON or self.config.magi_detect_webtoon_panels
+        if should_run_magi:
+            magi_panels, text_boxes, char_boxes = self._detect_magi(image)
+        else:
+            magi_panels, text_boxes, char_boxes = [], [], []
 
         # ── Stage 2: CV fallback ─────────────────────────────────
         if layout == PageLayout.WEBTOON:
@@ -1436,7 +1438,26 @@ class PanelDetector:
         for panel in panels:
             w, h = panel.width, panel.height
 
-            # Only attempt splitting on large panels
+            # Staggered manhwa pages can merge into a squarish box: two art
+            # panels plus gutter speech bubbles. Try internal contour islands
+            # before requiring a tall horizontal-gutter shape.
+            large_enough_for_contours = (
+                w >= page_w * 0.50
+                and h >= page_h * 0.24
+                and (w * h) >= (page_w * page_h) * 0.18
+            )
+            if large_enough_for_contours:
+                contour_sub_panels = self._split_composite_by_internal_contours(
+                    image=image,
+                    panel=panel,
+                    page_w=page_w,
+                    page_h=page_h,
+                )
+                if len(contour_sub_panels) >= 2:
+                    result.extend(contour_sub_panels)
+                    continue
+
+            # Only attempt horizontal gutter splitting on large, tall panels.
             if w < page_w * 0.58 or h < max(page_h * 0.34, w * 1.05):
                 result.append(panel)
                 continue
@@ -1525,6 +1546,94 @@ class PanelDetector:
             result.append(panel)
 
         return result
+
+    def _split_composite_by_internal_contours(
+        self,
+        *,
+        image: np.ndarray,
+        panel: DetectedPanel,
+        page_w: int,
+        page_h: int,
+    ) -> list[DetectedPanel]:
+        """Split staggered comic panels that fallback CV merged into one box.
+
+        Webtoon/manhwa pages often place bordered art panels diagonally with
+        speech bubbles in the gutters. Horizontal gutter splitting misses that
+        layout, so we look for large internal contour islands instead.
+        """
+
+        x1 = max(panel.x, 0)
+        y1 = max(panel.y, 0)
+        x2 = min(panel.x2, page_w)
+        y2 = min(panel.y2, page_h)
+        crop = image[y1:y2, x1:x2]
+        if crop.size == 0:
+            return []
+
+        crop_h, crop_w = crop.shape[:2]
+        gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+        edges = cv2.Canny(gray, 50, 140)
+        dilated = cv2.dilate(edges, np.ones((5, 5), dtype=np.uint8), iterations=1)
+        contours, _hierarchy = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        candidates: list[tuple[int, int, int, int]] = []
+        min_w = max(110, int(crop_w * 0.18))
+        min_h = max(90, int(crop_h * 0.15))
+        for contour in contours:
+            bx, by, bw, bh = cv2.boundingRect(contour)
+            if bw < min_w or bh < min_h:
+                continue
+            area = bw * bh
+            if area < crop_w * crop_h * 0.08:
+                continue
+            if bw >= crop_w * 0.96 and bh >= crop_h * 0.96:
+                continue
+            # Mostly-empty bubbles/word balloons can have a rectangle-ish
+            # outline but very little interior contour area; art panels and
+            # bordered image blocks have a much denser contour footprint.
+            contour_fill = cv2.contourArea(contour) / max(area, 1)
+            if contour_fill < 0.28:
+                continue
+            # The contour is already dilated above, so extra padding here
+            # reintroduces the thin white halo the review UI makes obvious.
+            pad = max(1, int(min(bw, bh) * 0.003))
+            left = max(bx - pad, 0)
+            top = max(by - pad, 0)
+            right = min(bx + bw + pad, crop_w)
+            bottom = min(by + bh + pad, crop_h)
+            candidates.append((left, top, right - left, bottom - top))
+
+        if len(candidates) < 2:
+            return []
+
+        candidates = self._dedupe_local_boxes(candidates)
+        if len(candidates) < 2:
+            return []
+
+        total_area = sum(width * height for _x, _y, width, height in candidates)
+        if total_area < crop_w * crop_h * 0.36:
+            return []
+
+        return [
+            DetectedPanel(
+                x=x1 + bx,
+                y=y1 + by,
+                width=bw,
+                height=bh,
+                confidence=panel.confidence * 0.94,
+                source=panel.source,
+            )
+            for bx, by, bw, bh in sorted(candidates, key=lambda box: (box[1], box[0]))
+        ]
+
+    def _dedupe_local_boxes(self, boxes: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
+        ordered = sorted(boxes, key=lambda box: box[2] * box[3], reverse=True)
+        kept: list[tuple[int, int, int, int]] = []
+        for box in ordered:
+            if any(self._intersection_over_min(existing, box) > 0.82 for existing in kept):
+                continue
+            kept.append(box)
+        return sorted(kept, key=lambda box: (box[1], box[0]))
 
     # ──────────────────────────────────────────────────────────────
     #  Reading order sorting
@@ -2358,6 +2467,29 @@ class PanelDetectorAdapter:
         for pb in panel_boxes:
             by_page.setdefault(int(pb["page"]), []).append(pb)
 
+        def page_character_boxes(page_idx: int) -> list[tuple[int, int, int, int]]:
+            payload = self._last_character_review_page_payloads.get(int(page_idx), {})
+            boxes: list[tuple[int, int, int, int]] = []
+            for item in payload.get("characters", []) or []:
+                try:
+                    x, y, width, height = [int(value) for value in (item.get("bbox") or [])[:4]]
+                except Exception:
+                    continue
+                if width > 0 and height > 0:
+                    boxes.append((x, y, width, height))
+            return boxes
+
+        def has_character_center_inside(pb: dict, character_boxes: list[tuple[int, int, int, int]]) -> bool:
+            x, y = int(pb["x"]), int(pb["y"])
+            right = x + int(pb["width"])
+            bottom = y + int(pb["height"])
+            for cx, cy, cw, ch in character_boxes:
+                center_x = cx + cw / 2
+                center_y = cy + ch / 2
+                if x <= center_x <= right and y <= center_y <= bottom:
+                    return True
+            return False
+
         def load_page(page_idx: int) -> np.ndarray | None:
             if page_idx not in page_cache:
                 try:
@@ -2406,6 +2538,7 @@ class PanelDetectorAdapter:
                 continue
             page_h, page_w = page_img.shape[:2]
             is_webtoon_page = self._is_webtoon_page(page_w, page_h)
+            character_boxes = page_character_boxes(page_idx)
             active = sorted(
                 [pb for pb in items if not pb.get("auto_skipped")],
                 key=lambda pb: (int(pb["y"]), int(pb["x"]), int(pb["panel"])),
@@ -2520,6 +2653,36 @@ class PanelDetectorAdapter:
                     and int(prev_panel["height"]) >= int(current["height"]) * 1.35
                     and gap_above <= max(int(page_h * 0.05), 120)
                 )
+                area_ratio = (
+                    (int(current["width"]) * int(current["height"]))
+                    / max(page_w * page_h, 1)
+                )
+                source = str(current.get("reconstruction_source") or "")
+                no_character_center = not has_character_center_inside(current, character_boxes)
+                near_story_panel = (
+                    (prev_panel is not None and gap_above <= max(int(page_h * 0.18), 220))
+                    or (next_panel is not None and gap_below <= max(int(page_h * 0.18), 220))
+                    or gap_above < 0
+                    or gap_below < 0
+                )
+                floating_text_fragment_like = (
+                    no_character_center
+                    and near_story_panel
+                    and area_ratio <= 0.16
+                    and int(current["width"]) <= page_w * 0.48
+                    and (
+                        (
+                            float(current_metrics["white_ratio"]) >= 0.40
+                            and float(current_metrics["edge_density"]) <= 0.09
+                        )
+                        or (
+                            "ocr_cluster" in source
+                            and area_ratio <= 0.04
+                            and float(current_metrics["white_ratio"]) >= 0.24
+                            and float(current_metrics["edge_density"]) <= 0.13
+                        )
+                    )
+                )
                 if top_continuation_like:
                     current["auto_skipped"] = True
                     current["keep"] = False
@@ -2544,6 +2707,10 @@ class PanelDetectorAdapter:
                     current["auto_skipped"] = True
                     current["keep"] = False
                     current["skip_reason"] = "speech-bubble strip below larger panel"
+                elif floating_text_fragment_like:
+                    current["auto_skipped"] = True
+                    current["keep"] = False
+                    current["skip_reason"] = "floating speech-bubble/text fragment"
 
         return panel_boxes
 

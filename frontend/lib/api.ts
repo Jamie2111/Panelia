@@ -1,4 +1,4 @@
-import { CatalogOptions, CharacterReviewState, DetectorTrainingStatus, DuplicateHandlingMode, JobRecord, MusicTrack, PanelRewriteMode, PanelRewriteResponse, PipelineStage, ProjectDetail, ProjectSummary, SourceType, StorySegment } from "@/lib/types";
+import { CatalogOptions, CharacterDictionaryResponse, CharacterPortraitsResponse, CharacterReviewState, DetectorTrainingStatus, DuplicateHandlingMode, JobRecord, MusicTrack, PanelRewriteMode, PanelRewriteResponse, PipelineStage, ProjectDetail, ProjectSummary, SourceType, StorySegment } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8010/api";
 
@@ -130,6 +130,7 @@ export const api = {
     });
   },
   listProjects: () => request<ProjectSummary[]>("/projects").then((projects) => asArray<ProjectSummary>(projects).map(normalizeProjectSummary)),
+  getProjectSummary: (projectId: string) => request<ProjectSummary>(`/projects/${projectId}/summary`).then(normalizeProjectSummary),
   getProject: (projectId: string) => request<ProjectDetail>(`/projects/${projectId}`).then(normalizeProjectSummary),
   downloadLatestVideoUrl: (projectId: string) => `${API_BASE}/projects/${projectId}/video/latest-download`,
   uploadVideoThumbnail: async (projectId: string, file: File) => {
@@ -166,6 +167,10 @@ export const api = {
     }).then(normalizeProjectSummary),
   getCharacterReview: (projectId: string) =>
     request<CharacterReviewState>(`/projects/${projectId}/characters`),
+  getCharacterDictionary: (projectId: string) =>
+    request<CharacterDictionaryResponse>(`/projects/${projectId}/character-dictionary`),
+  getCharacterPortraits: (projectId: string) =>
+    request<CharacterPortraitsResponse>(`/projects/${projectId}/character-portraits`),
   updateCharacterReview: (
     projectId: string,
     payload: Pick<CharacterReviewState, "protagonist_name" | "identities">
@@ -206,7 +211,7 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ stage })
-    }),
+    }).then(normalizeProjectSummary),
   cancelJob: (projectId: string, jobId: string) =>
     request<{ status: string; job_id: string }>(`/projects/${projectId}/jobs/${jobId}/cancel`, {
       method: "POST"

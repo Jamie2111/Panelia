@@ -9,7 +9,9 @@ import { cn } from "@/lib/utils";
 const tabs = [
   { label: "Overview", segment: "" },
   { label: "Panel Editor", segment: "/editor" },
-  { label: "Characters", segment: "/characters" },
+  { label: "Character Review", segment: "/characters" },
+  { label: "Portraits", segment: "/portraits" },
+  { label: "Dictionary", segment: "/dictionary" },
   { label: "Narration", segment: "/narration" },
   { label: "Preview & Exports", segment: "/preview" }
 ] as const;
@@ -19,7 +21,7 @@ export function ProjectTabs({ projectId }: { projectId: string }) {
   const base = `/projects/${projectId}`;
 
   return (
-    <div className="flex gap-1 border-b border-white/10 px-4">
+    <div className="flex gap-1 overflow-x-auto border-b border-white/10 px-4">
       {tabs.map((tab) => {
         const href = `${base}${tab.segment}`;
         const isActive =
@@ -32,7 +34,7 @@ export function ProjectTabs({ projectId }: { projectId: string }) {
             key={tab.segment}
             href={href as Route}
             className={cn(
-              "relative px-3 py-2 text-sm transition",
+              "relative whitespace-nowrap px-3 py-2 text-sm transition",
               isActive
                 ? "text-white"
                 : "text-mutedForeground hover:text-white"

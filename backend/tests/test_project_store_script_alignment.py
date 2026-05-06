@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 import json
 
+from PIL import Image, ImageDraw
+
 from app.core.config import get_settings
 from app.schemas.project import PanelBox, SourceType
 from app.services.project_store import ProjectStore
@@ -24,6 +26,43 @@ class ProjectStoreScriptAlignmentTests(unittest.TestCase):
             os.environ["PANELIA_DATA_DIR"] = self._previous_data_dir
         get_settings.cache_clear()
         self._tmpdir.cleanup()
+
+    def test_panel_preview_is_physically_tightened_when_border_whitespace_exists(self) -> None:
+        project = self.store.create_project("Panel Crop Tightening", SourceType.IMAGES)
+        project_id = project.id
+        project_dir = Path(self._tmpdir.name) / "projects" / project_id
+        page_path = project_dir / "pages" / "001.png"
+        image = Image.new("RGB", (420, 420), "white")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((52, 58, 350, 340), fill=(80, 150, 180), outline="black", width=4)
+        image.save(page_path)
+
+        self.store.save_panels(
+            project_id,
+            [
+                PanelBox(
+                    id="panel-tighten",
+                    page=1,
+                    panel=1,
+                    x=35,
+                    y=40,
+                    width=335,
+                    height=320,
+                    order=1,
+                    keep=True,
+                )
+            ],
+        )
+
+        crop_path = project_dir / "panels" / "panel_001.png"
+        with Image.open(crop_path) as saved:
+            self.assertLess(saved.width, 335)
+            self.assertLess(saved.height, 320)
+
+        report = json.loads((project_dir / "output" / "panel_crop_report.json").read_text())
+        self.assertEqual(report["crop_version"], "tightcrop_v3")
+        self.assertEqual(report["tightened_count"], 1)
+        self.assertTrue(report["panels"][0]["was_tightened"])
 
     def test_save_script_preserves_unflagged_textless_slot(self) -> None:
         project = self.store.create_project("Alignment Test", SourceType.IMAGES)

@@ -339,9 +339,21 @@ def run_panel_detection(context: PipelineContext) -> None:
         progress_callback=lambda progress, message: context.progress(8 + progress * 0.6, message),
         cancel_callback=context.ensure_not_cancelled,
     )
+    detector_text_boxes_by_page: dict[int, list[tuple[int, int, int, int]]] = {}
     try:
         page_payloads = detector.export_character_review_page_payloads()
         if page_payloads:
+            for page_number, payload in page_payloads.items():
+                boxes: list[tuple[int, int, int, int]] = []
+                for item in payload.get("texts", []) or []:
+                    try:
+                        x, y, width, height = [int(value) for value in (item.get("bbox") or [])[:4]]
+                    except Exception:
+                        continue
+                    if width > 0 and height > 0:
+                        boxes.append((x, y, width, height))
+                if boxes:
+                    detector_text_boxes_by_page[int(page_number)] = boxes
             write_json(
                 store._project_dir(context.project_id) / "output" / "character_review_page_payloads.json",
                 page_payloads,
@@ -353,6 +365,7 @@ def run_panel_detection(context: PipelineContext) -> None:
         page_paths,
         detected_panels,
         metadata=project.chapter_metadata,
+        detector_text_boxes_by_page=detector_text_boxes_by_page,
         progress_callback=lambda progress, message: context.progress(70 + progress * 0.18, message),
         cancel_callback=context.ensure_not_cancelled,
     )

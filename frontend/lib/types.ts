@@ -235,6 +235,32 @@ export interface CharacterReviewState {
   updated_at: string;
 }
 
+export interface CharacterDictionaryEntry {
+  key: string;
+  name: string;
+}
+
+export interface CharacterDictionaryResponse {
+  project_id: string;
+  entries: CharacterDictionaryEntry[];
+}
+
+export interface CanonicalCharacter {
+  stable_id: string;
+  name: string;
+  role: string;
+  visual_description: string;
+  portrait_panel_ids: string[];
+  portrait_pages: number[];
+  confidence?: number | null;
+  aliases: string[];
+}
+
+export interface CharacterPortraitsResponse {
+  project_id: string;
+  characters: CanonicalCharacter[];
+}
+
 export interface LanguageOption {
   code: string;
   label: string;

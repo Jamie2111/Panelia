@@ -48,6 +48,13 @@ class MagiHFService:
         if not resolved_model_id or not self.is_available():
             return None
 
+        if self.settings.magi_local_files_only and not self._has_cached_model_weights(resolved_model_id):
+            logger.info(
+                "Skipping MAGI model %s because local-only mode is enabled and weights are not cached",
+                resolved_model_id,
+            )
+            return None
+
         with self._LOAD_LOCK:
             cached = self._MODELS.get(resolved_model_id)
             if cached is not None:
@@ -61,7 +68,17 @@ class MagiHFService:
                 return None
 
             try:
-                model = AutoModel.from_pretrained(resolved_model_id, trust_remote_code=True)
+                load_kwargs: dict[str, Any] = {
+                    "trust_remote_code": True,
+                    "local_files_only": bool(self.settings.magi_local_files_only),
+                }
+                if (
+                    self.settings.magi_local_files_only
+                    and self._cached_file_path(resolved_model_id, "pytorch_model.bin") is not None
+                    and self._cached_file_path(resolved_model_id, "model.safetensors") is None
+                ):
+                    load_kwargs["use_safetensors"] = False
+                model = AutoModel.from_pretrained(resolved_model_id, **load_kwargs)
             except Exception as exc:
                 logger.warning("Failed to load MAGI model %s: %s", resolved_model_id, exc)
                 return None
@@ -81,6 +98,37 @@ class MagiHFService:
 
             logger.warning("MAGI model %s could not be initialized on any device: %s", resolved_model_id, last_error)
             return None
+
+    def _has_cached_model_weights(self, model_id: str) -> bool:
+        """Avoid slow network retries when MAGI is configured for local-only use."""
+        model_path = Path(model_id).expanduser()
+        if model_path.exists():
+            return True
+        # The upstream MAGI remote code requests model.safetensors internally.
+        # A cached pytorch_model.bin alone still causes a slow network lookup,
+        # so local-only mode treats it as unavailable and falls back to CV.
+        if self._cached_file_path(model_id, "model.safetensors") is None:
+            return False
+
+        for filename in ("model.safetensors", "pytorch_model.bin"):
+            cached = self._cached_file_path(model_id, filename)
+            if cached is not None:
+                return True
+        return False
+
+    def _cached_file_path(self, model_id: str, filename: str) -> Path | None:
+        try:
+            from huggingface_hub import try_to_load_from_cache
+        except Exception:
+            return None
+        try:
+            cached = try_to_load_from_cache(model_id, filename)
+        except Exception:
+            return None
+        if not isinstance(cached, str):
+            return None
+        path = Path(cached)
+        return path if path.exists() else None
 
     def predict_page_payloads(
         self,

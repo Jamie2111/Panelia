@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { getStageProgressMeta } from "@/lib/progress";
 import { stageLabel } from "@/lib/utils";
-import { ProjectDetail } from "@/lib/types";
+import { ProjectSummary } from "@/lib/types";
 
 const order = [
   "ingestion",
@@ -27,7 +27,7 @@ function statusIcon(status: string) {
   return <Clock3 className="h-4 w-4 text-mutedForeground" />;
 }
 
-export function StageTimeline({ project }: { project: ProjectDetail }) {
+export function StageTimeline({ project }: { project: ProjectSummary }) {
   return (
     <div className="space-y-2">
       {order.map((stage) => {

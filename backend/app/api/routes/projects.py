@@ -216,6 +216,14 @@ def list_projects():
     return store.list_projects()
 
 
+@router.get("/{project_id}/summary")
+def get_project_summary(project_id: str):
+    try:
+        return store.get_project_summary(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/{project_id}")
 def get_project(project_id: str):
     try:
@@ -240,6 +248,9 @@ def get_panel_preview(project_id: str, panel_id: str):
     panel = next((item for item in panels if item.id == panel_id), None)
     if panel is None:
         raise HTTPException(status_code=404, detail="Panel not found")
+    saved_preview = store._panel_previews_dir(project_id) / f"panel_{int(panel.order):03d}.png"
+    if saved_preview.exists():
+        return FileResponse(saved_preview, media_type="image/png")
     panel = store.sanitize_panel_box(project_id, panel)
     page_paths = store.list_page_paths(project_id)
     page_index = max(panel.page - 1, 0)
@@ -767,6 +778,33 @@ def get_character_review(project_id: str):
         ) from exc
 
 
+@router.get("/{project_id}/character-dictionary")
+def get_character_dictionary(project_id: str):
+    if not store.project_exists(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    dictionary = read_json(store._project_dir(project_id) / "output" / "character_dictionary.json", default={})
+    if not isinstance(dictionary, dict):
+        dictionary = {}
+    return {
+        "project_id": project_id,
+        "entries": [
+            {"key": str(key), "name": str(value)}
+            for key, value in sorted(dictionary.items(), key=lambda item: str(item[1]).lower())
+            if str(value).strip()
+        ],
+    }
+
+
+@router.get("/{project_id}/character-portraits")
+def get_character_portraits(project_id: str):
+    if not store.project_exists(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    characters = read_json(store._project_dir(project_id) / "output" / "canonical_characters.json", default=[])
+    if not isinstance(characters, list):
+        characters = []
+    return {"project_id": project_id, "characters": characters}
+
+
 @router.put("/{project_id}/characters", response_model=CharacterReviewState)
 def update_character_review(project_id: str, payload: CharacterReviewUpdateRequest):
     if not store.project_exists(project_id):
@@ -805,20 +843,12 @@ def rewind_project(project_id: str, payload: RewindStageRequest):
     if payload.stage not in REWINDABLE_STAGES:
         raise HTTPException(status_code=400, detail="Projects can only be rewound to supported pipeline stages.")
 
-    affected_stages = {
-        PipelineStage.PANEL_REVIEW,
-        PipelineStage.CHARACTER_REVIEW,
-        PipelineStage.CHARACTER_PORTRAIT,
-        PipelineStage.PANEL_VISION_EXTRACTION,
-        PipelineStage.PANEL_VISION_QUALITY,
-        PipelineStage.SCRIPT_GENERATION,
-        PipelineStage.NARRATION_GENERATION,
-        PipelineStage.VIDEO_RENDERING,
-    }
+    affected_stages = set(PipelineStage)
     _cancel_active_jobs(project_id, affected_stages)
     review_state_exists = character_review_service.load_review_state(store._project_dir(project_id)) is not None
 
     if payload.stage == PipelineStage.PANEL_REVIEW:
+        store.reset_pipeline_from_stage(project_id, PipelineStage.PANEL_REVIEW)
         store.update_stage_state(project_id, PipelineStage.PANEL_REVIEW, StageStatus.NEEDS_REVIEW, progress=100, message="Panel review reopened. Save panels to continue automatically.")
         store.update_stage_state(project_id, PipelineStage.CHARACTER_REVIEW, StageStatus.PENDING, progress=0, message="Character review will unlock after panel review is saved.")
         store.update_stage_state(project_id, PipelineStage.SCRIPT_GENERATION, StageStatus.PENDING, progress=0, message="Waiting for character review suggestions.")
@@ -845,6 +875,7 @@ def rewind_project(project_id: str, payload: RewindStageRequest):
         store.update_stage_state(project_id, PipelineStage.VIDEO_RENDERING, StageStatus.PENDING, progress=0, message="Video will regenerate after updated audio is ready.")
         queue_stage_once(store, queue, project_id, PipelineStage.PANEL_DETECTION, "Queued automatically after rewinding to panel detection")
     elif payload.stage == PipelineStage.CHARACTER_REVIEW:
+        store.reset_generated_outputs_after_stage(project_id, PipelineStage.CHARACTER_REVIEW)
         store.update_stage_state(project_id, PipelineStage.PANEL_REVIEW, StageStatus.COMPLETED, progress=100, message="Panel review saved")
         store.update_stage_state(
             project_id,
@@ -859,6 +890,7 @@ def rewind_project(project_id: str, payload: RewindStageRequest):
         store.update_stage_state(project_id, PipelineStage.NARRATION_GENERATION, StageStatus.PENDING, progress=0, message="Audio will regenerate after the updated script is ready.")
         store.update_stage_state(project_id, PipelineStage.VIDEO_RENDERING, StageStatus.PENDING, progress=0, message="Video will regenerate after updated audio is ready.")
     elif payload.stage == PipelineStage.SCRIPT_GENERATION:
+        store.reset_generated_outputs_after_stage(project_id, PipelineStage.SCRIPT_GENERATION)
         store.update_stage_state(project_id, PipelineStage.PANEL_REVIEW, StageStatus.COMPLETED, progress=100, message="Panel review saved")
         store.update_stage_state(
             project_id,
@@ -871,6 +903,7 @@ def rewind_project(project_id: str, payload: RewindStageRequest):
         store.update_stage_state(project_id, PipelineStage.NARRATION_GENERATION, StageStatus.PENDING, progress=0, message="Waiting for the next script draft.")
         store.update_stage_state(project_id, PipelineStage.VIDEO_RENDERING, StageStatus.PENDING, progress=0, message="Video will continue after narration audio is regenerated.")
     else:
+        store.reset_generated_outputs_after_stage(project_id, PipelineStage.NARRATION_GENERATION)
         store.update_stage_state(project_id, PipelineStage.PANEL_REVIEW, StageStatus.COMPLETED, progress=100, message="Panel review saved")
         store.update_stage_state(
             project_id,

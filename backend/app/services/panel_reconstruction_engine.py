@@ -44,6 +44,7 @@ class PanelReconstructionEngine:
         page_paths: list[Path],
         detected_panels: list[PanelBox],
         metadata: ChapterMetadata | None = None,
+        detector_text_boxes_by_page: dict[int, list[tuple[int, int, int, int]]] | None = None,
         progress_callback: callable | None = None,
         cancel_callback: callable | None = None,
     ) -> tuple[list[PanelBox], dict[str, Any]]:
@@ -65,7 +66,20 @@ class PanelReconstructionEngine:
             image = np.array(Image.open(path).convert("RGB"))
             page_height, page_width = image.shape[:2]
             language_hint = str((metadata.language if metadata else "") or "en").strip() or "en"
-            fragments = self._extract_text_boxes(image, language_hint)
+            detector_boxes = list((detector_text_boxes_by_page or {}).get(page_number, []) or [])
+            ocr_source = "skipped_full_page_ocr_disabled"
+            if detector_boxes:
+                fragments = [
+                    OCRTextBox(text="", x=int(x), y=int(y), width=int(width), height=int(height), confidence=None)
+                    for x, y, width, height in detector_boxes
+                    if int(width) > 0 and int(height) > 0
+                ]
+                ocr_source = "detector_text_boxes"
+            elif self.settings.panel_reconstruction_full_page_ocr_enabled:
+                fragments = self._extract_text_boxes(image, language_hint)
+                ocr_source = "full_page_ocr"
+            else:
+                fragments = []
             # Persist page-level OCR text boxes for downstream dialogue backfill
             page_text_boxes[page_number] = [
                 {
@@ -86,6 +100,7 @@ class PanelReconstructionEngine:
                 detected_panels=page_panels.get(page_number, []),
                 clusters=clusters,
             )
+            page_report["ocr_source"] = ocr_source
             reconstructed.extend(rebuilt_page_panels)
             report_pages.append(page_report)
             if progress_callback:
@@ -102,7 +117,7 @@ class PanelReconstructionEngine:
             "ocr_cluster_panels": sum(1 for panel in ordered if (panel.reconstruction_source or "").startswith("ocr")),
             "hybrid_panels": sum(1 for panel in ordered if panel.reconstruction_source == "detector+ocr_cluster"),
             "summary": (
-                f"Reconstructed {len(ordered)} panels from detector + full-page OCR "
+                f"Reconstructed {len(ordered)} panels from detector + text-box geometry "
                 f"({sum(1 for panel in ordered if panel.reconstruction_source == 'ocr_cluster')} OCR-only recoveries)."
             ),
             "pages": report_pages,

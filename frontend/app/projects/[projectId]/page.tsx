@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
-import { PipelineStage, ProjectDetail } from "@/lib/types";
+import { PipelineStage, ProjectSummary } from "@/lib/types";
 import { useAdaptivePolling } from "@/lib/use-adaptive-polling";
 import { buildMediaUrl, formatRelativeDate, stageLabel } from "@/lib/utils";
 
@@ -29,7 +29,7 @@ function baseResolution(width: number, height: number) {
 export default function ProjectOverviewPage() {
   const params = useParams<{ projectId: string }>();
   const projectId = Array.isArray(params.projectId) ? params.projectId[0] : params.projectId;
-  const [project, setProject] = useState<ProjectDetail | null>(null);
+  const [project, setProject] = useState<ProjectSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [stageActionBusy, setStageActionBusy] = useState<PipelineStage | null>(null);
@@ -41,7 +41,7 @@ export default function ProjectOverviewPage() {
   async function load() {
     if (!projectId) return;
     try {
-      setProject(await api.getProject(projectId));
+      setProject(await api.getProjectSummary(projectId));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load project.");
@@ -104,7 +104,7 @@ export default function ProjectOverviewPage() {
           stage === "narration_generation" ? { force_quality_bypass: true } : {}
         );
       }
-      setProject(await api.getProject(project.id));
+      setProject(await api.getProjectSummary(project.id));
     } finally {
       setStageActionBusy(null);
     }
@@ -146,7 +146,7 @@ export default function ProjectOverviewPage() {
                   {[
                     { label: "Voice", value: project.voice_config.voice },
                     { label: "Render", value: `${baseResolution(project.video_config.width, project.video_config.height)} • ${project.video_config.orientation}` },
-                    { label: "Exports", value: String(project.videos.length) }
+                    { label: "Exports", value: project.latest_video ? "1+" : "0" }
                   ].map((item) => (
                     <div key={item.label} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2.5">
                       <p className="text-xs text-mutedForeground">{item.label}</p>
@@ -171,7 +171,7 @@ export default function ProjectOverviewPage() {
                 disabled={refreshBusy}
                 onClick={async () => {
                   setRefreshBusy(true);
-                  try { setProject(await api.getProject(project.id)); } finally { setRefreshBusy(false); }
+                  try { setProject(await api.getProjectSummary(project.id)); } finally { setRefreshBusy(false); }
                 }}
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${refreshBusy ? "animate-spin" : ""}`} />
@@ -258,7 +258,14 @@ export default function ProjectOverviewPage() {
                   disabled={rewindBusy !== null}
                   onClick={async () => {
                     setRewindBusy(item.stage);
-                    try { setProject(await api.rewindProject(project.id, item.stage)); } finally { setRewindBusy(null); }
+                    try {
+                      setProject(await api.rewindProject(project.id, item.stage));
+                      setError(null);
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : "Unable to rewind this project.");
+                    } finally {
+                      setRewindBusy(null);
+                    }
                   }}
                 >
                   {rewindBusy === item.stage ? <LoaderCircle className="h-3 w-3 animate-spin" /> : null}
@@ -290,7 +297,7 @@ export default function ProjectOverviewPage() {
                             setCancelJobBusy(job.id);
                             try {
                               await api.cancelJob(project.id, job.id);
-                              setProject(await api.getProject(project.id));
+                              setProject(await api.getProjectSummary(project.id));
                             } finally { setCancelJobBusy(null); }
                           }}
                         >

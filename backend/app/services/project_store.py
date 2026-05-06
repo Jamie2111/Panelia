@@ -10,6 +10,7 @@ import subprocess
 from typing import Any, Iterable
 from uuid import uuid4
 
+import numpy as np
 from PIL import Image
 
 from app.core.config import get_settings
@@ -42,6 +43,7 @@ from app.utils.files import ensure_dir, read_json, slugify, write_json
 logger = logging.getLogger(__name__)
 
 _LOW_SIGNAL_SCRIPT_FLAGS = {"corner_wedge", "side_void", "top_blank_band", "whitespace"}
+PANEL_CROP_VERSION = "tightcrop_v3"
 
 
 class ProjectStore:
@@ -77,6 +79,9 @@ class ProjectStore:
 
     def _panel_quality_path(self, project_id: str) -> Path:
         return self._project_dir(project_id) / "output" / "panel_quality.json"
+
+    def _panel_crop_report_path(self, project_id: str) -> Path:
+        return self._project_dir(project_id) / "output" / "panel_crop_report.json"
 
     def _job_path(self, project_id: str, job_id: str) -> Path:
         return self._project_dir(project_id) / "jobs" / f"{job_id}.json"
@@ -919,6 +924,69 @@ class ProjectStore:
 
         self.update_project_metadata(project_id)
 
+    def reset_generated_outputs_after_stage(self, project_id: str, stage: PipelineStage) -> None:
+        project_dir = self._project_dir(project_id)
+
+        if stage == PipelineStage.PANEL_REVIEW:
+            shutil.rmtree(project_dir / "characters" / "review", ignore_errors=True)
+            (project_dir / "output" / "character_review_state.json").unlink(missing_ok=True)
+
+        if stage in {PipelineStage.PANEL_REVIEW, PipelineStage.CHARACTER_REVIEW}:
+            for filename in (
+                "canonical_characters.json",
+                "panel_vision.json",
+                "panel_vision_final.json",
+                "ocr_audit.json",
+            ):
+                (project_dir / "output" / filename).unlink(missing_ok=True)
+
+        if stage in {
+            PipelineStage.PANEL_REVIEW,
+            PipelineStage.CHARACTER_REVIEW,
+            PipelineStage.CHARACTER_PORTRAIT,
+            PipelineStage.PANEL_VISION_EXTRACTION,
+            PipelineStage.PANEL_VISION_QUALITY,
+        }:
+            self._script_path(project_id).write_text("", encoding="utf-8")
+            write_json(
+                self._script_manifest_path(project_id),
+                {
+                    "script_lines": [],
+                    "script_lines_strict": [],
+                    "script_lines_cinematic": [],
+                    "script_story": "",
+                    "story_segments": [],
+                    "script_mode": "story_segments_v1",
+                },
+            )
+            self._script_quality_path(project_id).unlink(missing_ok=True)
+
+        if stage in {
+            PipelineStage.PANEL_REVIEW,
+            PipelineStage.CHARACTER_REVIEW,
+            PipelineStage.CHARACTER_PORTRAIT,
+            PipelineStage.PANEL_VISION_EXTRACTION,
+            PipelineStage.PANEL_VISION_QUALITY,
+            PipelineStage.SCRIPT_GENERATION,
+            PipelineStage.NARRATION_GENERATION,
+        }:
+            self._reset_directory(project_dir / "audio")
+
+        if stage in {
+            PipelineStage.PANEL_REVIEW,
+            PipelineStage.CHARACTER_REVIEW,
+            PipelineStage.CHARACTER_PORTRAIT,
+            PipelineStage.PANEL_VISION_EXTRACTION,
+            PipelineStage.PANEL_VISION_QUALITY,
+            PipelineStage.SCRIPT_GENERATION,
+            PipelineStage.NARRATION_GENERATION,
+            PipelineStage.VIDEO_RENDERING,
+        }:
+            self._reset_directory(project_dir / "video")
+            self._reset_directory(project_dir / "exports")
+
+        self.update_project_metadata(project_id)
+
     def _align_script_lines(self, project_id: str, script_lines: list[str]) -> list[str]:
         panels = [panel for panel in sorted(self.load_panels(project_id), key=lambda item: item.order) if panel.keep]
         if not panels:
@@ -1378,7 +1446,8 @@ class ProjectStore:
             for panel in sorted(panels, key=lambda item: item.order)
         }
         existing = {path.name for path in preview_dir.glob("panel_*.png")}
-        if expected == existing:
+        crop_report = read_json(self._panel_crop_report_path(project_id), default={})
+        if expected == existing and crop_report.get("crop_version") == PANEL_CROP_VERSION:
             return
         self._write_panel_previews(project_id, panels)
 
@@ -1392,6 +1461,13 @@ class ProjectStore:
             return
 
         sanitized_panels = self.sanitize_panel_boxes(project_id, panels)
+        crop_report: dict[str, Any] = {
+            "crop_version": PANEL_CROP_VERSION,
+            "project_id": project_id,
+            "panel_count": len(sanitized_panels),
+            "tightened_count": 0,
+            "panels": [],
+        }
 
         # Build id→panel lookup for cross-page stitching
         panel_by_id: dict[str, PanelBox] = {p.id: p for p in sanitized_panels}
@@ -1462,14 +1538,130 @@ class ProjectStore:
                             y_offset += part.height
                         crop = stitched
 
+                original_size = crop.size
+                crop, crop_meta = self._tighten_panel_preview_crop(crop)
+                if crop_meta["was_tightened"]:
+                    crop_report["tightened_count"] = int(crop_report["tightened_count"]) + 1
+                output_path = preview_dir / f"panel_{panel.order:03d}.png"
                 crop.save(
-                    preview_dir / f"panel_{panel.order:03d}.png",
+                    output_path,
                     format="PNG",
                     compress_level=1,
                 )
+                crop_report["panels"].append({
+                    "panel_id": panel.id,
+                    "order": int(panel.order),
+                    "page": int(panel.page),
+                    "crop_version": PANEL_CROP_VERSION,
+                    "crop_image_path": str(output_path),
+                    "original_size": {"width": int(original_size[0]), "height": int(original_size[1])},
+                    "saved_size": {"width": int(crop.size[0]), "height": int(crop.size[1])},
+                    **crop_meta,
+                })
         finally:
             for image in page_cache.values():
                 image.close()
+        write_json(self._panel_crop_report_path(project_id), crop_report)
+
+    def _tighten_panel_preview_crop(self, crop: Image.Image) -> tuple[Image.Image, dict[str, Any]]:
+        rgb = crop.convert("RGB")
+        arr = np.array(rgb)
+        height, width = arr.shape[:2]
+        empty_meta = {
+            "was_tightened": False,
+            "content_bbox_in_crop": {"x": 0, "y": 0, "width": int(width), "height": int(height)},
+            "tightened_bbox": {"x": 0, "y": 0, "width": int(width), "height": int(height)},
+            "margin_percent_before": {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0},
+            "margin_percent_after": {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0},
+        }
+        if arr.size == 0 or min(width, height) < 48:
+            return rgb, empty_meta
+
+        border = max(3, min(16, min(width, height) // 20))
+        border_pixels = np.concatenate([
+            arr[:border, :, :].reshape(-1, 3),
+            arr[-border:, :, :].reshape(-1, 3),
+            arr[:, :border, :].reshape(-1, 3),
+            arr[:, -border:, :].reshape(-1, 3),
+        ])
+        background = np.median(border_pixels.astype(np.float32), axis=0)
+        distance = np.linalg.norm(arr.astype(np.float32) - background, axis=2)
+        gray = np.dot(arr[..., :3], [0.299, 0.587, 0.114]).astype(np.uint8)
+
+        try:
+            import cv2  # Local import keeps ProjectStore lightweight for non-image tests.
+            edges = cv2.Canny(gray, 40, 120) > 0
+            edges = cv2.dilate(edges.astype(np.uint8), np.ones((2, 2), np.uint8), iterations=1) > 0
+        except Exception:
+            edges = np.zeros_like(gray, dtype=bool)
+
+        bg_luma = float(np.dot(background, [0.299, 0.587, 0.114]))
+        foreground = (distance > 14.0) | edges | (gray < max(210, bg_luma - 18))
+        rows = np.where(foreground.mean(axis=1) > 0.006)[0]
+        cols = np.where(foreground.mean(axis=0) > 0.006)[0]
+        if rows.size == 0 or cols.size == 0:
+            return rgb, empty_meta
+
+        y1 = int(rows[0])
+        y2 = int(rows[-1]) + 1
+        x1 = int(cols[0])
+        x2 = int(cols[-1]) + 1
+        content_width = x2 - x1
+        content_height = y2 - y1
+        foreground_ratio = float(np.mean(foreground))
+        if foreground_ratio < 0.08:
+            pad_x = max(4, int(content_width * 0.05))
+            pad_y = max(4, int(content_height * 0.10))
+        else:
+            pad_x = pad_y = max(0, int(min(width, height) * 0.002))
+        left = max(x1 - pad_x, 0)
+        top = max(y1 - pad_y, 0)
+        right = min(x2 + pad_x, width)
+        bottom = min(y2 + pad_y, height)
+
+        trim_left = left
+        trim_top = top
+        trim_right = width - right
+        trim_bottom = height - bottom
+        before = {
+            "left": round(x1 / max(width, 1), 4),
+            "right": round((width - x2) / max(width, 1), 4),
+            "top": round(y1 / max(height, 1), 4),
+            "bottom": round((height - y2) / max(height, 1), 4),
+        }
+        meta = {
+            "was_tightened": False,
+            "content_bbox_in_crop": {"x": x1, "y": y1, "width": x2 - x1, "height": y2 - y1},
+            "tightened_bbox": {"x": 0, "y": 0, "width": int(width), "height": int(height)},
+            "margin_percent_before": before,
+            "margin_percent_after": before,
+        }
+        largest_trim = max(trim_left, trim_top, trim_right, trim_bottom)
+        if largest_trim < max(2, int(min(width, height) * 0.004)):
+            return rgb, meta
+
+        new_width = right - left
+        new_height = bottom - top
+        min_saved_dim = 24 if foreground_ratio < 0.08 else 40
+        if new_width < min_saved_dim or new_height < min_saved_dim:
+            return rgb, meta
+        min_area_ratio = 0.015 if foreground_ratio < 0.08 else 0.48
+        if (new_width * new_height) < (width * height * min_area_ratio):
+            return rgb, meta
+
+        tightened = rgb.crop((left, top, right, bottom))
+        after = {
+            "left": round(max(x1 - left, 0) / max(new_width, 1), 4),
+            "right": round(max(right - x2, 0) / max(new_width, 1), 4),
+            "top": round(max(y1 - top, 0) / max(new_height, 1), 4),
+            "bottom": round(max(bottom - y2, 0) / max(new_height, 1), 4),
+        }
+        meta.update({
+            "was_tightened": True,
+            "tightened_bbox": {"x": left, "y": top, "width": new_width, "height": new_height},
+            "margin_percent_after": after,
+        })
+        return tightened, meta
 
     def _reset_directory(self, directory: Path) -> None:
         shutil.rmtree(directory, ignore_errors=True)
