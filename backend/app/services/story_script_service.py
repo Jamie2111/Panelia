@@ -45,7 +45,7 @@ from app.utils.files import ensure_dir
 logger = logging.getLogger(__name__)
 
 _VISION_PLACEHOLDER_NAME_PATTERN = re.compile(
-    r"\b(protagonist|unknown|victim|speaker|narrator|man|woman|boy|girl|person|figure|child|manager|delivery man|old woman|elderly woman)\b",
+    r"\b(protagonist|unknown|victim|speaker|narrator|man|woman|boy|girl|person|figure|child|manager|delivery man|old woman|elderly woman|null|none|name)\b",
     re.IGNORECASE,
 )
 
@@ -100,7 +100,7 @@ class StoryScriptService:
         style_vocab: StyleVocabulary | None = None,
         disable_multimodal_rescue: bool = False,
     ) -> StoryScriptBundle:
-        """Generate a narration script in panel mode (one line per kept panel)."""
+        """Generate a recap script as grouped story segments backed by panel evidence."""
         def _progress(progress: float, message: str) -> None:
             if progress_callback:
                 progress_callback(max(0.0, min(100.0, progress)), message)
@@ -212,10 +212,6 @@ class StoryScriptService:
         )
         if fresh_style_vocab.named_characters or fresh_style_vocab.world_terms:
             style_vocab = fresh_style_vocab
-        panel_mode = True
-        hybrid_alignment_mode = False
-        coarse_hybrid_mode = False
-        preserve_coverage_mode = False
         scene_mode = False
         _progress(36, "Expanding aligned story segments")
         story_units = self._expand_story_units(
@@ -551,6 +547,8 @@ class StoryScriptService:
             reviewed_segments = self._trim_final_bad_sentences(reviewed_segments)
             reviewed_segments = self._fix_sentence_boundaries(reviewed_segments)
 
+        reviewed_segments = self._final_sanitize_story_payloads(reviewed_segments)
+
         _progress(97, "Finalizing aligned story segments")
         story_segments = self._build_story_segments(story_units, reviewed_segments)
         story_text = self._compose_story_text(story_segments)
@@ -718,6 +716,8 @@ class StoryScriptService:
                 continue
             if str(character.role or "").casefold() == "cameo":
                 continue
+            if not (character.portrait_pages or character.visual_description):
+                continue
             dictionary[name] = {
                 "display_name": name,
                 "role": character.role,
@@ -734,7 +734,12 @@ class StoryScriptService:
         protagonists = [
             character
             for character in canonical_characters
-            if str(character.role or "").casefold() == "protagonist" and str(character.name or "").strip()
+            if (
+                str(character.role or "").casefold() == "protagonist"
+                and str(character.name or "").strip()
+                and not self._vision_name_is_placeholder(str(character.name or ""))
+                and (character.portrait_pages or character.visual_description)
+            )
         ]
         if protagonists:
             protagonists.sort(
@@ -746,7 +751,14 @@ class StoryScriptService:
                 reverse=True,
             )
             return protagonists[0].name
-        return canonical_characters[0].name if canonical_characters else None
+        for character in canonical_characters:
+            if (
+                str(character.name or "").strip()
+                and not self._vision_name_is_placeholder(str(character.name or ""))
+                and (character.portrait_pages or character.visual_description)
+            ):
+                return character.name
+        return None
 
     def _vision_name_quality(self, raw_name: str) -> tuple[int, int]:
         lowered = str(raw_name or "").strip().casefold()
@@ -1177,8 +1189,7 @@ class StoryScriptService:
                 for panel_id in seed.get("panel_ids", []) or []
                 if str(panel_id).strip() in panel_payload_by_id
             ]
-            # Always panel mode: one unit per panel
-            groups = [[p] for p in payloads] if payloads else [[]]
+            groups = self._split_scene_into_story_groups(payloads) if payloads else [[]]
             if not groups:
                 groups = [payloads] if payloads else [[]]
             for group in groups:
@@ -1229,7 +1240,126 @@ class StoryScriptService:
                 )
                 for index, seed in enumerate(scene_seeds, start=1)
             ]
-        return self._finalize_story_units(raw_units)
+        return self._finalize_story_units(self._coalesce_story_units_for_recap(raw_units))
+
+    def _coalesce_story_units_for_recap(self, raw_units: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        ordered_units = sorted(
+            [dict(unit) for unit in raw_units if unit.get("panel_ids")],
+            key=lambda item: (
+                int(item.get("panel_start") or 0),
+                int(item.get("panel_end") or 0),
+                int(item.get("scene_id") or 0),
+            ),
+        )
+        if len(ordered_units) <= 1:
+            return raw_units
+
+        merged: list[dict[str, Any]] = []
+        bucket: list[dict[str, Any]] = []
+
+        def unit_words(unit: dict[str, Any]) -> int:
+            return len(
+                re.findall(
+                    r"[A-Za-z']+",
+                    " ".join(
+                        str(unit.get(key) or "")
+                        for key in (
+                            "combined_text",
+                            "vision_dialogue",
+                            "vision_caption",
+                            "vision_action_beat",
+                            "visual_cues",
+                            "ocr_fallback_text",
+                        )
+                    ),
+                )
+            )
+
+        def should_flush_before(next_unit: dict[str, Any]) -> bool:
+            if not bucket:
+                return False
+            current_panels = sum(len(unit.get("panel_ids", []) or []) for unit in bucket)
+            current_words = sum(unit_words(unit) for unit in bucket)
+            next_words = unit_words(next_unit)
+            previous = bucket[-1]
+            previous_end = int(previous.get("panel_end") or 0)
+            next_start = int(next_unit.get("panel_start") or 0)
+            if previous_end and next_start and next_start - previous_end > 2:
+                return True
+            if current_panels >= 4:
+                return True
+            if current_panels >= 3 and current_words + next_words >= 34:
+                return True
+            if current_words >= 54:
+                return True
+            return False
+
+        def flush() -> None:
+            nonlocal bucket
+            if not bucket:
+                return
+            merged.append(self._merge_story_unit_bucket(bucket))
+            bucket = []
+
+        for unit in ordered_units:
+            if should_flush_before(unit):
+                flush()
+            bucket.append(unit)
+        flush()
+        return merged or raw_units
+
+    def _merge_story_unit_bucket(self, bucket: list[dict[str, Any]]) -> dict[str, Any]:
+        if len(bucket) == 1:
+            return dict(bucket[0])
+        panel_ids = [
+            str(panel_id).strip()
+            for unit in bucket
+            for panel_id in unit.get("panel_ids", []) or []
+            if str(panel_id).strip()
+        ]
+        panels = [
+            int(panel)
+            for unit in bucket
+            for panel in unit.get("panels", []) or []
+            if int(panel or 0)
+        ]
+        character_names = sorted(
+            {
+                str(name).strip()
+                for unit in bucket
+                for name in unit.get("character_names", []) or []
+                if str(name).strip()
+            },
+            key=str.casefold,
+        )
+        merged: dict[str, Any] = {
+            "scene_id": int(bucket[0].get("scene_id") or 0),
+            "panel_start": min(int(unit.get("panel_start") or 0) for unit in bucket if int(unit.get("panel_start") or 0)),
+            "panel_end": max(int(unit.get("panel_end") or 0) for unit in bucket if int(unit.get("panel_end") or 0)),
+            "panel_ids": panel_ids,
+            "panels": panels,
+            "panel_count": len(panel_ids),
+            "character_names": character_names,
+            "scene_summary": " ".join(
+                dict.fromkeys(
+                    str(unit.get("scene_summary") or "").strip()
+                    for unit in bucket
+                    if str(unit.get("scene_summary") or "").strip()
+                )
+            )[:1200],
+        }
+        for key, limit in (
+            ("combined_text", 1200),
+            ("visual_cues", 700),
+            ("vision_dialogue", 1200),
+            ("vision_caption", 1200),
+            ("vision_action_beat", 1200),
+            ("ocr_fallback_text", 1200),
+        ):
+            merged[key] = clean_ocr_text(
+                " ".join(str(unit.get(key) or "").strip() for unit in bucket if str(unit.get(key) or "").strip())
+            )[:limit]
+        return merged
 
     def _build_story_unit_payload(
         self,
@@ -1602,7 +1732,8 @@ class StoryScriptService:
             desired_units = panel_count
         elif panel_count == 3 and average_signal >= 2.1 and sum(1 for count in text_word_counts if count >= 5) >= 2:
             desired_units = min(2, panel_count)
-        desired_units = min(desired_units, min(panel_count, 6))
+        max_units = min(panel_count, max(6, round(panel_count / 3.2)))
+        desired_units = min(desired_units, max_units)
         if panel_count >= 12:
             desired_units = max(desired_units, 2)
         return max(1, desired_units)
@@ -4632,7 +4763,22 @@ class StoryScriptService:
         if not cleaned:
             return False
         generic_patterns = (
-            r"^(?:someone|a character|another character|the group|a figure|another figure)\b",
+            r"\bNone\b",
+            r"\bnull\b",
+            r"\bsymbols for\b",
+            r"\bface shows\b",
+            r"\bexpression shows\b",
+            r"\bexpression\b",
+            r"\beyes wide\b",
+            r"\bsweat beading\b",
+            r"\bshocked expression\b",
+            r"\bstartled expression\b",
+            r"\bbody coiled\b",
+            r"\blight blue tiled floor\b",
+            r"\bappears distressed\b",
+            r"\bthe injury turns the confrontation\b",
+            r"\bthe barrier turns protection into leverage\b",
+            r"^(?:someone|a person|another person|a character|another character|the group|a figure|another figure)\b",
             r"^(?:a|an)\s+(?:male|female)\s+character\b",
             r"^(?:curly|blonde|dark|short|long|red|blue|black|white|silver|pink|green)\s+hair\b",
             r"\b(?:expresses?|expressed|states?|stated|declares?|declared|remarks?|remarked|mentions?|mentioned|comments?|commented)\b",
@@ -4699,6 +4845,23 @@ class StoryScriptService:
             r"\bthe immediate problem\b",
             r"\bthe next exchange\b",
             r"\bthe next beat carries that pressure forward\b",
+            r"\bnearby choice\b",
+            r"\bnext choice\b",
+            r"\blast choice\b",
+            r"\bthe beat (?:keeps|kept|shifts|shifted|moves|moved)\b",
+            r"\bkeeps? the nearby\b",
+            r"\bwhile the surrounding group reacts\b",
+            r"\bmatter of survival\b",
+            r"\bthe dynamic shifts\b",
+            r"\bfewer options\b",
+            r"\bfew options\b",
+            r"\bmenacing posture signals\b",
+            r"\bimminent conflict\b",
+            r"\bprecarious position\b",
+            r"\bthe overall apathy\b",
+            r"\bcreating a dull atmosphere\b",
+            r"\bpromises further complications\b",
+            r"\bpersistent challenges\b",
             r"\bthe exchange changes how the group has to read\b",
             r"\bputs? new pressure on .{0,60}\bbefore anyone can settle\b",
             r"\bpull(?:s|ed)? .{0,80}\binto tension .{0,80}\bcannot fully interpret\b",
@@ -4896,6 +5059,74 @@ class StoryScriptService:
                 r"exceptionally skilled pilot|ability to pilot)\b",
                 cleaned,
                 flags=re.IGNORECASE,
+            )
+        )
+
+    def _final_sanitize_story_payloads(self, payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        sanitized: list[dict[str, Any]] = []
+        for payload in payloads:
+            current = dict(payload)
+            text = self._normalize_segment_text(str(current.get("text") or ""), allow_empty=True)
+            text = re.sub(r"\bNone\b", "the character", text)
+            text = re.sub(r"\bnull\b", "the character", text, flags=re.IGNORECASE)
+            text = self._normalize_segment_text(text, allow_empty=True)
+            if text:
+                kept_sentences = [
+                    sentence
+                    for sentence in self._split_sentences_for_cleanup(text)
+                    if not self._sentence_has_visual_caption_leak(sentence)
+                ]
+                if kept_sentences and len(kept_sentences) < len(self._split_sentences_for_cleanup(text)):
+                    text = self._normalize_segment_text(" ".join(kept_sentences), allow_empty=True)
+            if (
+                not text
+                or self._line_is_low_quality(text)
+                or self._line_is_overly_generic(text)
+                or self._line_is_dialogue_fragment(text)
+                or self._line_is_sentence_fragment(text)
+            ):
+                current["text"] = ""
+                current["visual_only"] = True
+                current["suppression_reason"] = current.get("suppression_reason") or "final_quality_reject"
+            else:
+                current["text"] = text
+                if current.get("suppression_reason") == "final_quality_reject":
+                    current["suppression_reason"] = None
+            sanitized.append(current)
+        return sanitized
+
+    @staticmethod
+    def _sentence_has_visual_caption_leak(sentence: str) -> bool:
+        lowered = str(sentence or "").casefold()
+        visual_phrases = (
+            "face shows",
+            "expression shows",
+            "expression",
+            "eyes wide",
+            "sweat beading",
+            "symbols for",
+            "shocked expression",
+            "startled expression",
+            "pained expression",
+            "determined expression",
+            "glared with",
+            "body coiled",
+            "light blue tiled floor",
+            "appears distressed",
+            "appearing distressed",
+            "the injury turns the confrontation",
+            "the barrier turns protection into leverage",
+            "blinding red light",
+            "bright light",
+            "with wide eyes",
+            "in the foreground",
+        )
+        if any(phrase in lowered for phrase in visual_phrases):
+            return True
+        return bool(
+            re.search(
+                r"\b(?:wearing|visible|background|foreground|camera|panel|frame|close-up)\b",
+                lowered,
             )
         )
 

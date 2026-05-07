@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import { LoaderCircle, RefreshCw, ScanFace } from "lucide-react";
+import { LoaderCircle, RefreshCw, RotateCcw, Save, ScanFace } from "lucide-react";
 
 import { AppShell } from "@/components/project/app-shell";
 import { Badge } from "@/components/ui/badge";
@@ -26,6 +26,8 @@ export default function CharacterPortraitsPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [queueing, setQueueing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
@@ -37,6 +39,7 @@ export default function CharacterPortraitsPage() {
       ]);
       setProject(nextProject);
       setCharacters(portraits.characters);
+      setDirty(false);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load character portraits.");
@@ -80,6 +83,28 @@ export default function CharacterPortraitsPage() {
     }
   }
 
+  function updateCharacter(stableId: string, patch: Partial<CanonicalCharacter>) {
+    setCharacters((current) =>
+      current.map((character) => (character.stable_id === stableId ? { ...character, ...patch } : character))
+    );
+    setDirty(true);
+  }
+
+  async function savePortraits() {
+    if (!projectId) return;
+    setSaving(true);
+    try {
+      const result = await api.updateCharacterPortraits(projectId, characters);
+      setCharacters(result.characters);
+      setDirty(false);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save character portraits.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <AppShell
       title="Character Portraits"
@@ -113,12 +138,24 @@ export default function CharacterPortraitsPage() {
                   setRefreshing(true);
                   load();
                 }}
-                disabled={refreshing}
+                disabled={refreshing || saving}
               >
                 {refreshing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                 Refresh
               </Button>
-              <Button onClick={queuePortraits} disabled={Boolean(queueing || portraitBusy)}>
+              <Button
+                variant="secondary"
+                onClick={() => load()}
+                disabled={!dirty || refreshing || saving}
+              >
+                <RotateCcw className="h-4 w-4" />
+                Revert
+              </Button>
+              <Button onClick={savePortraits} disabled={!dirty || saving || refreshing}>
+                {saving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                Save Edits
+              </Button>
+              <Button onClick={queuePortraits} disabled={Boolean(queueing || portraitBusy || dirty || saving)}>
                 {queueing || portraitBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ScanFace className="h-4 w-4" />}
                 Run Portraits
               </Button>
@@ -137,15 +174,47 @@ export default function CharacterPortraitsPage() {
               {filteredCharacters.map((character) => (
                 <Card key={character.stable_id} className="p-4">
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <CardTitle className="truncate text-base">{character.name || character.stable_id}</CardTitle>
-                      <CardDescription className="mt-1 truncate">{character.role || "supporting"}</CardDescription>
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <Input
+                        value={character.name}
+                        onChange={(event) => updateCharacter(character.stable_id, { name: event.target.value })}
+                        placeholder={character.stable_id}
+                        className="h-9"
+                      />
+                      <select
+                        value={character.role || "supporting"}
+                        onChange={(event) => updateCharacter(character.stable_id, { role: event.target.value })}
+                        className="h-9 w-full rounded-md border border-white/10 bg-black/20 px-3 text-sm text-foreground outline-none focus:border-accent"
+                      >
+                        <option value="protagonist">protagonist</option>
+                        <option value="main">main</option>
+                        <option value="supporting">supporting</option>
+                        <option value="antagonist">antagonist</option>
+                        <option value="cameo">cameo</option>
+                      </select>
                     </div>
                     <Badge>{confidenceLabel(character.confidence)}</Badge>
                   </div>
-                  {character.visual_description ? (
-                    <p className="mt-3 line-clamp-3 text-sm text-mutedForeground">{character.visual_description}</p>
-                  ) : null}
+                  <textarea
+                    value={character.visual_description}
+                    onChange={(event) => updateCharacter(character.stable_id, { visual_description: event.target.value })}
+                    placeholder="Visual description"
+                    rows={4}
+                    className="mt-3 w-full resize-y rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm text-foreground outline-none focus:border-accent"
+                  />
+                  <Input
+                    value={(character.aliases ?? []).join(", ")}
+                    onChange={(event) =>
+                      updateCharacter(character.stable_id, {
+                        aliases: event.target.value
+                          .split(",")
+                          .map((alias) => alias.trim())
+                          .filter(Boolean)
+                      })
+                    }
+                    placeholder="Aliases, comma-separated"
+                    className="mt-3"
+                  />
                   <div className="mt-4 flex flex-wrap gap-2 text-xs text-mutedForeground">
                     {(character.portrait_pages ?? []).slice(0, 6).map((page) => (
                       <span key={page} className="rounded-md bg-white/8 px-2 py-1">Page {page}</span>

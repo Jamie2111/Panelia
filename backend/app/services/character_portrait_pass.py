@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 _PROMPT_VERSION = "character_portrait_v2"
 _ROLE_PRIORITY = {"protagonist": 0, "antagonist": 1, "supporting": 2, "cameo": 3}
 _PLACEHOLDER_NAME_PATTERN = re.compile(
-    r"\b(protagonist|unknown|victim|speaker|narrator|man|woman|boy|girl|person|figure|child|manager|delivery man|old woman|elderly woman)\b",
+    r"\b(protagonist|unknown|victim|speaker|narrator|man|woman|boy|girl|person|figure|child|manager|delivery man|old woman|elderly woman|null|none|name)\b",
     re.IGNORECASE,
 )
 _TITLE_PREFIXES = {
@@ -35,6 +35,10 @@ _DESCRIPTION_STOPWORDS = {
 }
 _HAIR_COLORS = {"black", "white", "blue", "brown", "blonde", "red", "gray", "grey", "silver", "purple", "pink", "green"}
 _GENDER_MARKERS = {"man", "woman", "boy", "girl", "child"}
+_COLOR_ONLY_NAMES = {
+    "black", "white", "dark", "light", "red", "blue", "green", "yellow",
+    "pink", "purple", "gray", "grey", "silver", "blonde", "brown",
+}
 
 
 class CharacterPortraitPass:
@@ -73,9 +77,19 @@ class CharacterPortraitPass:
 
         loader = ImageLoader(project_dir=project_dir, page_paths=page_paths, max_edge=960)
         kept_panels = [panel for panel in sorted(panels, key=lambda item: item.order) if panel.keep]
+        kept_page_numbers = sorted(
+            {
+                int(panel.page)
+                for panel in kept_panels
+                if 1 <= int(panel.page) <= len(page_paths)
+            }
+        )
+        if not kept_page_numbers:
+            write_json(output_path, [])
+            return []
         batches = [
-            list(range(start, min(start + self.BATCH_SIZE - 1, len(page_paths)) + 1))
-            for start in range(1, len(page_paths) + 1, self.BATCH_SIZE)
+            kept_page_numbers[index:index + self.BATCH_SIZE]
+            for index in range(0, len(kept_page_numbers), self.BATCH_SIZE)
         ]
         merged: dict[str, dict[str, Any]] = {}
         project_context = self._project_context(project_title, chapter_metadata)
@@ -225,6 +239,7 @@ class CharacterPortraitPass:
         # canonical. Drop any alias whose own gender/hair markers disagree
         # with the canonical it was merged into.
         consolidated = self._prune_mismatched_aliases(consolidated)
+        consolidated = self._drop_unsupported_canonical_entries(consolidated)
         ordered = sorted(
             consolidated,
             key=lambda item: (_ROLE_PRIORITY.get(str(item.get("role") or "supporting"), 9), str(item.get("name") or "").casefold()),
@@ -388,6 +403,8 @@ class CharacterPortraitPass:
     def _is_placeholder_name(self, raw: str) -> bool:
         name = self._normalize_name(raw)
         if not name:
+            return True
+        if name.casefold() in _COLOR_ONLY_NAMES:
             return True
         if _PLACEHOLDER_NAME_PATTERN.search(name):
             return True
@@ -876,6 +893,39 @@ class CharacterPortraitPass:
                     continue
                 kept_aliases.append(alias_str)
             current["aliases"] = kept_aliases
+            cleaned.append(current)
+        return cleaned
+
+    def _drop_unsupported_canonical_entries(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Remove cast entries that are not tied to inspected pages.
+
+        The portrait roster may use project hints to normalize names, but it
+        must still be anchored to visible pages. If consolidation imports a
+        famous name with no page support and no appearance, that entry cannot
+        help panel grounding and will poison downstream narration prompts.
+        """
+        cleaned: list[dict[str, Any]] = []
+        for item in items:
+            name = self._normalize_name(str(item.get("name") or ""))
+            if not name or self._is_placeholder_name(name):
+                continue
+            portrait_pages = [
+                int(page)
+                for page in item.get("portrait_pages", []) or []
+                if (isinstance(page, int) or str(page).isdigit()) and int(page) > 0
+            ]
+            description = str(item.get("visual_description") or "").strip()
+            aliases = [
+                self._normalize_name(str(alias or ""))
+                for alias in item.get("aliases", []) or []
+                if self._normalize_name(str(alias or "")) and not self._is_placeholder_name(str(alias or ""))
+            ]
+            if not portrait_pages and not description:
+                continue
+            current = dict(item)
+            current["name"] = name
+            current["portrait_pages"] = portrait_pages[:8]
+            current["aliases"] = sorted({alias for alias in aliases if alias != name})[:12]
             cleaned.append(current)
         return cleaned
 

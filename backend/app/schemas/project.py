@@ -243,6 +243,10 @@ class CanonicalCharacterRecord(BaseModel):
     aliases: list[str] = Field(default_factory=list)
 
 
+class CharacterPortraitsUpdateRequest(BaseModel):
+    characters: list[CanonicalCharacterRecord] = Field(default_factory=list)
+
+
 class PanelVisionRecord(BaseModel):
     panel_id: str
     panel_order: int

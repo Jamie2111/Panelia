@@ -171,6 +171,12 @@ export const api = {
     request<CharacterDictionaryResponse>(`/projects/${projectId}/character-dictionary`),
   getCharacterPortraits: (projectId: string) =>
     request<CharacterPortraitsResponse>(`/projects/${projectId}/character-portraits`),
+  updateCharacterPortraits: (projectId: string, characters: CharacterPortraitsResponse["characters"]) =>
+    request<CharacterPortraitsResponse>(`/projects/${projectId}/character-portraits`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ characters })
+    }),
   updateCharacterReview: (
     projectId: string,
     payload: Pick<CharacterReviewState, "protagonist_name" | "identities">

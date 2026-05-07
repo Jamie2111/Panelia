@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import { getStageProgressMeta } from "@/lib/progress";
-import { CatalogOptions, NarrationMode, PanelRewriteMode, PipelineStage, ProjectDetail } from "@/lib/types";
+import { CatalogOptions, PanelRewriteMode, PipelineStage, ProjectDetail } from "@/lib/types";
 import { useAdaptivePolling } from "@/lib/use-adaptive-polling";
 import { buildMediaUrl } from "@/lib/utils";
 
@@ -703,7 +703,7 @@ export default function NarrationPage() {
         lineItemsRef.current = nextLineItems;
         segmentItemsRef.current = nextSegmentItems;
       }
-      setStatusMessage("Weak panel repair queued. Panelia will improve blank and visual-only panels without redrafting the whole script.");
+      setStatusMessage("Weak segment repair queued. Panelia will improve blank and visual-only story beats without redrafting the whole script.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to queue script repair.");
     } finally {
@@ -1094,9 +1094,11 @@ export default function NarrationPage() {
         <Card className="min-w-0 overflow-hidden">
           <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <CardTitle className="text-base">Narration lines</CardTitle>
+                <CardTitle className="text-base">{usingStorySegments ? "Story segments" : "Panel narration lines"}</CardTitle>
                 <CardDescription className="mt-1">
-                  Scroll through panels to review and edit narration. Excluded panels stay visible so you can restore them.
+                  {usingStorySegments
+                    ? "Review and edit grouped recap beats. Excluded segments stay visible so you can restore them."
+                    : "Scroll through panels to review and edit narration. Excluded panels stay visible so you can restore them."}
                 </CardDescription>
               </div>
             <div className="flex flex-wrap items-center justify-end gap-2">
@@ -1106,10 +1108,10 @@ export default function NarrationPage() {
                 onClick={usingStorySegments ? excludeSegmentsWithoutScript : excludePanelsWithoutScript}
                 disabled={savingScript || blankKeptLineCount === 0}
               >
-                Exclude blank panels
+                {usingStorySegments ? "Exclude blank segments" : "Exclude blank panels"}
               </Button>
               <span className="rounded-full bg-white/8 px-2.5 py-1 text-[11px] font-medium text-mutedForeground">
-                {`${keptPanelCount}/${usingStorySegments ? segmentItems.length : lineItems.length} kept`}
+                {`${keptPanelCount}/${usingStorySegments ? segmentItems.length : lineItems.length} ${usingStorySegments ? "segments" : "panels"} kept`}
               </span>
               {blankKeptLineCount > 0 ? (
                 <span className="rounded-full bg-amber-500/15 px-2.5 py-1 text-[11px] font-medium text-amber-100">
@@ -1130,7 +1132,7 @@ export default function NarrationPage() {
                   >
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <p className="text-xs uppercase tracking-[0.22em] text-accent">Panel {item.order}</p>
+                        <p className="text-xs uppercase tracking-[0.22em] text-accent">Segment {item.order}</p>
                         <p className="mt-1 text-sm text-white">{item.title}</p>
                       </div>
                       <div className="flex flex-wrap gap-2">
@@ -1183,7 +1185,7 @@ export default function NarrationPage() {
                     <Textarea
                       className="mt-4 h-[190px] overflow-y-auto resize-none rounded-[20px] bg-white/[0.04]"
                       value={item.value}
-                      placeholder={item.visualOnly ? "This panel is currently visual-only. Type here to add spoken narration." : "Write the narration for this panel."}
+                      placeholder={item.visualOnly ? "This segment is currently visual-only. Type here to add spoken narration." : "Write the narration for this story segment."}
                       onChange={(event) => updateSegmentValue(index, event.target.value)}
                     />
                     <p className="mt-3 text-xs text-mutedForeground">
@@ -1191,7 +1193,7 @@ export default function NarrationPage() {
                         ? "This segment will be excluded from audio and video after you save."
                         : item.visualOnly
                         ? "Panelia will keep this beat visual-only unless you add narration here."
-                        : "This panel's narration will be spoken while it is on screen."}
+                        : "This segment's narration will be spoken across its assigned panels."}
                     </p>
                     {item.suppressionReason ? (
                       <p className="mt-2 text-xs text-mutedForeground">

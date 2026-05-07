@@ -456,6 +456,57 @@ class LLMRouter:
             model_candidates=["gemini-2.5-flash-lite", "gemini-2.5-flash"],
         )
 
+    async def rewrite_blocked_story_segments(
+        self,
+        segments: list[dict[str, Any]],
+        context: dict[str, Any],
+        *,
+        provider: str | None = None,
+    ) -> RoutedResult:
+        prompt = self._blocked_story_rewrite_prompt(segments, context)
+        return await self._route_json(
+            task_name="blocked story segment rewrite",
+            prompt=prompt,
+            validator=self._validate_indexed_line_rewrite_payload,
+            max_output_tokens=min(5200, max(1400, 260 * max(len(segments), 1))),
+            provider=provider,
+            model_candidates=["gemini-2.5-flash-lite", "gemini-2.5-flash"],
+        )
+
+    async def rewrite_story_segments_for_youtube(
+        self,
+        segments: list[dict[str, Any]],
+        context: dict[str, Any],
+        *,
+        provider: str | None = None,
+    ) -> RoutedResult:
+        prompt = self._youtube_story_rewrite_prompt(segments, context)
+        return await self._route_json(
+            task_name="youtube story final rewrite",
+            prompt=prompt,
+            validator=self._validate_indexed_line_rewrite_payload,
+            max_output_tokens=min(7000, max(1800, 320 * max(len(segments), 1))),
+            provider=provider,
+            model_candidates=["gemini-2.5-flash", "gemini-2.5-flash-lite"],
+        )
+
+    async def generate_youtube_recap_segments(
+        self,
+        segments: list[dict[str, Any]],
+        context: dict[str, Any],
+        *,
+        provider: str | None = None,
+    ) -> RoutedResult:
+        prompt = self._youtube_segment_generation_prompt(segments, context)
+        return await self._route_json(
+            task_name="youtube recap segment generation",
+            prompt=prompt,
+            validator=self._validate_story_segments_payload,
+            max_output_tokens=min(7000, max(1800, 340 * max(len(segments), 1))),
+            provider=provider,
+            model_candidates=["gemini-2.5-flash", "gemini-2.5-flash-lite"],
+        )
+
     async def critique_story_segments(
         self,
         segments: list[dict[str, Any]],
@@ -1596,7 +1647,7 @@ class LLMRouter:
             if not isinstance(item, dict):
                 continue
             index = self._coerce_int(item.get("index"))
-            line = str(item.get("line") or item.get("narration") or "").strip()
+            line = str(item.get("line") or item.get("text") or item.get("narration") or "").strip()
             if index is None:
                 continue
             rewrites.append({"index": index, "line": line})
@@ -1955,13 +2006,13 @@ class LLMRouter:
             for scene in scenes
         ]
         mode_block = (
-            "PANEL MODE — each input segment represents EXACTLY ONE kept panel:\n"
-            "- Write narration covering ONLY what that panel shows. Never summarise the surrounding scene or a later panel.\n"
+            "BEAT MODE — each input segment represents one chronological beat made from one or more adjacent kept panels:\n"
+            "- Write narration covering ONLY that segment's panel_start-panel_end range. Never summarise later panels or the whole chapter.\n"
             "- Use vision_action_beat, vision_dialogue, and vision_caption as primary evidence. Use ocr_fallback_text only when those three are all empty.\n"
-            "- Write 2-3 natural English sentences for panels with clear action or dialogue; 1 tight sentence only for purely visual/transitional panels.\n"
-            "  • Sentence 1: name the active subject and what they are doing or saying.\n"
-            "  • Sentence 2 (when supported by evidence): the immediate reaction, consequence, or emotional beat.\n"
-            "  • Sentence 3 (when supported): a stakes phrase or caption detail that carries the moment forward.\n"
+            "- Write 2-3 natural English sentences for multi-panel beats with clear action or dialogue; 1 tight sentence only for genuinely thin visual/transitional evidence.\n"
+            "  • Sentence 1: establish the active subject and the concrete event in this beat.\n"
+            "  • Sentence 2: add the reaction, consequence, or dialogue meaning supported by the same beat.\n"
+            "  • Sentence 3: name the local emotional pressure or handoff to the next beat when panel_count is 3+.\n"
             "- If vision_dialogue is non-empty, integrate what is said into narration (paraphrase — do not quote directly).\n"
             "EMOTIONAL TONE — match pacing to what the panel actually conveys:\n"
             "- Tense/action panels (vision_action_beat contains fighting, running, shouting, explosions, confrontations): use short punchy sentences, active verbs, present-tense urgency.\n"
@@ -1971,7 +2022,7 @@ class LLMRouter:
             "- Transitional/establishing panels (wide shots, location changes, time skips): one efficient sentence that moves the story clock forward.\n"
             f"{style_vocab_block}"
             "LENGTH TARGET per panel:\n"
-            "- 50-80 words is the healthy band: 1-2 sentences, grounded and complete. Below 20 words is too thin. Above 100 words is over-extended for a single panel.\n"
+            "- 35-80 words is the healthy band for a multi-panel beat. Below 20 words is too thin. Above 100 words is over-extended.\n"
             "- Ground every word in THIS panel's vision evidence — do not invent facts.\n"
             "- If local evidence is genuinely weak, write one short conservative sentence rather than padding with generic filler.\n"
         )
@@ -2281,6 +2332,138 @@ class LLMRouter:
             f"{style_vocab_block}"
             f"Chapter context for world/stakes only: {chapter_context[:1800]}\n\n"
             f"Lines to enrich: {json.dumps(payload, ensure_ascii=False)}\n"
+        )
+
+    def _blocked_story_rewrite_prompt(self, segments: list[dict[str, Any]], context: dict[str, Any]) -> str:
+        project_title = str(context.get("project_title") or "").strip()
+        chapter_summary = str(context.get("chapter_summary") or "").strip()
+        payload = [
+            {
+                "index": int(item.get("index") or 0),
+                "segment_id": str(item.get("segment_id") or "").strip(),
+                "panel_start": int(item.get("panel_start") or 0),
+                "panel_end": int(item.get("panel_end") or 0),
+                "panel_count": int(item.get("panel_count") or 0),
+                "current": str(item.get("current") or "").strip(),
+                "risk_reasons": item.get("risk_reasons") or [],
+                "local_evidence": str(item.get("local_evidence") or "").strip(),
+                "previous_line": str(item.get("previous_line") or "").strip(),
+                "next_line": str(item.get("next_line") or "").strip(),
+            }
+            for item in segments
+        ]
+        return (
+            "Repair a blocked manga/manhwa recap script so it can be spoken in a YouTube video.\n"
+            "Return valid JSON only: {\"rewrites\":[{\"index\":0,\"line\":\"...\"}]}\n\n"
+            "Rules:\n"
+            "- Rewrite every supplied index exactly once.\n"
+            "- Use local_evidence as the source of truth. It contains ordered panel action, dialogue, and captions for the same segment.\n"
+            "- For blank, visual-caption, one-sentence, or short lines, write 2 natural recap sentences when local_evidence supports it.\n"
+            "- Convert visible facts into story events. Bad: 'his expression is fearful'. Good: 'he hesitates because the room has already turned hostile'.\n"
+            "- Do not mention panels, pages, frames, camera, foreground/background, floors, signs, clothing, hair, eyes, facial expressions, poses, or that something is visible/shown.\n"
+            "- Avoid placeholder subjects like 'a person' or 'another person'. Use a stable role label such as the teacher, the red-haired student, the aggressor, the injured student, the bystander, or John Doe when locally supported.\n"
+            "- Paraphrase dialogue as intent or consequence. Do not quote raw OCR unless the exact wording is essential.\n"
+            "- Do not invent names, motives, relationships, flashbacks, or future events.\n"
+            "- Preserve chronology and keep each index focused on its own panel_start-panel_end range.\n"
+            "- If local_evidence is empty, return an empty string for that index.\n"
+            "- Target 30-70 words per non-empty line. Avoid one-sentence caption fragments.\n\n"
+            f"Project title: {project_title or '(unknown)'}\n"
+            f"Chapter summary for continuity only: {chapter_summary or '(none)'}\n"
+            f"Segments: {json.dumps(payload, ensure_ascii=False)}\n"
+        )
+
+    def _youtube_story_rewrite_prompt(self, segments: list[dict[str, Any]], context: dict[str, Any]) -> str:
+        project_title = str(context.get("project_title") or "").strip()
+        chapter_summary = str(context.get("chapter_summary") or "").strip()
+        character_roster = context.get("character_roster") or []
+        payload = [
+            {
+                "index": int(item.get("index") or 0),
+                "segment_id": str(item.get("segment_id") or "").strip(),
+                "order": int(item.get("order") or 0),
+                "panel_start": int(item.get("panel_start") or 0),
+                "panel_end": int(item.get("panel_end") or 0),
+                "panel_count": int(item.get("panel_count") or 0),
+                "current": str(item.get("current") or "").strip(),
+                "local_evidence": str(item.get("local_evidence") or "").strip(),
+                "previous_line": str(item.get("previous_line") or "").strip(),
+                "next_line": str(item.get("next_line") or "").strip(),
+            }
+            for item in segments
+        ]
+        return (
+            "Rewrite this ordered manga/manhwa/comic recap into publishable YouTube recap narration.\n"
+            "Return valid JSON only: {\"rewrites\":[{\"index\":0,\"line\":\"...\"}]}\n\n"
+            "TARGET QUALITY: 9/10 YouTube recap draft. It should sound like a human narrator explaining the scene with momentum, not like image captions.\n\n"
+            "Hard requirements:\n"
+            "- Rewrite EVERY supplied index exactly once, in order, using the same integer indices. Missing indices make the output unusable.\n"
+            "- Preserve chronology and the local beat coverage for each index. Do not merge beats, skip beats, or borrow a later event into an earlier segment.\n"
+            "- Use local_evidence as the source of truth. current/previous_line/next_line are continuity hints, not authority when they sound wrong.\n"
+            "- Use only names supported by local_evidence or the supplied character roster. If a name is uncertain, use a stable role label grounded in the segment evidence.\n"
+            "- Do not invent motives, backstory, relationships, powers, school rules, future events, or spoilers.\n"
+            "- Remove malformed or accidental text completely. Never preserve fragments like 'John blocks are so exhausting.'\n"
+            "- Remove near-duplicates. If two beats cover the same punch or threat, keep the clearest version and make the other a consequence or escalation.\n"
+            "- Never mention panels, pages, frames, speech bubbles, captions, camera, close-ups, things being visible, things being shown, signs, buttons, clothing, hair, eyes, poses, or expressions as visual objects.\n"
+            "- Convert visual evidence into story meaning. Bad: 'A sign is visible on the wall.' Good: 'The confrontation moves into a place where the character has less room to escape.'\n"
+            "- Do not output generic bridge filler such as 'the situation escalates', 'the pressure rises', or 'the scene shifts' unless the sentence names the concrete cause.\n"
+            "- Use clean spoken English. No fragments. No repeated sentence starts. No first person. No direct address to the viewer.\n\n"
+            "Style target:\n"
+            "- Dramatic but faithful YouTube recap voice.\n"
+            "- Each non-empty segment should usually be 35-75 words and 2-3 sentences.\n"
+            "- Lead with cause and stakes, then action, then consequence.\n"
+            "- Keep the protagonist or viewpoint character as the emotional anchor when the local evidence supports one.\n"
+            "- Let the script build according to the supplied chapter summary and ordered evidence, not a fixed template.\n"
+            "- If a beat has weak evidence, write one conservative but narrative transition grounded in nearby context, not a literal caption.\n\n"
+            f"Project title: {project_title or '(unknown)'}\n"
+            f"Chapter summary for continuity only: {chapter_summary or '(none)'}\n"
+            f"Character roster: {json.dumps(character_roster, ensure_ascii=False)}\n"
+            f"Segments: {json.dumps(payload, ensure_ascii=False)}\n"
+        )
+
+    def _youtube_segment_generation_prompt(self, segments: list[dict[str, Any]], context: dict[str, Any]) -> str:
+        project_title = str(context.get("project_title") or "").strip()
+        chapter_summary = str(context.get("chapter_summary") or "").strip()
+        character_roster = context.get("character_roster") or []
+        payload = [
+            {
+                "segment_id": str(item.get("segment_id") or "").strip(),
+                "scene_id": int(item.get("scene_id") or 0),
+                "order": int(item.get("order") or 0),
+                "panel_start": int(item.get("panel_start") or 0),
+                "panel_end": int(item.get("panel_end") or 0),
+                "panel_count": int(item.get("panel_count") or 0),
+                "current": str(item.get("current") or "").strip(),
+                "local_evidence": str(item.get("local_evidence") or "").strip(),
+            }
+            for item in segments
+        ]
+        return (
+            "Write the final script pass for a YouTube manga/manhwa/comic recap from ordered local evidence.\n"
+            "Return valid JSON only in this exact format:\n"
+            "{\"segments\":[{\"segment_id\":\"scene_001_beat_01\",\"scene_id\":1,\"title\":\"Short label\",\"text\":\"Final narration.\"}]}\n\n"
+            "This is the final publishability pass. The output should be a 9/10 YouTube recap draft: dramatic, faithful, clean, and spoken aloud naturally.\n\n"
+            "Hard contract:\n"
+            "- Output exactly one object for every supplied segment_id, in the same order.\n"
+            "- Use each segment's local_evidence as the source of truth; current is only a weak draft that may contain bad wording.\n"
+            "- Preserve the story arc implied by the chapter summary and the ordered segment evidence.\n"
+            "- Do not invent facts, motives, relationships, names, power rules, or future events.\n"
+            "- Use named characters only when supported by the segment evidence, current draft, or character roster. Use role labels for uncertain people.\n"
+            "- Never mention panels, pages, frames, speech bubbles, captions, close-ups, visible buttons/signs, camera, clothing, hair, eyes, poses, or expressions as visual objects.\n"
+            "- Convert weak visual details into story function. Background signs, UI labels, room fixtures, or other non-story objects should become location flow or be omitted.\n"
+            "- Do not preserve OCR fragments, equations, menu text, or incidental signs unless they matter to the story.\n"
+            "- Remove malformed text and duplicate beats. Never say the same punch/kick twice unless the evidence shows separate attacks.\n"
+            "- Avoid generic filler: no 'the pressure rises', 'the situation escalates', 'the scene shifts', 'less room to back down', or similar empty glue.\n"
+            "- Use active verbs and concrete stakes. Make every segment answer: what changed, why does it matter, what pressure does it create next?\n"
+            "- Keep each segment 2-3 sentences and roughly 35-75 words unless evidence is genuinely thin.\n\n"
+            "General cleanup targets:\n"
+            "- Replace raw caption/OCR lines with natural story setup when the text is incidental.\n"
+            "- Omit background object descriptions unless they clarify where the characters are or what changes.\n"
+            "- Do not repeat the same action across adjacent segments. Distinguish setup, attack, reaction, counter, and consequence when evidence supports them.\n"
+            "- Do not describe facial expressions as objects; narrate fear, shock, pain, defiance, or intimidation as story pressure.\n\n"
+            f"Project title: {project_title or '(unknown)'}\n"
+            f"Chapter summary for continuity only: {chapter_summary or '(none)'}\n"
+            f"Character roster: {json.dumps(character_roster, ensure_ascii=False)}\n"
+            f"Ordered segments: {json.dumps(payload, ensure_ascii=False)}\n"
         )
 
     def _story_segment_critic_prompt(self, segments: list[dict[str, Any]], context: dict[str, Any]) -> str:

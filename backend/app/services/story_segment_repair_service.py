@@ -915,25 +915,24 @@ class StorySegmentRepairService:
         context = raw_context.casefold()
         if not context:
             return ""
-        if self.style_vocab:
-            templates = self._filled_style_templates(
-                (
-                    "{subject_a} and {subject_b} keep the nearby risk tied to {team}. Their connection gives the beat a consequence the group has to answer.",
-                    "{team} gathers around {world_term} as the scene moves from reaction into decision.",
-                    "{subject} keeps the nearby choice active while the surrounding group reacts.",
-                ),
-                unit or {},
-                raw_context,
-            )
-            if templates:
-                return templates[0]
         names = [
             name
             for name in extract_proper_name_candidates(raw_context)
             if not re.search(r"\b(?:unknown|speaker|narrator|protagonist|character|figure|someone)\b", name, flags=re.IGNORECASE)
         ]
-        if names:
-            return f"{names[0]} keeps the nearby choice active while the surrounding group reacts."
+        if names and unit:
+            evidence = clean_ocr_text(
+                " ".join(
+                    str(unit.get(key) or "").strip()
+                    for key in ("vision_action_beat", "vision_dialogue", "vision_caption", "combined_text", "ocr_fallback_text")
+                    if str(unit.get(key) or "").strip()
+                )
+            )
+            if evidence and not self.story_service._text_is_noisy_ocr(evidence):
+                candidate = f"{names[0]} stays tied to the visible action: {evidence[:180]}"
+                normalized = self.story_service._normalize_segment_text(candidate, allow_empty=True)
+                if self._usable_repair_line(normalized):
+                    return normalized
         return ""
 
     def _emergency_repair_line(
@@ -1016,20 +1015,10 @@ class StorySegmentRepairService:
                 return candidate
         if names:
             joined = " and ".join(names[:2])
-            candidate = f"{joined} has to respond before the situation moves out of reach."
+            candidate = self.story_service._evidence_bridge_line(unit, joined, style_vocab=self.style_vocab)
             if not self._line_already_used(candidate, payloads, index):
                 return candidate
-        return self._first_unused_template(
-            (
-                "The beat shifts again, leaving the next choice harder to avoid.",
-                "The scene moves into a strained moment where hesitation becomes dangerous.",
-                "The nearby danger narrows the response available to the group.",
-                "The moment carries enough consequence to keep the chapter moving.",
-            ),
-            unit,
-            payloads,
-            index,
-        )
+        return ""
 
     def _repair_style_templates(self, local_context: str, unit: dict[str, Any]) -> tuple[str, ...]:
         if not self.style_vocab:
@@ -1063,7 +1052,6 @@ class StorySegmentRepairService:
             ),
             "neutral": (
                 "{subject} faces the moment head-on as the scene turns toward another response.",
-                "The beat keeps moving because the last choice still has consequences.",
             ),
         }
         return self._filled_style_templates(buckets[bucket], unit, local_context)
@@ -1403,7 +1391,7 @@ class StorySegmentRepairService:
             project_id=project_id,
             total_segments=len(segments),
             target_segments=target_count,
-            repaired_segments=repaired_count,
+            repaired_segments=min(repaired_count, target_count) if target_count else repaired_count,
             spoken_segments=sum(1 for segment in segments if segment.text.strip()),
             visual_only_segments=sum(1 for segment in segments if segment.visual_only),
             quality_report=quality_report,

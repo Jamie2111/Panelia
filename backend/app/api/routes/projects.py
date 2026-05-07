@@ -15,6 +15,7 @@ from app.pipeline.orchestration import queue_stage_once
 from app.schemas.character_identity import CharacterReviewState, CharacterReviewUpdateRequest
 from app.schemas.project import (
     BatchProjectRequest,
+    CharacterPortraitsUpdateRequest,
     DuplicateProjectRequest,
     DuplicateHandlingMode,
     JobStatus,
@@ -802,6 +803,86 @@ def get_character_portraits(project_id: str):
     characters = read_json(store._project_dir(project_id) / "output" / "canonical_characters.json", default=[])
     if not isinstance(characters, list):
         characters = []
+    return {"project_id": project_id, "characters": characters}
+
+
+@router.put("/{project_id}/character-portraits")
+def update_character_portraits(project_id: str, payload: CharacterPortraitsUpdateRequest):
+    if not store.project_exists(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    _cancel_active_jobs(
+        project_id,
+        {
+            PipelineStage.CHARACTER_PORTRAIT,
+            PipelineStage.PANEL_VISION_EXTRACTION,
+            PipelineStage.PANEL_VISION_QUALITY,
+            PipelineStage.SCRIPT_GENERATION,
+            PipelineStage.NARRATION_GENERATION,
+            PipelineStage.VIDEO_RENDERING,
+        },
+    )
+
+    output_dir = store._project_dir(project_id) / "output"
+    characters = [character.model_dump(mode="json") for character in payload.characters]
+    write_json(output_dir / "canonical_characters.json", characters)
+
+    for filename in (
+        "panel_vision.json",
+        "panel_vision_final.json",
+        "story_bible.json",
+        "story_grounding.json",
+        "style_vocabulary.json",
+    ):
+        (output_dir / filename).unlink(missing_ok=True)
+    store.invalidate_script_outputs(project_id, clear_generated_panel_narration=True)
+    store._reset_directory(store._project_dir(project_id) / "audio")
+    store._reset_directory(store._project_dir(project_id) / "video")
+    store._reset_directory(store._project_dir(project_id) / "exports")
+
+    store.update_stage_state(
+        project_id,
+        PipelineStage.CHARACTER_PORTRAIT,
+        StageStatus.COMPLETED,
+        progress=100,
+        message=f"Character portraits saved ({len(characters)} characters)",
+    )
+    store.update_stage_state(
+        project_id,
+        PipelineStage.PANEL_VISION_EXTRACTION,
+        StageStatus.READY,
+        progress=0,
+        message="Portrait edits saved. Re-run panel vision before generating the script.",
+    )
+    store.update_stage_state(
+        project_id,
+        PipelineStage.PANEL_VISION_QUALITY,
+        StageStatus.PENDING,
+        progress=0,
+        message="Run panel vision before quality review.",
+    )
+    store.update_stage_state(
+        project_id,
+        PipelineStage.SCRIPT_GENERATION,
+        StageStatus.READY,
+        progress=0,
+        message="Portrait edits saved. Generate the script after panel vision refreshes.",
+    )
+    store.update_stage_state(
+        project_id,
+        PipelineStage.NARRATION_GENERATION,
+        StageStatus.PENDING,
+        progress=0,
+        message="Generate a script before creating audio.",
+    )
+    store.update_stage_state(
+        project_id,
+        PipelineStage.VIDEO_RENDERING,
+        StageStatus.PENDING,
+        progress=0,
+        message="Generate audio before rendering video.",
+    )
+    store.update_project_metadata(project_id)
     return {"project_id": project_id, "characters": characters}
 
 

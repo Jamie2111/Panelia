@@ -43,7 +43,7 @@ from app.utils.files import ensure_dir, read_json, slugify, write_json
 logger = logging.getLogger(__name__)
 
 _LOW_SIGNAL_SCRIPT_FLAGS = {"corner_wedge", "side_void", "top_blank_band", "whitespace"}
-PANEL_CROP_VERSION = "tightcrop_v3"
+PANEL_CROP_VERSION = "tightcrop_v4"
 
 
 class ProjectStore:
@@ -664,6 +664,10 @@ class ProjectStore:
         output_dir = self._project_dir(project_id) / "output"
         write_json(output_dir / "story_segments.json", [segment.model_dump(mode="json") for segment in normalized_segments])
         write_json(output_dir / "panel_script_blocks.json", [])
+        (output_dir / "narration_story.txt").write_text(
+            story_text.strip() + ("\n" if story_text.strip() else ""),
+            encoding="utf-8",
+        )
 
         panel_vision_records = read_json(output_dir / "panel_vision_final.json", default=[])
         quality_report = self._script_quality.analyze_story_segments(
@@ -1573,6 +1577,7 @@ class ProjectStore:
             "tightened_bbox": {"x": 0, "y": 0, "width": int(width), "height": int(height)},
             "margin_percent_before": {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0},
             "margin_percent_after": {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0},
+            "edge_trim_percent": {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0},
         }
         if arr.size == 0 or min(width, height) < 48:
             return rgb, empty_meta
@@ -1635,9 +1640,14 @@ class ProjectStore:
             "tightened_bbox": {"x": 0, "y": 0, "width": int(width), "height": int(height)},
             "margin_percent_before": before,
             "margin_percent_after": before,
+            "edge_trim_percent": {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0},
         }
         largest_trim = max(trim_left, trim_top, trim_right, trim_bottom)
         if largest_trim < max(2, int(min(width, height) * 0.004)):
+            trimmed, edge_meta = self._trim_bright_preview_edges(rgb)
+            if edge_meta["was_tightened"]:
+                meta.update(edge_meta)
+                return trimmed, meta
             return rgb, meta
 
         new_width = right - left
@@ -1661,7 +1671,129 @@ class ProjectStore:
             "tightened_bbox": {"x": left, "y": top, "width": new_width, "height": new_height},
             "margin_percent_after": after,
         })
+        edge_trimmed, edge_meta = self._trim_bright_preview_edges(tightened)
+        if edge_meta["was_tightened"]:
+            edge_box = edge_meta["tightened_bbox"]
+            combined_left = left + int(edge_box["x"])
+            combined_top = top + int(edge_box["y"])
+            combined_width = int(edge_box["width"])
+            combined_height = int(edge_box["height"])
+            meta.update({
+                "tightened_bbox": {
+                    "x": combined_left,
+                    "y": combined_top,
+                    "width": combined_width,
+                    "height": combined_height,
+                },
+                "edge_trim_percent": edge_meta["edge_trim_percent"],
+            })
+            return edge_trimmed, meta
         return tightened, meta
+
+    def _trim_bright_preview_edges(self, image: Image.Image) -> tuple[Image.Image, dict[str, Any]]:
+        """Trim bright, low-information halos from saved panel previews.
+
+        The detector coordinates remain unchanged for review/editing. This only
+        affects the preview crop used by narration/video, where a slight inward
+        crop is preferable to thin white gutters around manhwa panels.
+        """
+        rgb = image.convert("RGB")
+        arr = np.array(rgb)
+        height, width = arr.shape[:2]
+        empty_meta = {
+            "was_tightened": False,
+            "tightened_bbox": {"x": 0, "y": 0, "width": int(width), "height": int(height)},
+            "edge_trim_percent": {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0},
+        }
+        if arr.size == 0 or min(width, height) < 80:
+            return rgb, empty_meta
+
+        gray = np.dot(arr[..., :3], [0.299, 0.587, 0.114]).astype(np.uint8)
+        try:
+            import cv2
+            edges = cv2.Canny(gray, 45, 130) > 0
+        except Exception:
+            edges = np.zeros_like(gray, dtype=bool)
+
+        step_x = max(2, min(10, width // 80))
+        step_y = max(2, min(10, height // 80))
+        max_x_trim = max(step_x, int(width * 0.12))
+        max_y_trim = max(step_y, int(height * 0.12))
+
+        def low_content_vertical(start: int, end: int) -> bool:
+            strip = gray[:, start:end]
+            strip_edges = edges[:, start:end]
+            if strip.size == 0:
+                return False
+            white_ratio = float(np.mean(strip >= 238))
+            dark_ratio = float(np.mean(strip <= 80))
+            edge_ratio = float(np.mean(strip_edges))
+            return white_ratio >= 0.86 and dark_ratio <= 0.08 and edge_ratio <= 0.020
+
+        def low_content_horizontal(start: int, end: int) -> bool:
+            strip = gray[start:end, :]
+            strip_edges = edges[start:end, :]
+            if strip.size == 0:
+                return False
+            white_ratio = float(np.mean(strip >= 238))
+            dark_ratio = float(np.mean(strip <= 80))
+            edge_ratio = float(np.mean(strip_edges))
+            return white_ratio >= 0.88 and dark_ratio <= 0.08 and edge_ratio <= 0.026
+
+        left = 0
+        while left + step_x <= max_x_trim and low_content_vertical(left, left + step_x):
+            left += step_x
+        right = 0
+        while right + step_x <= max_x_trim and low_content_vertical(width - right - step_x, width - right):
+            right += step_x
+        top = 0
+        while top + step_y <= max_y_trim and low_content_horizontal(top, top + step_y):
+            top += step_y
+        bottom = 0
+        while bottom + step_y <= max_y_trim and low_content_horizontal(height - bottom - step_y, height - bottom):
+            bottom += step_y
+
+        # If a thin halo remains because the black panel border sits just
+        # inside a white gutter, shave a tiny fixed amount. This gives the
+        # "slightly zoomed in" result without making a blind 10% crop the
+        # default for every image.
+        min_zoom_x = max(0, int(width * 0.008))
+        min_zoom_y = max(0, int(height * 0.008))
+        if left and left < min_zoom_x:
+            left = min_zoom_x
+        if right and right < min_zoom_x:
+            right = min_zoom_x
+        if top and top < min_zoom_y:
+            top = min_zoom_y
+        if bottom and bottom < min_zoom_y:
+            bottom = min_zoom_y
+
+        if max(left, right, top, bottom) < max(2, int(min(width, height) * 0.006)):
+            return rgb, empty_meta
+        new_left = min(left, max(width - 24, 0))
+        new_top = min(top, max(height - 24, 0))
+        new_right = max(width - right, new_left + 24)
+        new_bottom = max(height - bottom, new_top + 24)
+        if new_right > width or new_bottom > height or new_right <= new_left or new_bottom <= new_top:
+            return rgb, empty_meta
+
+        trimmed = rgb.crop((new_left, new_top, new_right, new_bottom))
+        meta = {
+            "was_tightened": True,
+            "tightened_bbox": {
+                "x": int(new_left),
+                "y": int(new_top),
+                "width": int(new_right - new_left),
+                "height": int(new_bottom - new_top),
+            },
+            "edge_trim_percent": {
+                "left": round(new_left / max(width, 1), 4),
+                "right": round((width - new_right) / max(width, 1), 4),
+                "top": round(new_top / max(height, 1), 4),
+                "bottom": round((height - new_bottom) / max(height, 1), 4),
+            },
+        }
+        return trimmed, meta
 
     def _reset_directory(self, directory: Path) -> None:
         shutil.rmtree(directory, ignore_errors=True)

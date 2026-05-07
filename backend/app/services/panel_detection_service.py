@@ -2785,9 +2785,11 @@ class PanelDetectorAdapter:
             min_trim = max(int(min(w, h) * 0.03), 4)
 
             if max(trim_top, trim_bottom, trim_left, trim_right) >= min_trim:
-                # Add a small padding (2%) so content doesn't touch the edge
-                pad_x = max(int(w * 0.02), 2)
-                pad_y = max(int(h * 0.02), 2)
+                # Keep only a hairline safety pad. For manhwa/webtoon panels a
+                # slightly zoomed crop is better than carrying white gutters
+                # into review, narration previews, and video.
+                pad_x = max(int(w * 0.006), 1)
+                pad_y = max(int(h * 0.006), 1)
                 new_x = x + max(cx1 - pad_x, 0)
                 new_y = y + max(cy1 - pad_y, 0)
                 new_x2 = x + min(cx2 + pad_x, w)
@@ -2904,8 +2906,8 @@ class PanelDetectorAdapter:
         if max(trim_top, trim_bottom, trim_left, trim_right) < max(int(min(w, h) * 0.03), 6):
             return None
 
-        pad_x = max(int(w * 0.015), 2)
-        pad_y = max(int(h * 0.015), 2)
+        pad_x = max(int(w * 0.004), 1)
+        pad_y = max(int(h * 0.004), 1)
         new_x = x + max(trim_left - pad_x, 0)
         new_y = y + max(trim_top - pad_y, 0)
         new_x2 = x + min(w - trim_right + pad_x, w)
@@ -2966,8 +2968,8 @@ class PanelDetectorAdapter:
         if max(trim_top, trim_bottom, trim_left, trim_right) < max(int(min(w, h) * 0.04), 8):
             return None
 
-        pad_x = max(int(w * 0.01), 2)
-        pad_y = max(int(h * 0.01), 2)
+        pad_x = max(int(w * 0.004), 1)
+        pad_y = max(int(h * 0.004), 1)
         new_x = x + max(x1 - pad_x, 0)
         new_y = y + max(y1 - pad_y, 0)
         new_x2 = x + min(x2 + pad_x, w)
@@ -3072,8 +3074,8 @@ class PanelDetectorAdapter:
         if area_ratio < min_area_ratio:
             return None
 
-        pad_x = max(2, int(new_w * 0.006))
-        pad_y = max(2, int(new_h * 0.006))
+        pad_x = max(1, int(new_w * 0.003))
+        pad_y = max(1, int(new_h * 0.003))
         final_x = max(x, new_x - pad_x)
         final_y = max(y, new_y - pad_y)
         final_x2 = min(x + w, new_x + new_w + pad_x)

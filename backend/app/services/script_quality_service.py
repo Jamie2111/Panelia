@@ -42,8 +42,11 @@ class ScriptQualityService:
         generic_count = sum(1 for line in lines if line and self._looks_generic(line))
         visual_count = sum(1 for line in lines if line and self._looks_visual(line))
         ocr_contamination_count = sum(1 for line in lines if line and self._looks_ocr_contaminated(line))
+        malformed_count = sum(1 for line in lines if line and self._looks_malformed(line))
         repetitive_template_count = self._repetitive_template_count(lines)
+        semantic_duplicate_count = self._semantic_near_duplicate_count(lines)
         disconnected_count = self._disconnected_pair_count(lines)
+        scene_order_regression_count = self._scene_order_regression_count(ordered_segments)
         avg_sentences_per_line = self._avg_sentences_per_line(lines)
         avg_sentences_per_spoken_paragraph = avg_sentences_per_line
         sentence_counts = self._sentence_counts(lines)
@@ -90,6 +93,8 @@ class ScriptQualityService:
                 reasons.append("visual")
             if text and self._looks_ocr_contaminated(text):
                 reasons.append("ocr_contamination")
+            if text and self._looks_malformed(text):
+                reasons.append("malformed")
             if text:
                 sentence_count = len([part for part in re.split(r"(?<=[.!?])\s+(?=[A-Z])", text) if part.strip()])
                 word_count = len(re.findall(r"\b[\w'-]+\b", text))
@@ -118,8 +123,11 @@ class ScriptQualityService:
             quality_score -= round((generic_count / total_segments) * 28)
             quality_score -= round((visual_count / total_segments) * 22)
             quality_score -= round((ocr_contamination_count / total_segments) * 34)
+            quality_score -= round((malformed_count / total_segments) * 42)
             quality_score -= round((repetitive_template_count / total_segments) * repetitive_penalty_weight)
+            quality_score -= round((semantic_duplicate_count / total_segments) * 26)
             quality_score -= round((disconnected_penalty_count / total_segments) * 18)
+            quality_score -= min(scene_order_regression_count * 14, 28)
             quality_score -= round((visual_only_blank_count / total_segments) * 18)
             quality_score -= round((one_sentence_count / total_segments) * 20)
             quality_score -= round((short_line_count / total_segments) * 16)
@@ -138,7 +146,7 @@ class ScriptQualityService:
             "blank": max(1, total_segments // 8),
             "duplicate": max(1, total_segments // 10),
             "generic": max(2, total_segments // 7),
-            "visual": max(2, total_segments // 9),
+            "visual": 0,
             # Story-first narration intentionally leaves some panels silent so
             # the edit can breathe. Treat visual-only blanks as blocking only
             # when they dominate the script; the score still penalizes them.
@@ -146,6 +154,9 @@ class ScriptQualityService:
             "visual_only_panels": max(12, round(max(total_panel_refs, 1) * 0.50)),
             "one_sentence": max(2, total_segments // 6),
             "short_line": max(2, total_segments // 6),
+            "semantic_duplicate": max(1, total_segments // 12),
+            "disconnected": max(2, round(max(total_segments, 1) * 0.15)),
+            "scene_order_regression": 0,
             "score": 68,
         }
         excessive_visual_only = (
@@ -159,6 +170,10 @@ class ScriptQualityService:
                 generic_count > thresholds["generic"],
                 visual_count > thresholds["visual"],
                 ocr_contamination_count > max(1, total_segments // 12),
+                malformed_count > 0,
+                semantic_duplicate_count > thresholds["semantic_duplicate"],
+                disconnected_count > thresholds["disconnected"],
+                scene_order_regression_count > thresholds["scene_order_regression"],
                 excessive_visual_only,
                 one_sentence_count > thresholds["one_sentence"],
                 short_line_count > thresholds["short_line"],
@@ -187,9 +202,12 @@ class ScriptQualityService:
             "visual_lines": visual_count,
             "raw_ocr_echo_lines": 0,
             "ocr_contamination_lines": ocr_contamination_count,
+            "malformed_lines": malformed_count,
             "fact_mismatch_lines": 0,
             "repetitive_template_lines": repetitive_template_count,
+            "semantic_near_duplicate_lines": semantic_duplicate_count,
             "disconnected_pairs": disconnected_count,
+            "scene_order_regressions": scene_order_regression_count,
             "avg_sentences_per_line": round(avg_sentences_per_line, 3),
             "avg_sentences_per_spoken_paragraph": round(avg_sentences_per_spoken_paragraph, 3),
             "one_sentence_lines": one_sentence_count,
@@ -212,6 +230,11 @@ class ScriptQualityService:
                     ("vision_low_confidence", vision_low_confidence_count if vision_quality_affects_tts else 0),
                     ("unknown_speaker", unknown_speaker_count if vision_quality_affects_tts else 0),
                     ("ocr_contamination", ocr_contamination_count),
+                    ("malformed_english", malformed_count),
+                    ("visual_caption_leakage", visual_count if visual_count > thresholds["visual"] else 0),
+                    ("semantic_near_duplicates", semantic_duplicate_count if semantic_duplicate_count > thresholds["semantic_duplicate"] else 0),
+                    ("disconnected_transitions", disconnected_count if disconnected_count > thresholds["disconnected"] else 0),
+                    ("scene_order_regression", scene_order_regression_count),
                     ("one_sentence_segments", one_sentence_count if one_sentence_count > thresholds["one_sentence"] else 0),
                     ("short_segments", short_line_count if short_line_count > thresholds["short_line"] else 0),
                 )
@@ -228,6 +251,9 @@ class ScriptQualityService:
                 duplicate_count=duplicate_count,
                 generic_count=generic_count,
                 repetitive_template_count=repetitive_template_count,
+                malformed_count=malformed_count,
+                semantic_duplicate_count=semantic_duplicate_count,
+                scene_order_regression_count=scene_order_regression_count,
                 disconnected_count=disconnected_count,
                 should_block_tts=should_block_tts,
             ),
@@ -407,6 +433,24 @@ class ScriptQualityService:
             "as everyone absorbs what just happened",
             "a sudden question leaves the moment hanging",
             "the unanswered question freezes the scene",
+            "nearby choice",
+            "next choice",
+            "last choice",
+            "the beat keeps",
+            "the beat shifts",
+            "the beat moves",
+            "surrounding group reacts",
+            "matter of survival",
+            "the dynamic shifts",
+            "fewer options",
+            "few options",
+            "menacing posture signals",
+            "imminent conflict",
+            "precarious position",
+            "the overall apathy",
+            "creating a dull atmosphere",
+            "promises further complications",
+            "persistent challenges",
         )
         return any(phrase in lowered for phrase in generic_phrases)
 
@@ -420,6 +464,55 @@ class ScriptQualityService:
             r"\bcan\s+name\s+is\b",
         )
         return any(re.search(pattern, lowered) for pattern in patterns)
+
+    def _scene_order_regression_count(self, segments: list[StorySegment]) -> int:
+        regressions = 0
+        previous_scene_id: int | None = None
+        for segment in segments:
+            try:
+                scene_id = int(segment.scene_id or 0)
+            except Exception:
+                continue
+            if scene_id <= 0:
+                continue
+            if previous_scene_id is not None and scene_id < previous_scene_id:
+                regressions += 1
+            previous_scene_id = scene_id
+        return regressions
+
+    def _semantic_near_duplicate_count(self, script_lines: list[str]) -> int:
+        duplicate_count = 0
+        previous_tokens: set[str] | None = None
+        for line in script_lines:
+            tokens = self._content_token_set(line)
+            if previous_tokens and tokens:
+                overlap = len(previous_tokens & tokens) / max(1, len(previous_tokens | tokens))
+                if overlap >= 0.34:
+                    duplicate_count += 1
+            if tokens:
+                previous_tokens = tokens
+        return duplicate_count
+
+    def _content_token_set(self, text: str) -> set[str]:
+        stop_words = {
+            "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+            "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
+            "being", "have", "has", "had", "do", "does", "did", "will", "would",
+            "could", "should", "may", "might", "shall", "can", "not", "no", "so",
+            "if", "then", "than", "that", "this", "it", "its", "as", "up", "out",
+            "into", "over", "just", "also", "very", "too", "still", "even", "only",
+            "about", "after", "before", "between", "each", "every", "all", "both",
+            "few", "more", "most", "other", "some", "such", "one", "two", "three",
+            "he", "she", "they", "him", "her", "his", "their", "them", "who", "what",
+            "where", "when", "while", "because", "around", "near", "through",
+            "scene", "moment", "beat", "choice", "pressure", "situation", "dynamic",
+            "conflict", "consequence", "consequences", "response", "group",
+        }
+        return {
+            token
+            for token in re.findall(r"[a-z']+", self._normalize_line(text))
+            if len(token) >= 3 and token not in stop_words
+        }
 
     def _avg_sentences_per_line(self, lines: list[str]) -> float:
         counts = self._sentence_counts(lines)
@@ -481,16 +574,41 @@ class ScriptQualityService:
             "camera pans",
             "panel shows",
             "frame shows",
+            "speech bubbles",
+            "presented in speech bubbles",
+            "face shows",
+            "expression shows",
+            "symbols for",
             "young man with",
             "young woman with",
             "with wide eyes",
+            "expression",
+            "eyes wide",
+            "sweat beading",
+            "sweat drops",
+            "sweat on",
+            "with blood on his face",
+            "with blood on her face",
+            "stared in shock",
+            "shocked expression",
+            "startled expression",
             "with a pained expression",
             "with a determined expression",
+            "glared with",
+            "body coiled",
+            "light blue tiled floor",
+            "appears distressed",
+            "appearing distressed",
+            "the injury turns the confrontation",
+            "the barrier turns protection into leverage",
             "bloodied and disfigured",
             "is shown",
             "are shown",
             "is displayed",
             "are displayed",
+            "is visible",
+            "are visible",
+            "visible on a wall",
             "stands against",
             "sits on",
             "white background",
@@ -498,6 +616,7 @@ class ScriptQualityService:
             "wooden surface",
             "dimly lit room",
             "bright light",
+            "blinding red light",
             "blurry figure",
             "with text below",
             "visible in the darkness",
@@ -510,10 +629,24 @@ class ScriptQualityService:
             return True
         return bool(
             re.search(
-                r"^(?:a|an|the|two|three|several)\s+(?:young\s+|older\s+|middle-aged\s+)?(?:man|woman|boy|girl|person|people|character|figure|waiter|bystander|group)\b.*\b(?:stands|sits|holds|holding|looks|looking|stares|wearing|walks|faces|smiles|grins|clenches|floats)\b",
+                r"^(?:a|an|the|two|three|several)\s+(?:young\s+|older\s+|middle-aged\s+)?(?:man|woman|boy|girl|person|people|character|figure|waiter|bystander|group)\b.*\b(?:stands|sits|looks|looking|stares|wearing|appears)\b",
                 lowered,
             )
         )
+
+    def _looks_malformed(self, narration: str) -> bool:
+        lowered = self._normalize_line(narration)
+        malformed_patterns = (
+            r"\b[a-z]+\s+blocks\s+are\s+so\s+exhausting\b",
+            r"\b(?:john|he|she|they)\s+(?:blocks|are|is)\s+are\b",
+            r"\b(?:john|he|she|they)\s+(?:retaliates|retaliated).{0,120}\b(?:john|he)\s+(?:retaliates|punches)\b",
+            r"\bmathematical equations and explanations are presented\b",
+            r"\btwo elevator buttons\b",
+            r"\bone for male and one for female\b",
+            r"\b(?:the|a)\s+panel\b",
+            r"\b(?:the|a)\s+frame\b",
+        )
+        return any(re.search(pattern, lowered) for pattern in malformed_patterns)
 
     def _drops_fact_anchors(self, narration: str, extracted_text: str) -> bool:
         anchors = self.cleaner._fact_anchor_tokens(extracted_text)
@@ -590,6 +723,9 @@ class ScriptQualityService:
         duplicate_count: int,
         generic_count: int,
         repetitive_template_count: int,
+        malformed_count: int,
+        semantic_duplicate_count: int,
+        scene_order_regression_count: int,
         disconnected_count: int,
         should_block_tts: bool,
     ) -> str:
@@ -607,6 +743,12 @@ class ScriptQualityService:
             problems.append(f"{generic_count} generic")
         if repetitive_template_count:
             problems.append(f"{repetitive_template_count} repetitive-template")
+        if malformed_count:
+            problems.append(f"{malformed_count} malformed")
+        if semantic_duplicate_count:
+            problems.append(f"{semantic_duplicate_count} near-duplicate")
+        if scene_order_regression_count:
+            problems.append(f"{scene_order_regression_count} scene-order regression")
         if disconnected_count:
             problems.append(f"{disconnected_count} disconnected-transitions")
         if not problems:

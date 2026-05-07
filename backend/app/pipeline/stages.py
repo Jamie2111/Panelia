@@ -5,6 +5,7 @@ import logging
 import re
 import shutil
 import time
+import asyncio
 from pathlib import Path
 from typing import Any
 from PIL import Image
@@ -14,6 +15,7 @@ from app.pipeline.auto_run import continue_auto_run_pipeline
 from app.pipeline.orchestration import queue_stage_once
 from app.schemas.project import (
     CanonicalCharacterRecord,
+    JobStatus,
     MusicConfig,
     NarrationMode,
     PanelVisionRecord,
@@ -39,6 +41,7 @@ from app.services.panel_vision_quality_service import PanelVisionQualityService
 from app.services.ocr_cleaner import clean_ocr_lines, clean_ocr_text, combined_dialogue_entry_lines, is_usable_ocr_text
 from app.services.llm_router import LLMRouter
 from app.services.project_store import ProjectStore
+from app.services.script_quality_service import ScriptQualityService
 from app.services.story_segment_repair_service import StorySegmentRepairService
 from app.services.story_script_service import StoryScriptService
 from app.services.style_vocabulary import StyleVocabulary, build_style_vocabulary
@@ -614,6 +617,97 @@ def _queue_requested_script_continuation(context: PipelineContext, next_stage: P
     return True
 
 
+def _panel_vision_record_ids(records: list[PanelVisionRecord] | None) -> set[str]:
+    return {str(record.panel_id) for record in records or [] if str(record.panel_id or "").strip()}
+
+
+def _script_evidence_snapshot(
+    kept_panels: list,
+    panel_vision_records: list[PanelVisionRecord] | None,
+) -> dict[str, float | int | bool]:
+    kept_count = len(kept_panels)
+    usable_text_count = sum(
+        1
+        for panel in kept_panels
+        if is_usable_ocr_text(clean_ocr_text(str(getattr(panel, "ocr_text", "") or "")))
+    )
+    vision_ids = _panel_vision_record_ids(panel_vision_records)
+    vision_count = sum(1 for panel in kept_panels if str(getattr(panel, "id", "")) in vision_ids)
+    return {
+        "kept_count": kept_count,
+        "usable_text_count": usable_text_count,
+        "usable_text_ratio": usable_text_count / max(kept_count, 1),
+        "vision_count": vision_count,
+        "vision_ratio": vision_count / max(kept_count, 1),
+        "has_panel_vision": bool(vision_count),
+    }
+
+
+def _should_defer_script_for_vision(evidence: dict[str, float | int | bool]) -> bool:
+    kept_count = int(evidence.get("kept_count") or 0)
+    if kept_count <= 0:
+        return False
+    usable_text_ratio = float(evidence.get("usable_text_ratio") or 0.0)
+    vision_ratio = float(evidence.get("vision_ratio") or 0.0)
+    # OCR-light comics need visual evidence before a recap script can be
+    # grounded. The thresholds are intentionally proportional so this applies
+    # to short tests, long manga batches, and webtoon chapters without naming
+    # any specific series.
+    return usable_text_ratio < 0.25 and vision_ratio < 0.80
+
+
+def _defer_script_until_vision(
+    context: PipelineContext,
+    *,
+    project_dir: Path,
+    panel_vision_records: list[PanelVisionRecord] | None,
+    force_refresh: bool,
+    reason: str,
+) -> None:
+    canonical_path = project_dir / "output" / "canonical_characters.json"
+    vision_final_path = project_dir / "output" / "panel_vision_final.json"
+    if not canonical_path.exists():
+        next_stage = PipelineStage.CHARACTER_PORTRAIT
+        message = f"{reason} Queued character portraits before script generation."
+    elif not vision_final_path.exists() or not panel_vision_records:
+        next_stage = PipelineStage.PANEL_VISION_EXTRACTION
+        message = f"{reason} Queued panel vision before script generation."
+    else:
+        next_stage = PipelineStage.PANEL_VISION_QUALITY
+        message = f"{reason} Queued panel vision quality before script generation."
+
+    current_job = context.store.get_job(context.project_id, context.job_id)
+    payload = {
+        **dict(current_job.payload or {}),
+        "continue_to_script_generation": True,
+        "force_refresh": force_refresh,
+    }
+    queue_stage_once(
+        context.store,
+        context.queue,
+        context.project_id,
+        next_stage,
+        message,
+        payload=payload,
+    )
+    context.store.update_job(
+        context.project_id,
+        context.job_id,
+        status=JobStatus.COMPLETED.value,
+        progress=100,
+        finished_at=context.store._now().isoformat(),
+        message=message,
+    )
+    context.store.update_stage_state(
+        context.project_id,
+        PipelineStage.SCRIPT_GENERATION,
+        StageStatus.READY,
+        progress=0,
+        message="Waiting for panel vision evidence before generating the script.",
+    )
+    context.queue.clear_cancel(context.job_id)
+
+
 def run_character_review(context: PipelineContext) -> None:
     store = context.store
     project = store.get_project(context.project_id)
@@ -731,6 +825,344 @@ def run_character_review(context: PipelineContext) -> None:
         message="Generate audio before rendering video.",
     )
     continue_auto_run_pipeline(store, context.queue, context.project_id, source="character review")
+
+
+def _panel_vision_text_for_segment(segment: Any, panel_vision_records: list[PanelVisionRecord] | None) -> str:
+    record_by_id = {str(record.panel_id): record for record in panel_vision_records or [] if str(record.panel_id or "").strip()}
+    parts: list[str] = []
+    for index, panel_id in enumerate(getattr(segment, "panel_ids", []) or [], start=1):
+        record = record_by_id.get(str(panel_id))
+        if record is None:
+            continue
+        evidence_bits = []
+        speaker = str(getattr(record, "speaker", "") or "").strip()
+        if speaker and speaker.casefold() != "unknown":
+            evidence_bits.append(f"speaker: {speaker}")
+        character_names = [
+            str(name).strip()
+            for name in getattr(record, "character_names", []) or []
+            if str(name).strip()
+        ][:4]
+        if character_names:
+            evidence_bits.append(f"characters: {', '.join(character_names)}")
+        for label, value in (
+            ("action", getattr(record, "action_beat", "")),
+            ("dialogue", getattr(record, "dialogue", "")),
+            ("caption", getattr(record, "caption", "")),
+            ("emotion", getattr(record, "emotion", "")),
+        ):
+            text = str(value or "").strip()
+            if text:
+                evidence_bits.append(f"{label}: {text}")
+        if evidence_bits:
+            parts.append(f"panel {index}: " + "; ".join(evidence_bits))
+    return "\n".join(parts)
+
+
+def _story_quality_report_for_segments(
+    segments: list[Any],
+    panel_vision_records: list[PanelVisionRecord] | None,
+) -> dict[str, Any]:
+    records = [
+        record.model_dump() if hasattr(record, "model_dump") else dict(record)
+        for record in panel_vision_records or []
+    ]
+    return ScriptQualityService().analyze_story_segments(segments, panel_vision_records=records)
+
+
+def _youtube_rewrite_min_count(total: int) -> int:
+    if total <= 0:
+        return 0
+    # Final rewrite should be close to complete. Partial model responses were
+    # the main mini-test failure mode, so leave only a tiny allowance for huge
+    # projects where one or two conservative unchanged segments are acceptable.
+    return max(1, min(total, round(total * 0.92)))
+
+
+def _youtube_candidate_is_safe(
+    *,
+    current_report: dict[str, Any],
+    candidate_report: dict[str, Any],
+) -> bool:
+    hard_failure_counts = (
+        int(candidate_report.get("malformed_lines") or 0),
+        int(candidate_report.get("visual_lines") or 0),
+        int(candidate_report.get("ocr_contamination_lines") or 0),
+        int(candidate_report.get("first_person_lines") or 0),
+    )
+    if any(count > 0 for count in hard_failure_counts):
+        return False
+    candidate_score = int(candidate_report.get("quality_score") or 0)
+    current_score = int(current_report.get("quality_score") or 0)
+    if candidate_score < 74:
+        return False
+    if (
+        not bool(current_report.get("should_block_tts"))
+        and bool(candidate_report.get("should_block_tts"))
+    ):
+        return False
+    if current_score and candidate_score < current_score - 4:
+        return False
+    return True
+
+
+def _rewrite_blocked_story_segments_once(
+    *,
+    store: ProjectStore,
+    project_id: str,
+    project_title: str,
+    chapter_summary: str,
+    panel_vision_records: list[PanelVisionRecord] | None,
+    quality_report: dict[str, Any],
+    router: LLMRouter,
+) -> bool:
+    risky_by_order = {
+        int(item.get("order") or 0): item
+        for item in quality_report.get("risky_segments", []) or []
+        if isinstance(item, dict)
+    }
+    segments = store.load_story_segments(project_id)
+    payload: list[dict[str, Any]] = []
+    for index, segment in enumerate(segments):
+        risky = risky_by_order.get(int(segment.order))
+        text = str(segment.text or "").strip()
+        if not risky and text:
+            continue
+        local_evidence = _panel_vision_text_for_segment(segment, panel_vision_records)
+        payload.append(
+            {
+                "index": index,
+                "segment_id": segment.id,
+                "panel_start": segment.panel_start or 0,
+                "panel_end": segment.panel_end or 0,
+                "panel_count": len(segment.panel_ids or []),
+                "current": text,
+                "risk_reasons": list((risky or {}).get("reasons") or []),
+                "local_evidence": local_evidence,
+                "previous_line": str(segments[index - 1].text or "").strip() if index > 0 else "",
+                "next_line": str(segments[index + 1].text or "").strip() if index + 1 < len(segments) else "",
+            }
+        )
+    if not payload:
+        return False
+    result = asyncio.run(
+        router.rewrite_blocked_story_segments(
+            payload,
+            {
+                "project_title": project_title,
+                "chapter_summary": chapter_summary,
+            },
+            provider="gemini",
+        )
+    )
+    rewrites: dict[int, str] = {}
+    for item in result.payload.get("rewrites", []) or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            rewrite_index = int(item.get("index"))
+        except (TypeError, ValueError):
+            continue
+        rewrites[rewrite_index] = str(item.get("line") or item.get("text") or "").strip()
+    changed = False
+    updated = []
+    for index, segment in enumerate(segments):
+        if index not in rewrites:
+            updated.append(segment)
+            continue
+        line = clean_ocr_text(rewrites[index])
+        if line and line != str(segment.text or "").strip():
+            updated.append(segment.model_copy(update={"text": line, "visual_only": False, "suppression_reason": None}))
+            changed = True
+        elif not line and str(segment.text or "").strip():
+            updated.append(segment.model_copy(update={"text": "", "visual_only": True, "suppression_reason": "quality_rewrite_rejected"}))
+            changed = True
+        else:
+            updated.append(segment)
+    if changed:
+        store.save_story_segments(project_id, updated, story_block="\n\n".join(segment.text.strip() for segment in updated if segment.text.strip()))
+    return changed
+
+
+def _rewrite_story_segments_for_youtube_once(
+    *,
+    store: ProjectStore,
+    project_id: str,
+    project_title: str,
+    chapter_summary: str,
+    panel_vision_records: list[PanelVisionRecord] | None,
+    canonical_characters: list[CanonicalCharacterRecord] | None,
+    router: LLMRouter,
+) -> bool:
+    segments = store.load_story_segments(project_id)
+    if not segments:
+        return False
+    roster = [
+        {
+            "name": str(character.name or "").strip(),
+            "role": str(character.role or "").strip(),
+            "aliases": list(character.aliases or []),
+        }
+        for character in canonical_characters or []
+        if str(character.name or "").strip()
+    ]
+    payload: list[dict[str, Any]] = []
+    for index, segment in enumerate(segments):
+        payload.append(
+            {
+                "index": index,
+                "segment_id": segment.id,
+                "scene_id": segment.scene_id or 0,
+                "order": segment.order,
+                "panel_start": segment.panel_start or 0,
+                "panel_end": segment.panel_end or 0,
+                "panel_count": len(segment.panel_ids or []),
+                "current": str(segment.text or "").strip(),
+                "local_evidence": _panel_vision_text_for_segment(segment, panel_vision_records),
+                "previous_line": str(segments[index - 1].text or "").strip() if index > 0 else "",
+                "next_line": str(segments[index + 1].text or "").strip() if index + 1 < len(segments) else "",
+            }
+        )
+    rewrite_context = {
+        "project_title": project_title,
+        "chapter_summary": chapter_summary,
+        "character_roster": roster,
+    }
+
+    id_to_index = {str(segment.id): index for index, segment in enumerate(segments)}
+    rewrites: dict[int, str] = {}
+    try:
+        generated = asyncio.run(
+            router.generate_youtube_recap_segments(payload, rewrite_context, provider="gemini")
+        )
+        for item in generated.payload.get("segments", []) or []:
+            if not isinstance(item, dict):
+                continue
+            segment_id = str(item.get("segment_id") or "").strip()
+            text = clean_ocr_text(str(item.get("text") or "").strip())
+            rewrite_index = id_to_index.get(segment_id)
+            if rewrite_index is not None and text:
+                rewrites[rewrite_index] = text
+    except Exception as exc:
+        logger.warning("YouTube recap segment generation failed for %s: %s", project_id, exc)
+
+    min_rewrite_count = _youtube_rewrite_min_count(len(segments))
+    if rewrites and len(rewrites) < min_rewrite_count:
+        logger.warning(
+            "YouTube recap segment generation for %s returned only %d/%d usable segments; filling gaps with rewrites",
+            project_id,
+            len(rewrites),
+            len(segments),
+        )
+
+    def _call_rewriter(items: list[dict[str, Any]]) -> dict[int, str]:
+        result = asyncio.run(router.rewrite_story_segments_for_youtube(items, rewrite_context, provider="gemini"))
+        chunk_rewrites: dict[int, str] = {}
+        for item in result.payload.get("rewrites", []) or []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                rewrite_index = int(item.get("index"))
+            except (TypeError, ValueError):
+                continue
+            chunk_rewrites[rewrite_index] = clean_ocr_text(str(item.get("line") or item.get("text") or "").strip())
+        return chunk_rewrites
+
+    if len(rewrites) < min_rewrite_count:
+        missing_payload = [
+            item
+            for item in payload
+            if int(item.get("index") or 0) not in rewrites
+            or not str(rewrites.get(int(item.get("index") or 0)) or "").strip()
+        ]
+        if len(missing_payload) != len(payload):
+            for start in range(0, len(missing_payload), 4):
+                chunk = missing_payload[start:start + 4]
+                try:
+                    rewrites.update(_call_rewriter(chunk))
+                except Exception as exc:
+                    logger.warning("YouTube missing-rewrite chunk %d failed for %s: %s", start // 4 + 1, project_id, exc)
+    if len(rewrites) < min_rewrite_count:
+        try:
+            rewrites.update(_call_rewriter(payload))
+        except Exception as exc:
+            logger.warning("Full YouTube rewrite failed for %s: %s", project_id, exc)
+    if len(rewrites) < min_rewrite_count:
+        logger.warning(
+            "YouTube rewrite for %s returned only %d/%d entries; retrying in chunks",
+            project_id,
+            len(rewrites),
+            len(segments),
+        )
+        rewrites = {}
+        for start in range(0, len(payload), 4):
+            chunk = payload[start:start + 4]
+            try:
+                rewrites.update(_call_rewriter(chunk))
+            except Exception as exc:
+                logger.warning("YouTube rewrite chunk %d failed for %s: %s", start // 4 + 1, project_id, exc)
+    missing_after_chunks = [
+        item
+        for item in payload
+        if int(item.get("index") or 0) not in rewrites
+        or not str(rewrites.get(int(item.get("index") or 0)) or "").strip()
+    ]
+    if len(rewrites) < min_rewrite_count and (len(payload) <= 60 or len(missing_after_chunks) <= 12):
+        logger.warning(
+            "YouTube rewrite for %s still returned only %d/%d entries; retrying segment-by-segment",
+            project_id,
+            len(rewrites),
+            len(segments),
+        )
+        for item in missing_after_chunks:
+            rewrite_index = int(item.get("index") or 0)
+            if rewrite_index in rewrites and rewrites[rewrite_index].strip():
+                continue
+            try:
+                rewrites.update(_call_rewriter([item]))
+            except Exception as exc:
+                logger.warning("YouTube rewrite single index %d failed for %s: %s", rewrite_index, project_id, exc)
+    if len(rewrites) < min_rewrite_count:
+        logger.warning(
+            "Rejected YouTube rewrite for %s: only %d/%d segment rewrites returned",
+            project_id,
+            len(rewrites),
+            len(segments),
+        )
+        return False
+    changed = False
+    updated = []
+    for index, segment in enumerate(segments):
+        line = rewrites.get(index, str(segment.text or "").strip())
+        if line and line != str(segment.text or "").strip():
+            updated.append(segment.model_copy(update={"text": line, "visual_only": False, "suppression_reason": None}))
+            changed = True
+        elif not line and str(segment.text or "").strip():
+            updated.append(segment.model_copy(update={"text": "", "visual_only": True, "suppression_reason": "youtube_rewrite_rejected"}))
+            changed = True
+        else:
+            updated.append(segment)
+    if changed:
+        current_report = _story_quality_report_for_segments(segments, panel_vision_records)
+        candidate_report = _story_quality_report_for_segments(updated, panel_vision_records)
+        if not _youtube_candidate_is_safe(
+            current_report=current_report,
+            candidate_report=candidate_report,
+        ):
+            logger.warning(
+                "Rejected YouTube rewrite for %s after quality check: current=%s candidate=%s",
+                project_id,
+                current_report.get("summary"),
+                candidate_report.get("summary"),
+            )
+            return False
+    if changed:
+        store.save_story_segments(
+            project_id,
+            updated,
+            story_block="\n\n".join(segment.text.strip() for segment in updated if segment.text.strip()),
+        )
+    return changed
 
 
 def run_character_portrait(context: PipelineContext) -> None:
@@ -990,7 +1422,7 @@ def run_script_generation(context: PipelineContext) -> None:
 
     # ── Load cached vision evidence ─────────────────────────────────
     # If a panel_vision_final.json exists from a prior portrait + vision
-    # extraction run, load it now so panel-mode narration gets rich
+    # extraction run, load it now so story script generation gets rich
     # per-panel evidence (action_beat, dialogue, caption, visual_cues).
     # This runs non-fatally — if the file is missing or corrupt, panel
     # mode falls back to OCR-only evidence without crashing.
@@ -1005,7 +1437,7 @@ def run_script_generation(context: PipelineContext) -> None:
                     PanelVisionRecord(**r) for r in vision_list if isinstance(r, dict)
                 ]
                 logger.info(
-                    "Loaded %d panel vision records for %s (panel-mode evidence enrichment)",
+                    "Loaded %d panel vision records for %s (story-script evidence enrichment)",
                     len(panel_vision_records),
                     context.project_id,
                 )
@@ -1108,6 +1540,32 @@ def run_script_generation(context: PipelineContext) -> None:
             context.project_id,
         )
     context.ensure_not_cancelled()
+
+    evidence_snapshot = _script_evidence_snapshot(
+        [panel for panel in updated_panels if bool(getattr(panel, "keep", False))],
+        panel_vision_records,
+    )
+    if (
+        not bool(job.payload.get("allow_sparse_script"))
+        and _should_defer_script_for_vision(evidence_snapshot)
+    ):
+        logger.info(
+            "Deferring script generation for %s until vision evidence is available: %s",
+            context.project_id,
+            evidence_snapshot,
+        )
+        _defer_script_until_vision(
+            context,
+            project_dir=project_dir,
+            panel_vision_records=panel_vision_records,
+            force_refresh=force_refresh,
+            reason=(
+                "Script evidence is too sparse "
+                f"({int(evidence_snapshot['usable_text_count'])}/{int(evidence_snapshot['kept_count'])} kept panels have usable OCR; "
+                f"{int(evidence_snapshot['vision_count'])}/{int(evidence_snapshot['kept_count'])} have panel vision)."
+            ),
+        )
+        return
 
     # ── Step 1b: Character visual profiling ────────────────────────
     # Enrich character_dictionary with appearance descriptions so the
@@ -1250,6 +1708,57 @@ def run_script_generation(context: PipelineContext) -> None:
             )
         except Exception as exc:
             logger.warning("Auto-repair pass failed (non-fatal): %s", exc)
+
+    if not bool(job.payload.get("skip_youtube_rewrite")):
+        context.progress(98, "Rewriting for YouTube recap flow")
+        try:
+            changed = _rewrite_story_segments_for_youtube_once(
+                store=store,
+                project_id=context.project_id,
+                project_title=project.name or "",
+                chapter_summary=story_bundle.chapter_summary,
+                panel_vision_records=panel_vision_records,
+                canonical_characters=canonical_characters,
+                router=router,
+            )
+            if changed:
+                logger.info("Applied YouTube recap rewrite pass for %s", context.project_id)
+        except Exception as exc:
+            logger.warning("YouTube recap rewrite pass failed (non-fatal): %s", exc)
+
+    quality_report = store.load_script_quality_report(context.project_id)
+    if bool(quality_report.get("should_block_tts")) and not bool(job.payload.get("skip_quality_rewrite")):
+        context.progress(99, "Rewriting blocked script beats from panel evidence")
+        try:
+            changed = _rewrite_blocked_story_segments_once(
+                store=store,
+                project_id=context.project_id,
+                project_title=project.name or "",
+                chapter_summary=story_bundle.chapter_summary,
+                panel_vision_records=panel_vision_records,
+                quality_report=quality_report,
+                router=router,
+            )
+            if changed:
+                quality_report = store.load_script_quality_report(context.project_id)
+        except Exception as exc:
+            logger.warning("Blocked-script rewrite pass failed (non-fatal): %s", exc)
+
+    if bool(quality_report.get("should_block_tts")):
+        summary = str(
+            quality_report.get("summary")
+            or "Script quality checks found problems that need review before audio generation."
+        )
+        store.update_stage_state(
+            context.project_id,
+            PipelineStage.NARRATION_GENERATION,
+            StageStatus.NEEDS_REVIEW,
+            progress=0,
+            message=summary,
+        )
+        logger.info("Script generation completed but TTS remains blocked for %s: %s", context.project_id, summary)
+        context.complete("Narration script needs review before audio")
+        return
 
     if stop_after_stage:
         store.update_stage_state(
