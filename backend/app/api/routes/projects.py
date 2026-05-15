@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from PIL import Image
+from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
 from app.pipeline.auto_run import continue_auto_run_pipeline
@@ -818,6 +819,82 @@ def regenerate_panel_vision(project_id: str, payload: PanelRewriteRequest):
     )
 
 
+class YouTubeBundleEditPayload(BaseModel):
+    """Patch payload for `PUT /{project_id}/youtube-bundle`.
+
+    Every field is optional so callers can send just the field they
+    edited (title-only, description-only, thumbnail-pick-only). Missing
+    fields are left untouched.
+    """
+
+    title: str | None = Field(default=None, max_length=120)
+    description: str | None = Field(default=None, max_length=5500)
+    chosen_thumbnail_index: int | None = Field(default=None, ge=0)
+
+
+@router.put("/{project_id}/youtube-bundle")
+def update_youtube_bundle(project_id: str, payload: YouTubeBundleEditPayload):
+    """Persist user edits to the publish bundle without rerunning anything.
+
+    The frontend's "Ready to publish" studio is now editable: the user
+    can rewrite the title, retype the description, or pick a different
+    thumbnail variant. This endpoint writes those edits back to the
+    bundle manifest (and the matching title.txt / description.md files)
+    so a download or a regeneration trigger uses the latest values.
+    """
+    import json as _json
+
+    if not store.project_exists(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_dir = store._project_dir(project_id)
+    bundle_dir = project_dir / "youtube_bundle"
+    manifest_path = bundle_dir / "manifest.json"
+    if not manifest_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Generate a YouTube bundle before editing it.",
+        )
+
+    try:
+        manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Bundle manifest corrupt: {exc}")
+
+    if payload.title is not None:
+        cleaned_title = payload.title.strip()
+        manifest["title"] = cleaned_title
+        (bundle_dir / "title.txt").write_text(cleaned_title + "\n", encoding="utf-8")
+
+    if payload.description is not None:
+        cleaned_desc = payload.description.rstrip() + "\n"
+        manifest["description"] = cleaned_desc.rstrip("\n")
+        (bundle_dir / "description.md").write_text(cleaned_desc, encoding="utf-8")
+
+    if payload.chosen_thumbnail_index is not None:
+        variants = manifest.get("thumbnail_variants") or []
+        if not variants:
+            raise HTTPException(
+                status_code=400,
+                detail="No thumbnail variants are available for this bundle.",
+            )
+        if payload.chosen_thumbnail_index >= len(variants):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Thumbnail index out of range (have {len(variants)} variants).",
+            )
+        chosen = variants[payload.chosen_thumbnail_index]
+        manifest["chosen_thumbnail_index"] = payload.chosen_thumbnail_index
+        # The canonical thumbnail_path always points at the active choice
+        # so the existing download flow ("Drag the thumbnail to YouTube
+        # Studio") keeps working without further plumbing.
+        if isinstance(chosen, dict) and chosen.get("path"):
+            manifest["thumbnail_path"] = chosen["path"]
+
+    manifest_path.write_text(_json.dumps(manifest, indent=2), encoding="utf-8")
+    return get_youtube_bundle(project_id)
+
+
 @router.get("/{project_id}/youtube-bundle")
 def get_youtube_bundle(project_id: str):
     """Return the latest YouTube publish bundle metadata for a project.
@@ -852,6 +929,17 @@ def get_youtube_bundle(project_id: str):
             return None
         return f"/media/projects/{project_id}/{url_path}"
 
+    raw_variants = manifest.get("thumbnail_variants") or []
+    thumbnail_variants = [
+        {
+            "index": idx,
+            "style_id": (v.get("style_id") if isinstance(v, dict) else None) or f"v{idx + 1}",
+            "style_label": (v.get("style_label") if isinstance(v, dict) else None) or f"Variant {idx + 1}",
+            "url": _media(v.get("path") if isinstance(v, dict) else v),
+        }
+        for idx, v in enumerate(raw_variants)
+    ]
+
     return {
         "project_id": project_id,
         "title": manifest.get("title"),
@@ -860,6 +948,8 @@ def get_youtube_bundle(project_id: str):
         "thumbnail_url": _media(manifest.get("thumbnail_path")),
         "thumbnail_source_url": _media(manifest.get("thumbnail_source_path")),
         "thumbnail_source_panel_id": manifest.get("thumbnail_source_panel_id"),
+        "thumbnail_variants": thumbnail_variants,
+        "chosen_thumbnail_index": manifest.get("chosen_thumbnail_index", 0),
         "bundle_dir": manifest.get("bundle_dir"),
     }
 

@@ -505,6 +505,8 @@ class YouTubeBundleService:
         series = manga_title or project_name or "this chapter"
         chapter = chapter_title or "this chapter"
         prompt = f"""You are writing YouTube metadata for a manga / manhwa / comic recap video.
+Your goal: maximize click-through, watch-time, and comment engagement.
+You are a YouTuber with 10 years of experience in the manga-narration space.
 
 Series: {series}
 Chapter focus: {chapter}
@@ -516,11 +518,40 @@ Opening of the recap script:
 Closing of the recap script:
 {closer[:600]}
 
-Produce a JSON object with these exact keys:
+Produce a JSON object with EXACTLY these keys. The description must follow
+this exact structure with EXACTLY these sections in this order, no other
+sections, NO markdown headers, NO bullet points, NO "What happens" list,
+NO chapter timestamps (those are injected separately by the pipeline):
+
+  Line 1: A single-sentence hook ending with a question or stakes statement.
+          This is what shows above the "Show more" fold. Treat it like the
+          first sentence of a YouTube thumbnail. Under 110 characters.
+  (blank line)
+  Lines 3-5: 2-3 sentence story tease. Establish stakes and the central
+             tension. Do NOT spoil the ending. Do NOT recap beat-by-beat.
+  (blank line)
+  Line 7+: One sentence subscribe CTA written in voice, not corporate.
+           Examples: "Hit subscribe so you don't miss the next chapter."
+           or "If you want every new chapter delivered the day it drops,
+           subscribe."
+  (blank line)
+  Final line: Hashtag block, space-separated, 5-7 tags total. Always
+              include #manga #anime #mangarecap. Plus 2-4 series-specific
+              tags derived from the series name (one-word, no spaces).
+
+Constraints:
+  - Plain text only. No markdown headers (#, ##), no bullet lists (-, *),
+    no bold/italic markers (** __), no horizontal rules.
+  - No timestamps (the pipeline injects YouTube chapter timestamps).
+  - No "in this video we cover" / "today we look at" filler openers.
+  - No spoilers about the chapter's final beat in the hook.
+  - Total under 2000 characters.
+
+Output format:
 {{
-  "title": "the single best title, 50-70 chars, hooky, NOT clickbait-cringe, ALL-CAPS forbidden, no spoilers in the title",
-  "variants": ["three alternative titles, same constraints"],
-  "description": "1) a 1-line hook, 2) a 2-3 line synopsis without spoilers, 3) bullet points of key moments, 4) a single CTA line asking viewers to subscribe for more chapter recaps, 5) hashtags (#manga #manhwa #recap + 2-3 series-specific) — total under 4000 characters, markdown is fine"
+  "title": "single best title, 50-70 chars, hook + stakes, no ALL-CAPS shouting, no spoilers, no clickbait emoji",
+  "variants": ["three alternative titles obeying the same constraints. each should test a different angle: question form, character spotlight, stakes statement"],
+  "description": "the full plain-text description as specified above"
 }}
 
 Return ONLY the JSON. No prose before or after."""
@@ -587,20 +618,18 @@ Return ONLY the JSON. No prose before or after."""
             sentences = re.split(r"(?<=[.!?])\s+", opener)
             synopsis = " ".join(sentences[:3])[:600]
 
-        description = textwrap.dedent(f"""
-        # {title}
-
-        {synopsis or 'A recap of the latest chapter, panel by panel.'}
-
-        ## What happens
-        - Big visual moments lifted straight from the panels
-        - Key dialogue beats and character turns
-        - Where the story leaves us by chapter's end
-
-        Subscribe for chapter-by-chapter recaps as soon as they drop.
-
-        #manga #manhwa #recap #anime #panelia
-        """).strip()
+        # Viral fallback: hook line + synopsis tease + CTA + hashtags.
+        # No markdown headers, no per-beat list, no "What happens" section.
+        hook = synopsis.split(". ")[0].strip().rstrip(".") if synopsis else "Every panel of the latest chapter, recapped in story order"
+        if len(hook) > 110:
+            hook = hook[:107].rstrip(", ;-") + "..."
+        tease = synopsis[len(hook):].strip().lstrip(". ") if synopsis else ""
+        if not tease:
+            tease = "Watch the full chapter unfold panel by panel, with every key moment captured in continuous narration."
+        cta = "Subscribe so you don't miss the next chapter the day it drops."
+        series_tag = re.sub(r"[^a-z0-9]", "", (manga_title or project_name or "manga").lower()) or "manga"
+        hashtag_line = f"#manga #anime #mangarecap #{series_tag} #manhwa"
+        description = f"{hook}.\n\n{tease}\n\n{cta}\n\n{hashtag_line}"
         return title, variants, description
 
     # ── Thumbnail composition ────────────────────────────────────────────

@@ -241,10 +241,51 @@ class VideoRenderService:
                 if progress_callback:
                     progress_callback(99, "Applied watermark")
 
+        # Safety net: every encoder path in this file is supposed to pass
+        # `-movflags +faststart`, but if any future remux step forgets to do
+        # so the resulting video opens with `mdat` first and is effectively
+        # unplayable in browsers (they must download the whole file before
+        # they can decode a single frame). Verify by reading the leading
+        # bytes; if `moov` isn't visible early, do a fast `-c copy` remux.
+        self._ensure_faststart(output_path)
+
         self._write_video_manifest(output_dir, output_path, video_config)
         if progress_callback:
             progress_callback(100, "Video render complete")
         return output_path
+
+    def _ensure_faststart(self, video_path: Path) -> None:
+        """Fast check + repair for moov-atom ordering.
+
+        Reads the first 16 KB of the file. A streamable MP4 has its `moov`
+        atom near the start (after `ftyp`). If we instead see `mdat` first
+        with no `moov` in the head, we remux in place to relocate it.
+        """
+        try:
+            with video_path.open("rb") as handle:
+                head = handle.read(16384)
+        except OSError:
+            return
+        if b"moov" in head:
+            return
+        # mdat-first or unknown ordering. Remux to fix.
+        tmp = video_path.with_suffix(video_path.suffix + ".faststart")
+        try:
+            self._run_ffmpeg([
+                self.settings.ffmpeg_binary,
+                "-y",
+                "-i", str(video_path),
+                "-c", "copy",
+                "-movflags", "+faststart",
+                str(tmp),
+            ])
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            return
+        try:
+            tmp.replace(video_path)
+        except OSError:
+            tmp.unlink(missing_ok=True)
 
     def _resolve_video_intro_thumbnail(self, project_dir: Path) -> Path | None:
         path = project_dir / "thumbnails" / "video_intro.jpg"
@@ -1865,8 +1906,19 @@ class VideoRenderService:
     @staticmethod
     @lru_cache(maxsize=8)
     def _load_page_image(path: str) -> Image.Image:
-        with Image.open(path) as image:
-            return image.convert("RGB")
+        # Be tolerant of partially-written cache entries (rare crash mid-write).
+        # If the file is truncated we delete it and re-raise so the caller's
+        # regenerate path takes over — better than aborting the whole render.
+        try:
+            with Image.open(path) as image:
+                return image.convert("RGB")
+        except OSError as err:
+            if "truncated" in str(err).lower():
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
 
     @staticmethod
     @lru_cache(maxsize=4)
@@ -2340,6 +2392,14 @@ class VideoRenderService:
             "copy",
             "-c:a",
             "aac",
+            # CRITICAL: without +faststart, the moov atom lands at the END of
+            # the file. Browsers (and YouTube's web uploader) then have to
+            # download the entire video before playback can start, which
+            # looks like "the video doesn't work" on anything streaming.
+            # This output replaces final_publish.mp4 in the pipeline, so
+            # this single flag is what makes the published file watchable.
+            "-movflags",
+            "+faststart",
             str(output_path),
         ]
         self._run_ffmpeg(command)

@@ -353,26 +353,45 @@ class VideoFinishingService:
 
     @staticmethod
     def _make_marker_label(narration: str, idx: int) -> str:
-        """Short, scrubbable chapter label from a narration line."""
-        # Strip stage directions / quotes; keep the action verb.
-        cleaned = re.sub(r"[\"'`]", "", narration).strip()
+        """Short, scrubbable chapter label from a narration line.
+
+        Target: 2-3 words. Modeled on the manga-narration channels that
+        get the highest CTR on chapter timestamps (Mr Recap, Manga Crash):
+        the labels read like scene names ("Cold open", "The arrival",
+        "Sortie") rather than beat-by-beat descriptions
+        ("Nana questions Doctor about Hachi's progress decision").
+        """
+        cleaned = re.sub(r"[\"'`]", "", narration or "").strip()
         if not cleaned:
             return f"Scene {idx + 1}"
-        words = cleaned.split()
-        # Pick the first 5-7 informative words.
-        skip = {"the", "a", "an", "and", "but", "or", "of", "to", "in", "on"}
+
+        # Take only the first sentence to avoid running into multi-action
+        # descriptions (those produce 7-word labels that read like spam).
+        first_sentence = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)[0]
+        words = first_sentence.split()
+        skip = {
+            "the", "a", "an", "and", "but", "or", "of", "to", "in", "on",
+            "is", "was", "are", "were", "be", "been", "being",
+            "with", "by", "for", "from", "at",
+            "his", "her", "their", "its", "our", "your", "my",
+            "he", "she", "they", "it", "we", "you",
+        }
         meaningful: list[str] = []
         for word in words:
-            if word.lower() in skip and len(meaningful) > 0:
+            clean_word = re.sub(r"[^A-Za-z'\-]", "", word)
+            if not clean_word:
                 continue
-            meaningful.append(word)
-            if len(meaningful) >= 7:
+            if clean_word.lower() in skip and meaningful:
+                continue
+            meaningful.append(clean_word)
+            if len(meaningful) >= 3:
                 break
+        if not meaningful:
+            return f"Scene {idx + 1}"
         label = " ".join(meaningful).rstrip(",.;:!?")
-        # Title-case if it's all-lower (looks better in YouTube chapter UI).
-        if label == label.lower():
-            label = label[0].upper() + label[1:]
-        return label[:60] or f"Scene {idx + 1}"
+        # Title-case for the chapter UI.
+        label = " ".join(w[0].upper() + w[1:] if w else w for w in label.split())
+        return label[:40] or f"Scene {idx + 1}"
 
 
 def format_chapter_markers_for_description(
