@@ -38,7 +38,15 @@ export function EditorShell({
       {/* Main area */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden px-4 pt-4 pb-2 lg:px-6">
         <ProjectTabs projectId={projectId} />
-        <div className="mt-4 flex-1 min-h-0 overflow-hidden">{children}</div>
+        {/*
+          The children wrapper must be a flex column so the page's toolbar
+          (shrink-0), main row (flex-1), and bottom panel strip (shrink-0)
+          can distribute height. Without flex here, `flex-1` on the main
+          row has no anchor, the content grows past the viewport, and the
+          outer `overflow-hidden` blocks any scroll, so the user can't
+          reach the inspector or the bottom panel strip.
+        */}
+        <div className="mt-4 flex min-h-0 flex-1 flex-col overflow-hidden">{children}</div>
       </div>
     </div>
   );

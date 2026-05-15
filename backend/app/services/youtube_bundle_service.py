@@ -208,6 +208,45 @@ class YouTubeBundleService:
             preset=preset,
         )
 
+        # ── 5 thumbnail variants ──────────────────────────────────────
+        # The user picks which one to ship from the publish studio UI.
+        # Variant 0 is the canonical pick (same as thumbnail.png above);
+        # variants 1-4 are progressively-lower-scoring candidates with a
+        # 5%-of-chapter spread so they aren't five frames of the same
+        # shot. Each gets its own thumbnail PNG so the carousel can show
+        # them inline.
+        thumbnail_variants: list[dict[str, str]] = []
+        top_panels = self._select_top_thumbnail_panels(panels_json, script_lines, n=5)
+        # Ensure the canonical pick is variant 0 even if scoring jitter
+        # would have placed it elsewhere.
+        canonical_id = str(thumb_panel.get("id"))
+        top_panels = [p for p in top_panels if str(p.get("id")) != canonical_id]
+        top_panels.insert(0, thumb_panel)
+        top_panels = top_panels[:5]
+
+        variants_dir = bundle_dir / "variants"
+        variants_dir.mkdir(parents=True, exist_ok=True)
+        variant_labels = ["Top pick", "Climax shot", "Character beat", "Stakes shot", "Quiet beat"]
+        for v_idx, v_panel in enumerate(top_panels):
+            try:
+                v_source = self._copy_thumbnail_source(
+                    project_dir, v_panel, variants_dir, suffix=f"_v{v_idx}",
+                )
+                v_path = self._compose_thumbnail(
+                    base_image=v_source,
+                    title=title,
+                    output_path=variants_dir / f"variant_{v_idx}.png",
+                    preset=preset,
+                )
+                thumbnail_variants.append({
+                    "style_id": f"v{v_idx}",
+                    "style_label": variant_labels[v_idx] if v_idx < len(variant_labels) else f"Variant {v_idx + 1}",
+                    "path": str(v_path.relative_to(project_dir)),
+                    "source_panel_id": str(v_panel.get("id") or ""),
+                })
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Thumbnail variant %d failed: %s", v_idx, exc)
+
         # ── Finishing render: cold-open + outro stitched onto main video
         publish_video_path: Path | None = None
         if (
@@ -268,6 +307,8 @@ class YouTubeBundleService:
             "thumbnail_source_panel_id": thumb_panel.get("id"),
             "thumbnail_source_path": str(thumb_source_path.relative_to(project_dir)),
             "thumbnail_path": str((bundle_dir / "thumbnail.png").relative_to(project_dir)),
+            "thumbnail_variants": thumbnail_variants,
+            "chosen_thumbnail_index": 0,
             "bundle_dir": str(bundle_dir.relative_to(project_dir)),
             "chapter_markers": [
                 {"timecode_seconds": m.timecode_seconds, "label": m.label}
@@ -411,11 +452,108 @@ class YouTubeBundleService:
         scores.sort(key=lambda s: s[0], reverse=True)
         return scores[0][1]
 
+    def _select_top_thumbnail_panels(
+        self,
+        panels_json: list[dict[str, Any]],
+        script_lines: list[str],
+        n: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Return the top-N candidate panels for thumbnail variants.
+
+        Same scoring as `_select_thumbnail_panel` but returns the top N
+        instead of just the winner. We also enforce a "spread" rule so
+        the variants aren't five near-adjacent panels of the same shot.
+        Picked panels must be at least 5% of the chapter apart by index.
+        """
+        # We have to recompute the scored list because the single-pick
+        # helper doesn't expose it. Pulling that out into a helper would
+        # mean a wider refactor; copying the scoring loop is intentionally
+        # contained.
+        kept = [p for p in panels_json if p.get("keep")]
+        if not kept:
+            return []
+
+        def _is_safe(panel: dict[str, Any]) -> bool:
+            if panel.get("content_blur"):
+                return False
+            rating = (panel.get("content_rating") or "").lower()
+            if rating in {"borderline", "explicit"}:
+                return False
+            for flag in panel.get("review_flags") or []:
+                if isinstance(flag, str) and flag.startswith("nsfw_"):
+                    return False
+            return True
+
+        safe_kept = [p for p in kept if _is_safe(p)] or kept
+        kept_sorted = sorted(safe_kept, key=lambda p: (int(p.get("page", 0)), int(p.get("panel", 0))))
+        total = len(kept_sorted)
+        if total == 0:
+            return []
+        skip_first = max(1, int(total * 0.08))
+
+        narration_by_id: dict[str, str] = {}
+        for i, panel in enumerate(kept_sorted):
+            narr = (panel.get("narration") or "").strip()
+            if not narr and i < len(script_lines):
+                narr = (script_lines[i] or "").strip()
+            narration_by_id[str(panel.get("id"))] = narr
+
+        scored: list[tuple[float, int, dict[str, Any]]] = []
+        for idx, panel in enumerate(kept_sorted):
+            if idx < skip_first:
+                continue
+            score = 0.0
+            narr = narration_by_id.get(str(panel.get("id")), "").lower()
+            for keyword in _THUMBNAIL_KEYWORDS:
+                if keyword in narr:
+                    score += 4.0
+                    break
+            try:
+                w = float(panel.get("width") or 0)
+                h = float(panel.get("height") or 0)
+                score += min((w * h) / 4_000_000.0 * 2.0, 3.0)
+            except (TypeError, ValueError):
+                pass
+            t = idx / max(1, total - 1)
+            score += max(0.0, 1.0 - abs(t - 0.72) * 3.0) * 2.0
+            if narr and len(narr.split()) >= 12:
+                score += 1.0
+            scored.append((score, idx, panel))
+
+        if not scored:
+            return [kept_sorted[len(kept_sorted) // 2]]
+
+        # Greedy pick: take highest score, then enforce a spread so the
+        # next pick is at least `min_gap` panels away in the chapter order.
+        scored.sort(key=lambda s: s[0], reverse=True)
+        min_gap = max(1, int(total * 0.05))
+        picked: list[tuple[int, dict[str, Any]]] = []
+        for _, idx, panel in scored:
+            if any(abs(idx - prev_idx) < min_gap for prev_idx, _ in picked):
+                continue
+            picked.append((idx, panel))
+            if len(picked) >= n:
+                break
+
+        # If the spread rule starved us (very short chapter), top up from
+        # the next-best scores without the gap constraint.
+        if len(picked) < n:
+            seen_ids = {id(p) for _, p in picked}
+            for _, idx, panel in scored:
+                if id(panel) in seen_ids:
+                    continue
+                picked.append((idx, panel))
+                if len(picked) >= n:
+                    break
+
+        return [panel for _, panel in picked]
+
     def _copy_thumbnail_source(
         self,
         project_dir: Path,
         panel: dict[str, Any],
         bundle_dir: Path,
+        suffix: str = "",
     ) -> Path:
         order = int(panel.get("order", 0))
         panel_path = project_dir / "panels" / f"panel_{order:03d}.png"
@@ -429,7 +567,7 @@ class YouTubeBundleService:
             raise FileNotFoundError(
                 f"Could not find panel image at {panel_path} for thumbnail."
             )
-        dest = bundle_dir / "thumbnail_source.png"
+        dest = bundle_dir / f"thumbnail_source{suffix}.png"
         # Re-save as PNG with the panel's pristine pixels.
         with Image.open(panel_path) as im:
             im.convert("RGB").save(dest, "PNG", optimize=True)

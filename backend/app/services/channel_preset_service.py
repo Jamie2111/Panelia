@@ -75,6 +75,14 @@ class ChannelPreset:
     title_card_enabled: bool = True
     title_card_duration_seconds: float = 2.5
 
+    # Frame-zero thumbnail card. When enabled, a short still of the
+    # chosen YouTube thumbnail is rendered at t=0 of the final video.
+    # The user can then pause on their phone and screenshot it for
+    # upload to YouTube Studio's thumbnail picker (so the saved
+    # thumbnail.png never has to leave the device).
+    thumbnail_card_enabled: bool = False
+    thumbnail_card_duration_seconds: float = 1.5
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 

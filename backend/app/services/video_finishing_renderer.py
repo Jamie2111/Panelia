@@ -26,6 +26,7 @@ Implementation notes:
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import subprocess
@@ -129,6 +130,26 @@ class VideoFinishingRenderer:
             stale.unlink(missing_ok=True)
 
         parts: list[Path] = []
+
+        # ── Frame-zero thumbnail card (optional) ─────────────────────
+        # Prepends a brief still card of the chosen thumbnail variant at
+        # t=0 of the final video. This lets the user pause the video on
+        # their phone the first time they open it, screenshot the
+        # thumbnail, and upload it directly to YouTube Studio without
+        # needing to wrangle a separate file. Toggled via the channel
+        # preset; off by default to keep legacy projects untouched.
+        if getattr(preset, "thumbnail_card_enabled", False):
+            try:
+                thumb_card_path = self._render_thumbnail_card(
+                    project_dir=project_dir,
+                    work_dir=work_dir,
+                    preset=preset,
+                    video_config=video_config,
+                )
+                if thumb_card_path is not None:
+                    parts.append(thumb_card_path)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Thumbnail-card render failed: %s", exc)
 
         # ── Cold open (optional) ─────────────────────────────────────
         if preset.cold_open_enabled and cold_open_plan is not None:
@@ -283,6 +304,87 @@ class VideoFinishingRenderer:
         return cold_video if cold_video.exists() else None
 
     # ── Title card render ────────────────────────────────────────────────
+
+    def _render_thumbnail_card(
+        self,
+        *,
+        project_dir: Path,
+        work_dir: Path,
+        preset: ChannelPreset,
+        video_config: VideoConfig,
+    ) -> Path | None:
+        """Render a short still card of the chosen YouTube thumbnail.
+
+        The user can then pause the published video on their phone at
+        t=0, screenshot the frame, and upload it directly to YouTube
+        Studio as the channel thumbnail. Useful when uploading from a
+        device that can't easily handle the standalone PNG.
+
+        Source is `youtube_bundle/thumbnail.png` (which the publish
+        studio keeps in sync with whichever variant the user picked).
+        Falls back to the canonical thumbnail if no bundle exists yet.
+        """
+        # Find the active thumbnail. Prefer the bundle's chosen variant.
+        bundle_dir = project_dir / "youtube_bundle"
+        manifest_path = bundle_dir / "manifest.json"
+        thumb_path: Path | None = None
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                variants = manifest.get("thumbnail_variants") or []
+                chosen_idx = int(manifest.get("chosen_thumbnail_index") or 0)
+                if 0 <= chosen_idx < len(variants):
+                    rel = variants[chosen_idx].get("path") if isinstance(variants[chosen_idx], dict) else None
+                    if rel:
+                        candidate = project_dir / rel
+                        if candidate.exists():
+                            thumb_path = candidate
+                if thumb_path is None and manifest.get("thumbnail_path"):
+                    candidate = project_dir / manifest["thumbnail_path"]
+                    if candidate.exists():
+                        thumb_path = candidate
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Reading thumbnail manifest failed: %s", exc)
+
+        if thumb_path is None:
+            return None
+
+        width = video_config.width
+        height = video_config.height
+        duration = max(0.5, float(getattr(preset, "thumbnail_card_duration_seconds", 1.5)))
+        clip_path = work_dir / "thumbnail_card.mp4"
+        ffmpeg = self.settings.ffmpeg_binary
+
+        # Subtle zoom-in (1.0 to 1.04 over the duration) to make the still
+        # feel alive. Center-crop after scale-with-pad covers the canvas
+        # without distortion.
+        zoom_expr = f"min(zoom+0.0006,1.04)"
+        command = [
+            ffmpeg,
+            "-y",
+            "-loop", "1",
+            "-framerate", "30",
+            "-t", str(duration),
+            "-i", str(thumb_path),
+            "-f", "lavfi",
+            "-i", f"anullsrc=channel_layout=stereo:sample_rate=48000:duration={duration}",
+            "-vf",
+            (
+                f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+                f"crop={width}:{height},"
+                f"zoompan=z='{zoom_expr}':d=1:s={width}x{height}:fps=30"
+            ),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-r", "30",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",
+            "-movflags", "+faststart",
+            str(clip_path),
+        ]
+        self._run_ffmpeg(command)
+        return clip_path if clip_path.exists() else None
 
     def _render_title_card(
         self,

@@ -157,12 +157,44 @@ export const api = {
       thumbnail_url: string | null;
       thumbnail_source_url: string | null;
       thumbnail_source_panel_id: string | null;
+      thumbnail_variants?: Array<{
+        index: number;
+        style_id: string;
+        style_label: string;
+        url: string | null;
+      }>;
+      chosen_thumbnail_index?: number;
       bundle_dir: string | null;
     }>(`/projects/${projectId}/youtube-bundle`).catch((err) => {
       // Bundle hasn't been generated yet → return null so the UI can show
       // a "preparing" placeholder instead of a hard error.
       if (err instanceof Error && /404/.test(err.message)) return null;
       throw err;
+    }),
+  updateYouTubeBundle: (
+    projectId: string,
+    patch: { title?: string; description?: string; chosen_thumbnail_index?: number },
+  ) =>
+    request<{
+      project_id: string;
+      title: string | null;
+      title_variants: string[];
+      description: string | null;
+      thumbnail_url: string | null;
+      thumbnail_source_url: string | null;
+      thumbnail_source_panel_id: string | null;
+      thumbnail_variants?: Array<{
+        index: number;
+        style_id: string;
+        style_label: string;
+        url: string | null;
+      }>;
+      chosen_thumbnail_index?: number;
+      bundle_dir: string | null;
+    }>(`/projects/${projectId}/youtube-bundle`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
     }),
   uploadVideoThumbnail: async (projectId: string, file: File) => {
     const form = new FormData();
