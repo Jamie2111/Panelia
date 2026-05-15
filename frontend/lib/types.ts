@@ -56,6 +56,12 @@ export interface PanelBox {
     | "aligned_to_visual_order"
     | string
     | null;
+  // ── YouTube content-safety classification ───────────────────────────
+  // Set by the vision narrator. Drives per-panel blur / skip in the
+  // video renderer and excludes panels from the thumbnail picker.
+  content_rating?: "safe" | "borderline" | "explicit" | null;
+  content_rating_reason?: string | null;
+  content_blur?: boolean;
   review_flags: string[];
 }
 
@@ -117,6 +123,11 @@ export type NarrationMode = "panel";
 export interface PipelineConfig {
   auto_run_end_to_end: boolean;
   narration_mode: NarrationMode;
+  /** Vision narrator path selector. New projects default to "vision". */
+  script_pipeline_version?: "legacy" | "vNext" | "vision" | string;
+  /** When true, the vision narrator classifies each panel and the
+   *  renderer blurs/skips panels that would demonetize a YouTube video. */
+  content_safety_enabled?: boolean;
 }
 
 export interface ChapterMetadata {

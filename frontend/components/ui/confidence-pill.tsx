@@ -19,7 +19,14 @@
 import * as React from "react";
 import type { PanelBox } from "@/lib/types";
 
-export type Confidence = "ok" | "warn" | "fail" | "manual" | "unknown";
+export type Confidence =
+  | "ok"
+  | "warn"
+  | "fail"
+  | "manual"
+  | "nsfw-blur"
+  | "nsfw-skip"
+  | "unknown";
 
 interface Resolved {
   level: Confidence;
@@ -30,13 +37,49 @@ interface Resolved {
 
 /**
  * Resolve a panel into its confidence state using narration_source +
- * review_flags. This is the single source of truth — every UI surface
- * that displays panel confidence should go through here.
+ * review_flags + content_rating. This is the single source of truth —
+ * every UI surface that displays panel confidence should go through here.
  */
-export function resolveConfidence(panel: Pick<PanelBox, "narration_source" | "review_flags" | "narration">): Resolved {
+export function resolveConfidence(
+  panel: Pick<
+    PanelBox,
+    | "narration_source"
+    | "review_flags"
+    | "narration"
+    | "content_rating"
+    | "content_rating_reason"
+    | "content_blur"
+    | "keep"
+  >,
+): Resolved {
   const flags = panel.review_flags ?? [];
   const source = (panel.narration_source ?? "") as string;
   const visionFlag = flags.find((f) => typeof f === "string" && f.startsWith("vision_"));
+  const nsfwFlag = flags.find((f) => typeof f === "string" && f.startsWith("nsfw_"));
+
+  // ── Content safety wins over narration status: a flagged panel needs
+  // visible feedback even if the narration succeeded. Borderline = blur,
+  // explicit = skipped from final video.
+  if (panel.content_rating === "explicit" || (nsfwFlag && nsfwFlag.includes("explicit"))) {
+    return {
+      level: "nsfw-skip",
+      label: panel.keep === false ? "Skipped (explicit)" : "Forced (will blur)",
+      reason:
+        (panel.content_rating_reason as string | null | undefined) ||
+        nsfwFlag ||
+        "Flagged as explicit — excluded from the final video.",
+    };
+  }
+  if (panel.content_rating === "borderline" || (nsfwFlag && nsfwFlag.includes("borderline"))) {
+    return {
+      level: "nsfw-blur",
+      label: "Will blur",
+      reason:
+        (panel.content_rating_reason as string | null | undefined) ||
+        nsfwFlag ||
+        "Flagged as borderline — the final video will blur this panel.",
+    };
+  }
 
   if (source === "vision_failed" || (visionFlag && visionFlag.includes("failed"))) {
     return {
@@ -92,7 +135,16 @@ export function resolveConfidence(panel: Pick<PanelBox, "narration_source" | "re
 }
 
 interface ConfidencePillProps {
-  panel: Pick<PanelBox, "narration_source" | "review_flags" | "narration">;
+  panel: Pick<
+    PanelBox,
+    | "narration_source"
+    | "review_flags"
+    | "narration"
+    | "content_rating"
+    | "content_rating_reason"
+    | "content_blur"
+    | "keep"
+  >;
   className?: string;
   /** Hide the dot ornament — useful in dense lists. */
   compact?: boolean;
@@ -102,11 +154,16 @@ export function ConfidencePill({ panel, className, compact }: ConfidencePillProp
   const c = resolveConfidence(panel);
   const pillClass = (() => {
     switch (c.level) {
-      case "ok":      return "p-pill p-pill-ok";
-      case "warn":    return "p-pill p-pill-warn";
-      case "fail":    return "p-pill p-pill-fail";
-      case "manual":  return "p-pill p-pill-info";
-      default:        return "p-pill";
+      case "ok":         return "p-pill p-pill-ok";
+      case "warn":       return "p-pill p-pill-warn";
+      case "fail":       return "p-pill p-pill-fail";
+      case "manual":     return "p-pill p-pill-info";
+      // Both NSFW states render rose — the action ("Will blur" vs "Skipped")
+      // is in the label text, the color signals "this is monetization
+      // risk territory" regardless.
+      case "nsfw-blur":
+      case "nsfw-skip":  return "p-pill p-pill-fail";
+      default:           return "p-pill";
     }
   })();
   return (
@@ -130,14 +187,25 @@ export function ConfidencePill({ panel, className, compact }: ConfidencePillProp
  * Combine with `.p-glass`.
  */
 export function confidenceEdge(
-  panel: Pick<PanelBox, "narration_source" | "review_flags" | "narration">,
+  panel: Pick<
+    PanelBox,
+    | "narration_source"
+    | "review_flags"
+    | "narration"
+    | "content_rating"
+    | "content_rating_reason"
+    | "content_blur"
+    | "keep"
+  >,
 ): string {
   const c = resolveConfidence(panel);
   switch (c.level) {
-    case "ok":     return "p-edge-ok";
-    case "warn":   return "p-edge-warn";
-    case "fail":   return "p-edge-fail";
-    case "manual": return "p-edge-info";
-    default:       return "";
+    case "ok":         return "p-edge-ok";
+    case "warn":       return "p-edge-warn";
+    case "fail":       return "p-edge-fail";
+    case "manual":     return "p-edge-info";
+    case "nsfw-blur":
+    case "nsfw-skip":  return "p-edge-fail";
+    default:           return "";
   }
 }

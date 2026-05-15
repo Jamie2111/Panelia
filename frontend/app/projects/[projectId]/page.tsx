@@ -385,6 +385,44 @@ export default function ProjectOverviewPage() {
                 </span>
               </label>
 
+              {/* Content-safety toggle */}
+              <label className="mt-3 flex cursor-pointer items-start justify-between gap-4 rounded-2xl border border-white/[0.06] bg-white/[0.03] px-4 py-3 transition-colors duration-fast hover:bg-white/[0.05]">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">YouTube content safety</p>
+                  <p className="text-xs text-mutedForeground leading-relaxed">
+                    Auto-blur partial nudity / intimate scenes and skip explicit panels so the rendered video stays monetizable. Turn off for adult-only channels.
+                  </p>
+                </div>
+                <span className="flex items-center gap-2 pt-1">
+                  {pipelineToggleBusy ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin text-accent" />
+                  ) : null}
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border border-white/[0.18] bg-transparent accent-[rgb(var(--p-accent))]"
+                    checked={Boolean(
+                      (project.pipeline_config as any).content_safety_enabled ?? true,
+                    )}
+                    disabled={pipelineToggleBusy}
+                    onChange={async (event) => {
+                      setPipelineToggleBusy(true);
+                      try {
+                        setProject(
+                          await api.updateProjectSettings(project.id, {
+                            pipeline_config: {
+                              ...project.pipeline_config,
+                              content_safety_enabled: event.target.checked,
+                            } as any,
+                          })
+                        );
+                      } finally {
+                        setPipelineToggleBusy(false);
+                      }
+                    }}
+                  />
+                </span>
+              </label>
+
               <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 {[
                   { label: "Detect panels", stage: "panel_detection" as const },

@@ -200,8 +200,29 @@ class YouTubeBundleService:
         kept = [p for p in panels_json if p.get("keep")]
         if not kept:
             return None
+        # YouTube punishes the WHOLE video for a single demonetizing
+        # thumbnail. Strictly exclude any panel flagged nsfw_* (borderline
+        # or explicit) or marked for blur — the thumbnail is the one
+        # surface that must be safe.
+        def _is_safe_for_thumbnail(panel: dict[str, Any]) -> bool:
+            if panel.get("content_blur"):
+                return False
+            rating = (panel.get("content_rating") or "").lower()
+            if rating in {"borderline", "explicit"}:
+                return False
+            for flag in panel.get("review_flags") or []:
+                if isinstance(flag, str) and flag.startswith("nsfw_"):
+                    return False
+            return True
+
+        safe_kept = [p for p in kept if _is_safe_for_thumbnail(p)]
+        # If somehow every kept panel is flagged (very unusual), fall back
+        # to the full kept list rather than crashing — the panel will still
+        # render through the blurred crop pipeline.
+        if not safe_kept:
+            safe_kept = kept
         kept_sorted = sorted(
-            kept,
+            safe_kept,
             key=lambda p: (int(p.get("page", 0)), int(p.get("panel", 0))),
         )
 

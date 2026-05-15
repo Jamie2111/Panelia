@@ -65,8 +65,38 @@ export function TimelineInspector({
             #{clip.order} · source: {clip.source || "—"}
           </p>
         </div>
-        {clip.needsReview && <span className="p-pill p-pill-warn">Needs review</span>}
+        <div className="flex flex-col items-end gap-1">
+          {clip.needsReview && <span className="p-pill p-pill-warn">Needs review</span>}
+          {clip.contentRating === "borderline" && (
+            <span
+              className="p-pill p-pill-fail"
+              title={clip.contentRatingReason || "Flagged as borderline"}
+            >
+              Will blur
+            </span>
+          )}
+          {clip.contentRating === "explicit" && (
+            <span
+              className="p-pill p-pill-fail"
+              title={clip.contentRatingReason || "Flagged as explicit"}
+            >
+              Skipped (explicit)
+            </span>
+          )}
+        </div>
       </header>
+
+      {/* Content-safety note */}
+      {clip.contentRating && clip.contentRating !== "safe" && clip.contentRatingReason && (
+        <div className="rounded-2xl border border-[rgb(var(--p-fail)/0.25)] bg-[rgb(var(--p-fail)/0.08)] px-3 py-2">
+          <p className="text-[10px] uppercase tracking-wider text-[rgb(var(--p-fail))]">
+            YouTube safety
+          </p>
+          <p className="mt-1 text-xs text-[rgb(var(--p-text))] leading-relaxed">
+            {clip.contentRatingReason}
+          </p>
+        </div>
+      )}
 
       {/* Thumbnail */}
       {clip.thumbnailUrl && (

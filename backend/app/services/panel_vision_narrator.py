@@ -71,6 +71,12 @@ class NarrationResult:
     status: str  # "ok" | "needs_regenerate" | "failed"
     reason: str = ""
     duration_seconds: float = 0.0
+    # ── Content-safety classification ────────────────────────────────────
+    # `rating` is one of "safe" | "borderline" | "explicit". Populated by
+    # the vision call when content_safety_enabled is True on the project.
+    # The downstream writer translates this into panel.keep / content_blur.
+    rating: str = "safe"
+    rating_reason: str = ""
 
 
 @dataclass
@@ -86,27 +92,59 @@ class NarrationBatch:
 # This is the ONLY prompt in the whole pipeline. If output quality is bad,
 # we tune this — we don't add another service.
 _NARRATION_PROMPT = """You are narrating a single panel from a sequential-art chapter
-(manga, manhwa, webtoon, or comic) for a YouTube recap video.
+(manga, manhwa, webtoon, or comic) for a YouTube recap video. You are ALSO
+classifying the panel for YouTube monetization safety.
 
-You can see the panel image. Look at it carefully and describe what is happening
-in ONE narration line (15-30 words). The narration will be read aloud over this
-exact panel as the viewer sees it.
+You can see the panel image. Look at it carefully.
 
-WHAT MAKES A GOOD NARRATION:
-• Describes the SPECIFIC visible action, expression, or moment in this panel
-• Uses character names ONLY when you can identify them with confidence
-• Flows naturally from the previous narration (continuity, not repetition)
-• Conveys emotion when the panel shows emotion (don't be dry)
-• Past tense or present tense — match the established voice
+PART 1 — NARRATION (15-30 words):
+Describe the SPECIFIC visible action, expression, or moment in this panel.
+The narration will be read aloud over this exact panel.
 
-WHAT TO AVOID:
+GOOD narrations:
+• Specific to what's visible in THIS panel
+• Use character names only when you can identify them with confidence
+• Flow naturally from the previous narration (continuity, not repetition)
+• Convey emotion when the panel shows emotion
+• Past or present tense — match the established voice
+
+AVOID:
 • Generic filler ("a powerful moment unfolds", "tension rises")
 • Repeating the previous narration's wording with a tense change
 • Inventing details not visible in the panel
 • Describing what's about to happen — describe THIS panel only
-• Headers, numbering, quotes around your answer
 
-CONTINUITY CONTEXT (the last few narrations leading into this panel):
+PART 2 — CONTENT RATING (one of: "safe", "borderline", "explicit"):
+Classify by YouTube's Advertiser-Friendly Content Guidelines.
+
+"safe" — render normally. Includes:
+  • Kissing, romantic embraces, hand-holding, hugging
+  • Characters in swimwear or normal revealing clothes
+  • Combat, fighting, action sequences, impact effects
+  • Mild blood (a punch drawing blood, a scratch, a bruise)
+  • Crying, anger, surprise, fear, any facial expression
+  • Suggestive poses where characters are fully clothed
+  → Be GENEROUS with "safe". Most romance and action belongs here.
+
+"borderline" — blur in the final video. Includes:
+  • Partial / implied nudity (silhouettes, covered nudity, side- or
+    back-nudity NOT shown graphically)
+  • Bed / intimate scenes past kissing (touching, undressing partially)
+    where anatomy isn't directly visible
+  • Heavier blood spray, deep wounds shown, broken bones, bruises
+    covering most of a body
+  • Stylized horror imagery that isn't viscera
+
+"explicit" — skip the panel entirely. Includes:
+  • Visible genitalia, exposed nipples, fully nude bodies shown directly
+  • On-panel depiction of sex acts
+  • Decapitations, dismemberment, exposed viscera, graphic body horror
+
+If the panel is borderline OR explicit, give a short factual reason
+(under 12 words) explaining what triggered the rating, so the user can
+review.
+
+CONTINUITY CONTEXT (last few narrations leading into this panel):
 {context}
 
 THIS PANEL:
@@ -114,8 +152,10 @@ THIS PANEL:
 • Detected text in the panel (may be incomplete or noisy): {ocr_text}
 {character_hint_line}
 
-Write the single narration line for THIS panel. No prefix, no quotes,
-no explanation — just the narration."""
+Return ONLY a JSON object on a single line with these exact keys:
+{{"narration": "...", "rating": "safe|borderline|explicit", "rating_reason": "..."}}
+No prose before or after. No code fences. No quotes around your answer
+beyond what JSON requires."""
 
 
 class PanelVisionNarrator:
@@ -321,7 +361,7 @@ class PanelVisionNarrator:
                         timeout=_PER_PANEL_TIMEOUT,
                     )
 
-                cleaned = self._post_process(response_text)
+                cleaned, rating, rating_reason = self._parse_response(response_text)
                 if not cleaned or len(cleaned.split()) < 4:
                     return NarrationResult(
                         panel_id=panel.panel_id,
@@ -329,6 +369,8 @@ class PanelVisionNarrator:
                         status="needs_regenerate",
                         reason="Output too short or empty",
                         duration_seconds=time.perf_counter() - start,
+                        rating=rating,
+                        rating_reason=rating_reason,
                     )
 
                 return NarrationResult(
@@ -336,6 +378,8 @@ class PanelVisionNarrator:
                     narration=cleaned,
                     status="ok",
                     duration_seconds=time.perf_counter() - start,
+                    rating=rating,
+                    rating_reason=rating_reason,
                 )
 
             except asyncio.TimeoutError:
@@ -457,6 +501,57 @@ class PanelVisionNarrator:
         text = text.lstrip("•·-* ").rstrip()
         return text
 
+    @classmethod
+    def _parse_response(cls, raw: str) -> tuple[str, str, str]:
+        """Parse the Gemini response into (narration, rating, rating_reason).
+
+        The new prompt asks for a JSON object on a single line. We handle:
+          1. Well-formed JSON (the happy path)
+          2. JSON wrapped in code fences (```json ... ```)
+          3. JSON with extra prose around it (extract via regex)
+          4. Bare narration string (legacy / fallback model)
+
+        On any parse failure we default to {rating: "safe"} so we never
+        block a panel because of malformed output — the user can always
+        re-classify by re-running the panel.
+        """
+        import json as _json
+        import re as _re
+
+        text = (raw or "").strip()
+        if not text:
+            return "", "safe", ""
+
+        # Strip code fences if present.
+        if text.startswith("```"):
+            text = _re.sub(r"^```[a-zA-Z]*\s*", "", text)
+            text = _re.sub(r"```\s*$", "", text).strip()
+
+        # Try to locate the JSON object even if surrounded by prose.
+        json_text: str | None = None
+        if text.startswith("{"):
+            json_text = text
+        else:
+            m = _re.search(r"\{[\s\S]*\}", text)
+            if m:
+                json_text = m.group(0)
+
+        if json_text is not None:
+            try:
+                data = _json.loads(json_text)
+                if isinstance(data, dict):
+                    narration = cls._post_process(str(data.get("narration") or ""))
+                    rating_raw = str(data.get("rating") or "safe").strip().lower()
+                    if rating_raw not in {"safe", "borderline", "explicit"}:
+                        rating_raw = "safe"
+                    reason = str(data.get("rating_reason") or "").strip()
+                    return narration, rating_raw, reason
+            except (_json.JSONDecodeError, ValueError):
+                pass
+
+        # Fallback: treat whole response as a bare narration line.
+        return cls._post_process(text), "safe", ""
+
 
 # ── Convenience: load panels from project_store, narrate, persist ─────────
 
@@ -487,17 +582,49 @@ def write_narration_outputs(
         panel["narration_source"] = (
             "panel_vision_narrator" if r.status == "ok" else f"vision_{r.status}"
         )
-        # Drop any stale vision_* flags from previous runs before appending
-        # the current run's flag (if any). This is what keeps the UI's
-        # "needs review" state in lockstep with the latest result.
+        # Drop any stale vision_* / nsfw_* flags from previous runs before
+        # re-applying — that keeps the UI in lockstep with the latest pass.
         flags = [
             f for f in (panel.get("review_flags") or [])
-            if not str(f).startswith("vision_")
+            if not (str(f).startswith("vision_") or str(f).startswith("nsfw_"))
         ]
         if r.status != "ok":
             flag = f"vision_{r.status}: {r.reason}"
             if flag not in flags:
                 flags.append(flag)
+
+        # ── Apply content-safety rating ──────────────────────────────────
+        # The vision call classified this panel. Translate that into the
+        # downstream effects:
+        #   safe       → unchanged
+        #   borderline → kept + content_blur=True + flag
+        #   explicit   → keep=False + auto_skipped + content_blur=True
+        #                (so a manual force-keep still ships blurred)
+        rating = (r.rating or "safe").lower()
+        reason = (r.rating_reason or "").strip()
+        panel["content_rating"] = rating
+        panel["content_rating_reason"] = reason or None
+
+        if rating == "borderline":
+            panel["content_blur"] = True
+            tag = f"nsfw_borderline: {reason}" if reason else "nsfw_borderline"
+            if tag not in flags:
+                flags.append(tag)
+        elif rating == "explicit":
+            panel["content_blur"] = True  # safety-net for force-keep
+            # Only auto-skip if the user hasn't manually kept the panel.
+            if not bool(panel.get("manual_keep")):
+                panel["keep"] = False
+                panel["auto_skipped"] = True
+                panel["skip_reason"] = "nsfw_explicit"
+            tag = f"nsfw_explicit: {reason}" if reason else "nsfw_explicit"
+            if tag not in flags:
+                flags.append(tag)
+        else:
+            # safe — clear any prior nsfw blur unless the user manually set it.
+            if not bool(panel.get("manual_keep")):
+                panel["content_blur"] = False
+
         panel["review_flags"] = flags
 
     write_json(project_dir / "panels.json", panels_json)

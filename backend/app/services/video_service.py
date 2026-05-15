@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable
+from typing import Callable, ClassVar
 
 import numpy as np
 import soundfile as sf
@@ -211,6 +211,8 @@ class VideoRenderService:
             progress_callback(95, "Preparing final video export")
 
         output_path = output_dir / f"{output_name}.{video_config.output_format.value}"
+        if progress_callback:
+            progress_callback(96, "Muxing narration and picture")
         self._mux_video_with_audio(final_video_source, final_narration_source, output_path)
         if progress_callback:
             progress_callback(97, "Muxed narration and picture")
@@ -218,6 +220,8 @@ class VideoRenderService:
         final_path = output_path
         if music_config.enabled and music_config.track_name:
             final_path = output_dir / f"{output_name}_music.{video_config.output_format.value}"
+            if progress_callback:
+                progress_callback(98, "Mixing background music")
             self._mix_background_music(output_path, final_path, music_config)
             output_path.unlink(missing_ok=True)
             output_path = final_path
@@ -229,6 +233,8 @@ class VideoRenderService:
             wm_image = Path(wm.image_path) if Path(wm.image_path).is_absolute() else project_dir / wm.image_path
             if wm_image.exists():
                 wm_out = output_dir / f"{output_name}_wm.{video_config.output_format.value}"
+                if progress_callback:
+                    progress_callback(99, "Applying watermark")
                 self._apply_watermark(output_path, wm_image, wm_out, video_config, wm)
                 output_path.unlink(missing_ok=True)
                 output_path = wm_out
@@ -1024,6 +1030,11 @@ class VideoRenderService:
             asset = panel_assets.get(segment.panel_id)
             if asset is None:
                 raise FileNotFoundError(f"Missing panel asset for {segment.panel_id}")
+            if progress_callback:
+                progress_callback(
+                    8 + ((index - 1) / total_clips) * 72,
+                    f"Preparing panel clip {index} of {total_clips}",
+                )
             segment_audio = audio_event_by_script.get(segment.script_id or "")
             clip_path = self._render_panel_clip(
                 asset,
@@ -1896,11 +1907,32 @@ class VideoRenderService:
         canvas.save(output_path)
         return output_path
 
+    # ── Content-safety blur intensities ──────────────────────────────────
+    # "borderline" panels (partial nudity, intimate scenes) get a moderate
+    # blur — the silhouette is still readable so the story beat works.
+    # "explicit" panels are usually skipped via panel.keep=False; this
+    # heavier sigma is the fallback for when the user manually force-keeps
+    # an explicit panel so nothing demonetizing ever ships unintentionally.
+    NSFW_BLUR_SIGMA: ClassVar[int] = 28
+    NSFW_BLUR_SIGMA_EXPLICIT: ClassVar[int] = 56
+
     def _prepare_panel_crop(self, project_dir: Path, panel: PanelBox, cache_dir: Path) -> Path:
         panel = self.store.sanitize_panel_box(project_dir.name, panel)
         page_path = project_dir / "pages" / f"{panel.page:04d}.png"
         if not page_path.exists():
             raise FileNotFoundError(f"Missing page image for panel {panel.id} on page {panel.page}")
+
+        # Compute blur sigma from the panel's content-safety state. We bake
+        # this into the cache digest so changing the rating invalidates the
+        # cached crop and the new render picks up the blur.
+        blur_sigma = 0
+        if getattr(panel, "content_blur", False):
+            rating = (getattr(panel, "content_rating", None) or "").lower()
+            blur_sigma = (
+                self.NSFW_BLUR_SIGMA_EXPLICIT
+                if rating == "explicit"
+                else self.NSFW_BLUR_SIGMA
+            )
 
         digest = hashlib.sha1(
             json.dumps(
@@ -1913,7 +1945,8 @@ class VideoRenderService:
                         "width": int(panel.width),
                         "height": int(panel.height),
                     },
-                    "strategy": "panel_crop_v2",
+                    "strategy": "panel_crop_v3",
+                    "blur_sigma": blur_sigma,
                 },
                 sort_keys=True,
             ).encode("utf-8")
@@ -1931,6 +1964,10 @@ class VideoRenderService:
             if right <= left or bottom <= top:
                 left, top, right, bottom = 0, 0, page.width, page.height
             crop = page.crop((left, top, right, bottom))
+            if blur_sigma > 0:
+                # Apply Gaussian blur in PIL so every downstream surface
+                # (card, thumbnail, etc.) gets the blurred version for free.
+                crop = crop.filter(ImageFilter.GaussianBlur(radius=blur_sigma))
             crop.save(output_path)
         return output_path
 

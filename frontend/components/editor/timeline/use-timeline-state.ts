@@ -37,6 +37,11 @@ export interface TimelineClip {
   thumbnailUrl: string | null;
   needsReview: boolean;
   source: string;         // narration_source raw value
+  // Content-safety bridge so the inspector can show "this clip will blur
+  // in the final video" without having to look the panel up again.
+  contentRating: "safe" | "borderline" | "explicit" | null;
+  contentRatingReason: string | null;
+  contentBlur: boolean;
 }
 
 export interface TimelineState {
@@ -84,6 +89,7 @@ function buildClipsFromPanels(panels: PanelBox[], thumbBaseUrl?: string): Timeli
     cursor += duration;
     const flags = p.review_flags ?? [];
     const visionFlag = flags.find((f) => typeof f === "string" && f.startsWith("vision_"));
+    const nsfwFlag = flags.find((f) => typeof f === "string" && f.startsWith("nsfw_"));
     return {
       id: p.id,
       order: p.order,
@@ -94,8 +100,15 @@ function buildClipsFromPanels(panels: PanelBox[], thumbBaseUrl?: string): Timeli
       narration: p.narration ?? "",
       zoomHint: p.zoom_hint ?? null,
       thumbnailUrl: thumbBaseUrl ? `${thumbBaseUrl}/panel_${String(p.order).padStart(3, "0")}.png` : null,
-      needsReview: Boolean(visionFlag) || !p.narration || !p.narration.trim(),
+      needsReview:
+        Boolean(visionFlag) ||
+        Boolean(nsfwFlag) ||
+        !p.narration ||
+        !p.narration.trim(),
       source: p.narration_source ?? "",
+      contentRating: (p.content_rating ?? null) as TimelineClip["contentRating"],
+      contentRatingReason: p.content_rating_reason ?? null,
+      contentBlur: Boolean(p.content_blur),
     };
   });
 }

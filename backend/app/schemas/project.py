@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -112,6 +112,12 @@ class PanelBox(BaseModel):
     visual_caption: str | None = None
     narration_source: str | None = None
     review_flags: list[str] = Field(default_factory=list)
+    # ── Content safety (YouTube monetization gating) ─────────────────────
+    # Populated by the vision narrator when content_safety_enabled. Drives
+    # the per-panel blur / skip logic in video_service.py.
+    content_rating: Literal["safe", "borderline", "explicit"] | None = None
+    content_rating_reason: str | None = None
+    content_blur: bool = False
     logical_panel_id: str | None = None
     multi_page_panel: bool = False
     spans_pages: list[int] = Field(default_factory=list)
@@ -208,6 +214,10 @@ class PipelineConfig(BaseModel):
     # Default for new projects: the vision-grounded narration pipeline.
     # Existing projects keep whatever value is already saved in metadata.
     script_pipeline_version: str = "vision"
+    # When True (default), the vision narrator classifies every panel
+    # and the renderer blurs / skips panels that would demonetize a
+    # YouTube video. Turn off for adult-only channels or testing.
+    content_safety_enabled: bool = True
 
     @field_validator("narration_mode", mode="before")
     @classmethod
