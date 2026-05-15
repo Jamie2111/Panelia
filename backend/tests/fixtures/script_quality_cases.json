@@ -1,0 +1,185 @@
+[
+  {
+    "name": "intentionally_bad_script",
+    "expected_max_score": 59,
+    "expected_blocked": true,
+    "panel_count": 12,
+    "segments": [
+      {
+        "id": "bad_003",
+        "order": 1,
+        "scene_id": 3,
+        "panel_start": 9,
+        "panel_end": 10,
+        "panel_ids": ["p9"],
+        "text": "He looks around."
+      },
+      {
+        "id": "bad_001",
+        "order": 2,
+        "scene_id": 1,
+        "panel_start": 1,
+        "panel_end": 2,
+        "panel_ids": ["p1"],
+        "text": "GWIRRR GARRR CODE CODc 016 Uenn AND CYYC 7 azlp You will Soon be TRANS PORTED Back to GARDEN."
+      },
+      {
+        "id": "bad_002",
+        "order": 3,
+        "scene_id": 2,
+        "panel_start": 3,
+        "panel_end": 4,
+        "panel_ids": ["p3"],
+        "text": "Other says break it before John reacts."
+      }
+    ]
+  },
+  {
+    "name": "acceptable_script",
+    "expected_min_score": 75,
+    "expected_blocked": false,
+    "panel_count": 10,
+    "segments": [
+      {
+        "id": "ok_001",
+        "order": 1,
+        "scene_id": 1,
+        "panel_start": 1,
+        "panel_end": 4,
+        "panel_ids": ["p1", "p2", "p3", "p4"],
+        "text": "John tries to keep his head down as the classroom pressure turns toward him. The joke stops feeling harmless once the teacher starts looking for a student to punish."
+      },
+      {
+        "id": "ok_002",
+        "order": 2,
+        "scene_id": 2,
+        "panel_start": 5,
+        "panel_end": 8,
+        "panel_ids": ["p5", "p6", "p7", "p8"],
+        "text": "Outside, the hallway confrontation follows him and makes silence feel dangerous. John sees that ignoring the fight only gives the bully more control."
+      },
+      {
+        "id": "ok_003",
+        "order": 3,
+        "scene_id": 3,
+        "panel_start": 9,
+        "panel_end": 10,
+        "panel_ids": ["p9", "p10"],
+        "text": "When John finally steps in, the room understands that the quiet student is done swallowing every insult."
+      }
+    ]
+  },
+  {
+    "name": "high_quality_recap_script",
+    "expected_min_score": 90,
+    "expected_blocked": false,
+    "panel_count": 12,
+    "segments": [
+      {
+        "id": "good_001",
+        "order": 1,
+        "scene_id": 1,
+        "panel_start": 1,
+        "panel_end": 4,
+        "panel_ids": ["p1", "p2", "p3", "p4"],
+        "text": "John enters class hoping to stay invisible, but the lesson turns into a trap once the teacher asks for a volunteer. The other students laugh because they know a wrong answer can become public humiliation, and John has spent too long surviving by never drawing attention."
+      },
+      {
+        "id": "good_002",
+        "order": 2,
+        "scene_id": 2,
+        "panel_start": 5,
+        "panel_end": 8,
+        "panel_ids": ["p5", "p6", "p7", "p8"],
+        "text": "That strategy breaks when the bullying spills into the hallway. A weaker student gets cornered, and John realizes that staying silent would mean accepting the same cruelty that has followed him all day."
+      },
+      {
+        "id": "good_003",
+        "order": 3,
+        "scene_id": 3,
+        "panel_start": 9,
+        "panel_end": 12,
+        "panel_ids": ["p9", "p10", "p11", "p12"],
+        "text": "John finally moves, and the bully loses control of the room in a single exchange. The strike is not clean or triumphant, but it changes the balance because John stops treating his own fear as an excuse to let another student be crushed."
+      }
+    ]
+  },
+  {
+    "name": "hidden_caption_sentences",
+    "expected_max_score": 89,
+    "expected_blocked": true,
+    "panel_count": 10,
+    "segments": [
+      {
+        "id": "caption_001",
+        "order": 1,
+        "scene_id": 1,
+        "panel_start": 1,
+        "panel_end": 5,
+        "panel_ids": ["p1", "p2", "p3", "p4", "p5"],
+        "text": "John tries to get through class without making himself a target. The teacher stands at the board. The students look at John. The hallway stays quiet."
+      },
+      {
+        "id": "caption_002",
+        "order": 2,
+        "scene_id": 2,
+        "panel_start": 6,
+        "panel_end": 10,
+        "panel_ids": ["p6", "p7", "p8", "p9", "p10"],
+        "text": "The fight breaks that fragile quiet. John walks into the hallway. The bully smiles. The crowd watches."
+      }
+    ]
+  },
+  {
+    "name": "vague_pronoun_starts",
+    "expected_max_score": 89,
+    "expected_blocked": true,
+    "panel_count": 10,
+    "segments": [
+      {
+        "id": "pronoun_001",
+        "order": 1,
+        "scene_id": 1,
+        "panel_start": 1,
+        "panel_end": 5,
+        "panel_ids": ["p1", "p2", "p3", "p4", "p5"],
+        "text": "He tries to avoid attention while the classroom turns against him. She watches the joke land, and they wait for someone else to become the target."
+      },
+      {
+        "id": "pronoun_002",
+        "order": 2,
+        "scene_id": 2,
+        "panel_start": 6,
+        "panel_end": 10,
+        "panel_ids": ["p6", "p7", "p8", "p9", "p10"],
+        "text": "They follow the noise into the hallway as the fight gets worse. He steps forward only after the bullying becomes impossible to ignore."
+      }
+    ]
+  },
+  {
+    "name": "essay_filler_phrases",
+    "expected_max_score": 89,
+    "expected_blocked": true,
+    "panel_count": 10,
+    "segments": [
+      {
+        "id": "filler_001",
+        "order": 1,
+        "scene_id": 1,
+        "panel_start": 1,
+        "panel_end": 5,
+        "panel_ids": ["p1", "p2", "p3", "p4", "p5"],
+        "text": "The danger of their situation was palpable, amplifying his internal conflict. This realization underscores the gravity of the circumstances and the emotional turmoil John is experiencing."
+      },
+      {
+        "id": "filler_002",
+        "order": 2,
+        "scene_id": 2,
+        "panel_start": 6,
+        "panel_end": 10,
+        "panel_ids": ["p6", "p7", "p8", "p9", "p10"],
+        "text": "This moment highlights the complex nature of his struggle and raises questions about what the future may hold for everyone involved."
+      }
+    ]
+  }
+]

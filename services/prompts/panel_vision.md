@@ -12,7 +12,10 @@ Return strict JSON only in this format:
       "emotion": "single-word emotion tag",
       "scene_change": false,
       "confidence": 0.0,
-      "character_names": ["optional", "names"]
+      "character_names": ["only visually present canonical names"],
+      "character_roles": {
+        "canonical name or stable label": ["visible_present | speaker | addressee | mentioned_absent | flashback_present | memory_present | imagined_present | uncertain"]
+      }
     }
   ]
 }
@@ -32,6 +35,10 @@ Rules:
 - Use canonical names from the roster when supported by the art and context.
 - Reuse the exact same canonical roster name every time a recurring character reappears.
 - If a roster alias matches the person you see, map it back to the canonical roster name instead of inventing a fresh placeholder.
+- A name in dialogue is only a reference. Do not add it to `character_names` unless the person is visually present in this panel or strongly established by adjacent visual continuity.
+- Track role precisely in `character_roles`: visible people are `visible_present`; identified speakers are `speaker`; names only talked about are `mentioned_absent`; past-memory figures are `flashback_present` or `memory_present`.
+- Examples: if the text says "Papa is watching" but Papa is not drawn, set Papa to `mentioned_absent`, not `visible_present`. If someone yells "John!" and John is not clearly shown, set John to `addressee` or `mentioned_absent`, not speaker/visible.
+- Do not invent character names from OCR fragments, SFX, commands, insults, UI labels, or partial dialogue.
 - Use `speaker = "narrator"` for captions / narration boxes without a visible character speaker.
 - Use `speaker = "unknown"` if there is spoken text but the speaker cannot be identified confidently.
 - `scene_change` should be true only when this panel clearly starts a new location, time, or conversation beat.

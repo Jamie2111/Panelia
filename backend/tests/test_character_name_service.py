@@ -64,6 +64,32 @@ class CharacterNameServiceTests(unittest.TestCase):
         self.assertNotIn("hose", character_dictionary)
         self.assertNotIn("a shaft", character_dictionary)
 
+    def test_rejects_dialogue_fragments_and_other_as_names(self) -> None:
+        service = CharacterNameService()
+        metadata = ChapterMetadata()
+
+        character_dictionary, _protagonist_name = service.discover(
+            [
+                "Break it!",
+                "Other",
+                "Run!",
+                "Stop!",
+                "Idiot!",
+                "John!",
+                "My name is John.",
+                "This is John.",
+                "I am John.",
+            ],
+            metadata,
+        )
+
+        self.assertEqual(character_dictionary.get("john"), "John")
+        self.assertNotIn("break it", character_dictionary)
+        self.assertNotIn("other", character_dictionary)
+        self.assertNotIn("run", character_dictionary)
+        self.assertNotIn("stop", character_dictionary)
+        self.assertNotIn("idiot", character_dictionary)
+
     def test_extracts_canon_names_from_comix_synopsis(self) -> None:
         service = CharacterNameService()
         metadata = ChapterMetadata(

@@ -63,14 +63,14 @@ Example of fixed (good):
 STYLE EXAMPLES
 
 Bad:
-  - "Zero Two expresses her desire to swim in the ocean."
+  - "Character A expresses her desire to reach the sea."
 Good:
-  - "Zero Two keeps talking about finding an ocean big enough to swim in."
+  - "Character A keeps talking about finding a sea wide enough to sail across."
 
 Bad:
-  - "Ichigo questions Hiro about missing the enlistment ceremony briefing."
+  - "Character B questions Character C about missing the mission briefing."
 Good:
-  - "Ichigo corners Hiro over the briefing he skipped."
+  - "Character B corners Character C over the briefing she skipped."
 
 Bad:
   - "A loud swoosh is heard."

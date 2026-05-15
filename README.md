@@ -122,6 +122,18 @@ before starting the Next.js dev server.
 5. Kokoro turns each narration line into a panel WAV file under `project/audio/`.
 6. FFmpeg encodes a page-aware camera timeline with eased pans, tall-panel travel, synced narration, optional music, and saves the final file in `project/video/`.
 
+## Script quality gate
+
+Story-mode narration is blocked from TTS/export when the saved script is clean prose but not a complete chronological recap. The quality gate checks prose issues, OCR leakage, unsupported names, vague pronoun starts, filler/meta phrases, caption-like narration, repeated lines, panel-order regressions, duplicated panel ranges, underexplained large panel ranges, and panel coverage. A story script cannot score above 90 if it covers less than 90% of meaningful kept panels, skips a large consecutive panel range, repeats overlapping panel ranges, compresses a large panel span into a thin paragraph, or tells source panels out of order.
+
+Run a quality report for any project with:
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python backend/tools/script_quality_report.py <project-id> --samples 10
+```
+
+The report prints the overall score, whether TTS is blocked, counts for pronoun starts, filler/meta phrases, caption-like sentences, duplicate lines, OCR garbage leaks, unsupported names, panel-order regressions, the worst five flagged lines with reasons, and sampled panel ranges for manual spot-checking. `panel_coverage.coverage_percent` shows how much of the kept source is represented in narration; `skipped_panel_ranges`, `largest_skipped_panel_gap`, `duplicated_panel_ranges`, `underexplained_panel_ranges`, and `out_of_order_panel_references` explain continuity failures. If `tts_blocked` is true, fix the transcript/story artifact before generating audio or video.
+
 ## Example Gemini prompt
 
 See [services/prompts/gemini-narration.md](/Users/jamieobala/Documents/Panelia/services/prompts/gemini-narration.md).

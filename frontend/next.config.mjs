@@ -1,5 +1,5 @@
 /** @type {import('next').NextConfig} */
-const backendTarget = process.env.PANELIA_BACKEND_PROXY_TARGET ?? "http://127.0.0.1:8000";
+const backendTarget = process.env.PANELIA_BACKEND_PROXY_TARGET ?? "http://127.0.0.1:8010";
 
 const nextConfig = {
   typedRoutes: true,

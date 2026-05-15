@@ -341,6 +341,38 @@ class PanelDetectorHeuristicTests(unittest.TestCase):
         self.assertFalse(title.get("auto_skipped", False))
         self.assertTrue(title.get("keep", True))
 
+    def test_refine_boxes_applies_five_percent_forced_inset(self) -> None:
+        adapter = PanelDetectorAdapter()
+        self.assertEqual(adapter.detector_version, "2.5.7")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            page_path = Path(tmpdir) / "page.png"
+            image = np.full((400, 400, 3), 255, dtype=np.uint8)
+            image[80:280, 60:260] = (110, 160, 190)
+            Image.fromarray(image).save(page_path)
+
+            panel_boxes = [
+                {
+                    "id": "panel",
+                    "page": 1,
+                    "panel": 1,
+                    "x": 60,
+                    "y": 80,
+                    "width": 200,
+                    "height": 200,
+                    "order": 1,
+                    "keep": True,
+                    "auto_skipped": False,
+                }
+            ]
+
+            refined = adapter._refine_boxes(panel_boxes, [page_path])
+
+        panel = refined[0]
+        self.assertEqual(panel["x"], 70)
+        self.assertEqual(panel["y"], 90)
+        self.assertEqual(panel["width"], 180)
+        self.assertEqual(panel["height"], 180)
+
     def test_split_composite_panels_splits_squarish_staggered_art_boxes(self) -> None:
         detector = PanelDetector(reading_order=ReadingOrder.WESTERN)
         image = np.full((1200, 900, 3), 255, dtype=np.uint8)

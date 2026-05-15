@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from app.core.config import get_settings
-from app.schemas.project import ChapterMetadata, PanelBox, SourceType, StorySegment
+from app.schemas.project import ChapterMetadata, JobStatus, PanelBox, PipelineStage, SourceType, StorySegment
 from app.services.llm_router import RoutedResult
 from app.services.project_store import ProjectStore
 from app.services.story_segment_repair_service import StorySegmentRepairService
@@ -72,6 +72,76 @@ class StorySegmentPersistenceTests(unittest.TestCase):
         ])
         report = self.store.load_script_quality_report(project.id)
         self.assertEqual(report.get("analysis_mode"), "story_segments_v1")
+
+    def test_script_display_metadata_marks_previous_script_stale_during_new_run(self) -> None:
+        project = self.store.create_project("Stale Script Metadata Test", SourceType.IMAGES)
+        self.store.save_panels(
+            project.id,
+            [PanelBox(id="p1", page=1, panel=1, x=0, y=0, width=100, height=100, order=1, keep=True)],
+        )
+        completed_job = self.store.create_job(project.id, PipelineStage.SCRIPT_GENERATION)
+        self.store.update_job(project.id, completed_job.id, status=JobStatus.COMPLETED.value)
+        self.store.save_story_segments(
+            project.id,
+            [
+                StorySegment(
+                    id="scene_001",
+                    order=1,
+                    text="Previous script line.",
+                    panel_ids=["p1"],
+                    panel_start=1,
+                    panel_end=1,
+                    scene_id=1,
+                    title="Previous",
+                    representative_panel_id="p1",
+                )
+            ],
+            story_block="Previous script line.",
+            job_id=completed_job.id,
+        )
+        running_job = self.store.create_job(project.id, PipelineStage.SCRIPT_GENERATION)
+        self.store.update_job(project.id, running_job.id, status=JobStatus.RUNNING.value)
+
+        detail = self.store.get_project(project.id)
+        metadata = detail.script_display_metadata
+
+        self.assertTrue(metadata["is_displaying_stale_script"])
+        self.assertEqual(metadata["latest_job_id"], running_job.id)
+        self.assertEqual(metadata["latest_job_status"], JobStatus.RUNNING.value)
+        self.assertEqual(metadata["stale_reason"], "script_generation_in_progress")
+
+    def test_script_display_metadata_selects_newest_completed_script(self) -> None:
+        project = self.store.create_project("Newest Script Metadata Test", SourceType.IMAGES)
+        self.store.save_panels(
+            project.id,
+            [PanelBox(id="p1", page=1, panel=1, x=0, y=0, width=100, height=100, order=1, keep=True)],
+        )
+        job = self.store.create_job(project.id, PipelineStage.SCRIPT_GENERATION)
+        self.store.update_job(project.id, job.id, status=JobStatus.COMPLETED.value)
+        self.store.save_story_segments(
+            project.id,
+            [
+                StorySegment(
+                    id="scene_001",
+                    order=1,
+                    text="Newest script line.",
+                    panel_ids=["p1"],
+                    panel_start=1,
+                    panel_end=1,
+                    scene_id=1,
+                    title="Newest",
+                    representative_panel_id="p1",
+                )
+            ],
+            story_block="Newest script line.",
+            job_id=job.id,
+        )
+
+        metadata = self.store.get_project(project.id).script_display_metadata
+
+        self.assertFalse(metadata["is_displaying_stale_script"])
+        self.assertEqual(metadata["displayed_script_job_id"], job.id)
+        self.assertEqual(metadata["latest_completed_script_job_id"], job.id)
 
     def test_invalidate_script_outputs_clears_stale_story_segments_after_panel_edits(self) -> None:
         project = self.store.create_project("Panel Edit Invalidates Story Segments", SourceType.IMAGES)
@@ -201,7 +271,10 @@ class StorySegmentPersistenceTests(unittest.TestCase):
 
         loaded_segments = self.store.load_story_segments(project.id)
         self.assertEqual(result.repaired_segments, 1)
-        self.assertEqual(loaded_segments[0].text, "Hiro and Zero Two press deeper into the forest.")
+        self.assertEqual(
+            loaded_segments[0].text,
+            "Hiro and Zero Two press deeper into the forest because stopping would leave them exposed. The retreat forces them to rely on each other.",
+        )
         self.assertFalse(loaded_segments[0].visual_only)
         project_dir = self.store._project_dir(project.id)
         self.assertTrue((project_dir / "output" / "story_segments.json").exists())
@@ -216,6 +289,18 @@ class _FakeStoryDraftRouter:
         self.last_scenes = scenes
         self.last_context = context
         self.last_scene_image_paths = scene_image_paths
+        def _draft_text(scene, index: int) -> str:
+            combined = str(scene.get("combined_text") or "").strip().rstrip(".")
+            character_names = [str(name).strip() for name in scene.get("character_names", []) or [] if str(name).strip()]
+            if "Zero Two" in combined and "shore" in combined:
+                return "Hiro meets Zero Two by the ruined shore, and the encounter immediately unsettles him. Her presence changes what he can do next."
+            if "wakes up" in combined:
+                return "Hiro wakes up and heads outside. That rush pulls him closer to the source of the alarm."
+            if combined and len(character_names) >= 2:
+                return f"{combined}. Their exchange immediately changes what comes next."
+            if combined:
+                return f"{combined}. That rush pushes him toward the next confrontation."
+            return f"Scene {index} moves forward with a sharper conflict. The beat keeps the same thread active."
         return RoutedResult(
             provider="gemini",
             model="fake",
@@ -225,7 +310,7 @@ class _FakeStoryDraftRouter:
                         "segment_id": str(scene.get("segment_id") or f"segment_{index:03d}"),
                         "scene_id": int(scene.get("scene_id") or 0),
                         "title": f"Scene {index}",
-                        "text": f"Drafted {scene.get('segment_id') or f'segment_{index:03d}'}.",
+                        "text": _draft_text(scene, index),
                     }
                     for index, scene in enumerate(scenes, start=1)
                 ]
@@ -244,7 +329,7 @@ class _FakeStoryDraftRouter:
                     {
                         "index": int(segment.get("index") or 0),
                         "line": str(segment.get("current_line") or "").strip()
-                        or "Hiro and Zero Two press deeper into the forest."
+                        or "Hiro and Zero Two press deeper into the forest because stopping would leave them exposed. The retreat forces them to rely on each other."
                     }
                     for segment in segments
                 ]
@@ -262,6 +347,20 @@ class _FakeStoryDraftRouter:
                 rewrites.append({"index": index, "line": "Hiro struggles to make sense of the chaos around him."})
             else:
                 rewrites.append({"index": index, "line": current})
+        return RoutedResult(
+            provider="gemini",
+            model="fake",
+            payload={"rewrites": rewrites},
+        )
+
+    async def expand_story_segment_details(self, lines, context, *, provider=None):
+        self.last_expansion_lines = lines
+        self.last_expansion_context = context
+        rewrites = []
+        for item in lines:
+            index = int(item.get("index") or 0)
+            current = str(item.get("current_line") or "").strip()
+            rewrites.append({"index": index, "line": current})
         return RoutedResult(
             provider="gemini",
             model="fake",
@@ -333,7 +432,13 @@ class StoryScriptServiceTests(unittest.TestCase):
             protagonist_name="Hiro",
         )
 
-        self.assertEqual(lines, ["Drafted scene_001_beat_01.", "Drafted scene_001_beat_02."])
+        self.assertEqual(
+            lines,
+            [
+                "Hiro wakes up and heads outside. That rush pulls him closer to the source of the alarm.",
+                "Hiro meets Zero Two by the ruined shore, and the encounter immediately unsettles him. Her presence changes what he can do next.",
+            ],
+        )
         self.assertEqual(router.last_context.get("chapter_metadata", {}).get("manga_title"), "DARLING in the FRANXX")
         self.assertEqual([scene.get("segment_id") for scene in router.last_scenes], ["scene_001_beat_01", "scene_001_beat_02"])
 
@@ -416,6 +521,81 @@ class StoryScriptServiceTests(unittest.TestCase):
         self.assertEqual(sanitized.get("scene_memory", [])[0].get("characters"), ["Hiro", "Zero Two"])
         self.assertNotIn("Nance", sanitized.get("scene_memory", [])[0].get("state", ""))
 
+    def test_short_segments_are_preserved_without_synthetic_padding(self) -> None:
+        service = StoryScriptService(router=_FakeStoryDraftRouter())
+        payloads = [
+            {"text": "Hiro meets Zero Two.", "visual_only": False, "suppression_reason": None},
+            {"text": "The danger closes in.", "visual_only": False, "suppression_reason": None},
+        ]
+
+        padded = service._pad_remaining_short_segments(payloads)
+
+        self.assertEqual(
+            padded,
+            [
+                {"text": "Hiro meets Zero Two.", "visual_only": False, "suppression_reason": None},
+                {"text": "The danger closes in.", "visual_only": False, "suppression_reason": None},
+            ],
+        )
+
+    def test_blank_fill_keeps_unsupported_beats_silent(self) -> None:
+        service = StoryScriptService(router=_FakeStoryDraftRouter())
+        payloads = [{"text": "", "visual_only": True, "suppression_reason": "weak_evidence"}]
+        units = [
+            {
+                "scene_id": 9,
+                "panel_ids": ["p1"],
+                "character_names": [],
+                "combined_text": "",
+                "vision_action_beat": "",
+                "vision_caption": "",
+                "vision_dialogue": "",
+                "visual_cues": "",
+                "salvaged_evidence": "",
+                "scene_summary": "",
+            }
+        ]
+
+        filled = service._fill_blank_story_payloads(
+            payloads,
+            units,
+            protagonist_name=None,
+            grounding=None,
+            story_bible={},
+            style_vocab=None,
+        )
+
+        self.assertEqual(filled[0].get("text"), "")
+        self.assertTrue(filled[0].get("visual_only"))
+
+    def test_story_segments_are_renumbered_in_reading_order(self) -> None:
+        service = StoryScriptService(router=_FakeStoryDraftRouter())
+        story_units = [
+            {
+                "segment_id": "scene_010_beat_01",
+                "scene_id": 10,
+                "sequence_in_scene": 1,
+                "scene_unit_count": 1,
+                "panel_start": 10,
+                "panel_end": 10,
+                "panel_ids": ["p10"],
+            },
+            {
+                "segment_id": "scene_003_beat_01",
+                "scene_id": 3,
+                "sequence_in_scene": 1,
+                "scene_unit_count": 1,
+                "panel_start": 3,
+                "panel_end": 3,
+                "panel_ids": ["p3"],
+            },
+        ]
+
+        segments = service._build_story_segments(story_units, ["First line.", "Second line."])
+
+        self.assertEqual([segment.scene_id for segment in segments], [1, 2])
+        self.assertEqual([segment.order for segment in segments], [1, 2])
+
     def test_noisy_scene_seed_text_is_suppressed_before_story_generation(self) -> None:
         service = StoryScriptService(router=_FakeStoryDraftRouter())
         grounding = build_name_grounding(
@@ -437,7 +617,7 @@ class StoryScriptServiceTests(unittest.TestCase):
         self.assertEqual(sanitized[0].get("combined_text"), "")
         self.assertEqual(sanitized[0].get("character_names"), ["Hiro"])
 
-    def test_expand_story_units_splits_rich_scene_into_micro_beats(self) -> None:
+    def test_expand_story_units_prefers_broader_story_beats(self) -> None:
         service = StoryScriptService(router=_FakeStoryDraftRouter())
         grounding = build_name_grounding(
             {"manga_title": "DARLING in the FRANXX", "series_cast_hints": ["Hiro", "Zero Two"]},
@@ -469,12 +649,50 @@ class StoryScriptServiceTests(unittest.TestCase):
             grounding,
         )
 
-        self.assertGreaterEqual(len(story_units), 2)
+        self.assertLessEqual(len(story_units), 2)
+        self.assertGreaterEqual(len(story_units), 1)
         self.assertEqual(story_units[0].get("segment_id"), "scene_001_beat_01")
-        self.assertEqual(story_units[1].get("scene_id"), 1)
+        self.assertEqual(story_units[0].get("scene_id"), 1)
         covered_panel_ids = [panel_id for unit in story_units for panel_id in unit.get("panel_ids", []) or []]
         self.assertEqual(covered_panel_ids, ["p1", "p2", "p3", "p4"])
         self.assertEqual(story_units[-1].get("panel_end"), 4)
+
+    def test_story_unit_coalescing_keeps_major_character_boundary(self) -> None:
+        service = StoryScriptService(router=_FakeStoryDraftRouter())
+        merged = service._coalesce_story_units_for_recap(
+            [
+                {
+                    "scene_id": 1,
+                    "panel_start": 1,
+                    "panel_end": 2,
+                    "panel_ids": ["p1", "p2"],
+                    "character_names": ["Hiro"],
+                    "combined_text": "Hiro struggles to understand the briefing.",
+                    "vision_dialogue": "Hiro questions why the order changed.",
+                    "vision_caption": "",
+                    "vision_action_beat": "",
+                    "visual_cues": "",
+                    "ocr_fallback_text": "",
+                    "scene_summary": "Hiro is pulled into a tense briefing.",
+                },
+                {
+                    "scene_id": 2,
+                    "panel_start": 3,
+                    "panel_end": 4,
+                    "panel_ids": ["p3", "p4"],
+                    "character_names": ["Zero Two"],
+                    "combined_text": "Zero Two appears alone and pushes the conflict in a new direction.",
+                    "vision_dialogue": "Zero Two claims Hiro for herself.",
+                    "vision_caption": "",
+                    "vision_action_beat": "",
+                    "visual_cues": "",
+                    "ocr_fallback_text": "",
+                    "scene_summary": "Zero Two interrupts and changes the emotional balance.",
+                },
+            ]
+        )
+
+        self.assertEqual(len(merged), 2)
 
     def test_sentence_fragment_is_treated_as_low_quality(self) -> None:
         service = StoryScriptService(router=_FakeStoryDraftRouter())
@@ -561,6 +779,62 @@ class StoryScriptServiceTests(unittest.TestCase):
         self.assertTrue(service._line_needs_style_refinement("She reassured him, telling him to relax and trust his partner."))
         self.assertFalse(service._line_needs_style_refinement("Hiro rushes toward the shoreline as Zero Two follows."))
 
+    def test_delivery_cohesion_merges_overlapping_duplicate_beats(self) -> None:
+        service = StoryScriptService(router=_FakeStoryDraftRouter())
+        segments = [
+            StorySegment(
+                id="scene_001",
+                order=1,
+                scene_id=1,
+                panel_start=10,
+                panel_end=14,
+                panel_ids=["p10", "p11"],
+                text="Zero Two arrives to confront Hiro during the ceremony. Her entrance disrupts the group.",
+            ),
+            StorySegment(
+                id="scene_002",
+                order=2,
+                scene_id=2,
+                panel_start=12,
+                panel_end=16,
+                panel_ids=["p12", "p13"],
+                text="Zero Two arrives to confront Hiro at the ceremony, and everyone reacts to the disruption.",
+            ),
+        ]
+
+        cohered = service._cohere_story_segments_for_delivery(segments)
+
+        self.assertEqual(len(cohered), 1)
+        self.assertEqual(cohered[0].panel_start, 10)
+        self.assertEqual(cohered[0].panel_end, 16)
+        self.assertEqual(cohered[0].scene_id, 1)
+        self.assertIn("Zero Two arrives", cohered[0].text)
+
+    def test_delivery_cohesion_quarantines_ocr_recap_noise(self) -> None:
+        service = StoryScriptService(router=_FakeStoryDraftRouter())
+        segments = [
+            StorySegment(
+                id="scene_001",
+                order=1,
+                scene_id=1,
+                panel_start=1,
+                panel_end=2,
+                panel_ids=["p1"],
+                text=(
+                    "Talk arolit They use This to EXTRACT MAGMA ENERGY, STROUS Trod pipe. "
+                    "A recap begins, setting the stage by summarizing previous events. "
+                    "The pilots spread out as the battle line forms around them."
+                ),
+            )
+        ]
+
+        cohered = service._cohere_story_segments_for_delivery(segments)
+
+        self.assertEqual(len(cohered), 1)
+        self.assertNotIn("Talk arolit", cohered[0].text)
+        self.assertNotIn("A recap begins", cohered[0].text)
+        self.assertEqual(cohered[0].text, "The pilots spread out as the battle line forms around them.")
+
     def test_scene_id_for_missing_group_avoids_collapsing_distant_gaps(self) -> None:
         service = StoryScriptService(router=_FakeStoryDraftRouter())
         raw_units = [
@@ -622,7 +896,10 @@ class StoryScriptServiceTests(unittest.TestCase):
             scene_visual_paths={"scene_001_beat_01": [Path("/tmp/fake-scene.jpg")]},
         )
 
-        self.assertEqual(recovered[0].get("text"), "Hiro and Zero Two press deeper into the forest.")
+        self.assertEqual(
+            recovered[0].get("text"),
+            "Hiro and Zero Two press deeper into the forest because stopping would leave them exposed. The retreat forces them to rely on each other.",
+        )
         self.assertFalse(bool(recovered[0].get("visual_only")))
         self.assertIsNone(recovered[0].get("suppression_reason"))
 

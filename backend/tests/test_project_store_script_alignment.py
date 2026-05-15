@@ -60,7 +60,7 @@ class ProjectStoreScriptAlignmentTests(unittest.TestCase):
             self.assertLess(saved.height, 320)
 
         report = json.loads((project_dir / "output" / "panel_crop_report.json").read_text())
-        self.assertEqual(report["crop_version"], "tightcrop_v3")
+        self.assertEqual(report["crop_version"], "tightcrop_v5")
         self.assertEqual(report["tightened_count"], 1)
         self.assertTrue(report["panels"][0]["was_tightened"])
 

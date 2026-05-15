@@ -67,5 +67,5 @@ def test_scene_mode_prompt_includes_style_vocabulary_and_length_target() -> None
     )
 
     assert "RECURRING WORLD VOCABULARY" in prompt
-    assert "50-90 words per segment" in prompt
+    assert "55-115 words is the healthy band" in prompt
     assert "the tower" in prompt

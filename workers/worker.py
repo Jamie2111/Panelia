@@ -6,6 +6,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
+from multiprocessing import Process
 from pathlib import Path
 from threading import Thread
 import warnings
@@ -41,6 +42,54 @@ _WORKER_LOCK_PATH = Path("/tmp/panelia-worker.lock")
 _STALE_JOB_RECOVERY_INTERVAL_SECONDS = 60
 
 
+def _run_job_child(project_id: str, job_id: str, stage: str) -> None:
+    child_store = ProjectStore()
+    child_queue = QueueService()
+    from app.services.queue_service import QueueMessage
+
+    run_job(
+        QueueMessage(project_id=project_id, job_id=job_id, stage=stage),
+        store=child_store,
+        queue=child_queue,
+    )
+
+
+def _run_job_isolated(message, store: ProjectStore) -> int | None:
+    process = Process(
+        target=_run_job_child,
+        args=(message.project_id, message.job_id, message.stage),
+        name=f"panelia-job-{message.job_id[:8]}",
+    )
+    process.start()
+    process.join()
+    exit_code = process.exitcode
+    if exit_code in (0, None):
+        return exit_code
+
+    try:
+        job = store.get_job(message.project_id, message.job_id)
+        if job.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
+            error_message = f"Worker child exited unexpectedly with code {exit_code}"
+            store.update_job(
+                message.project_id,
+                message.job_id,
+                status=JobStatus.FAILED.value,
+                finished_at=store._now().isoformat(),
+                error=error_message,
+                message=error_message,
+            )
+            store.update_stage_state(
+                message.project_id,
+                job.stage,
+                StageStatus.FAILED,
+                progress=job.progress,
+                message=error_message,
+            )
+    except Exception:
+        logger.exception("Failed to mark crashed job %s as failed", message.job_id)
+    return exit_code
+
+
 def _prewarm_ocr_models() -> None:
     try:
         pipeline = DialogueExtractionPipeline()
@@ -70,12 +119,19 @@ def _prewarm_models_gently() -> None:
         logger.exception("Failed during staged model warmup")
 
 
-def _recover_interrupted_jobs(store: ProjectStore, queue: QueueService) -> None:
+def _recover_interrupted_jobs(
+    store: ProjectStore,
+    queue: QueueService,
+    *,
+    force: bool = False,
+) -> None:
     recovered = 0
     now = datetime.now(timezone.utc)
     for project in store.list_projects():
         for job in project.active_jobs:
             if job.status != JobStatus.RUNNING:
+                continue
+            if bool((job.payload or {}).get("direct_runner")):
                 continue
             stage_state = project.stage_states.get(job.stage)
             heartbeat_at = None
@@ -83,7 +139,7 @@ def _recover_interrupted_jobs(store: ProjectStore, queue: QueueService) -> None:
                 heartbeat_at = stage_state.updated_at
             elif job.started_at:
                 heartbeat_at = job.started_at
-            if heartbeat_at is not None:
+            if not force and heartbeat_at is not None:
                 if heartbeat_at.tzinfo is None:
                     heartbeat_at = heartbeat_at.replace(tzinfo=timezone.utc)
                 if (now - heartbeat_at).total_seconds() < 90:
@@ -105,7 +161,10 @@ def _recover_interrupted_jobs(store: ProjectStore, queue: QueueService) -> None:
             queue.enqueue(project.id, job.id, job.stage.value)
             recovered += 1
     if recovered:
-        logger.info("Recovered %s interrupted job(s) after worker restart", recovered)
+        if force:
+            logger.info("Recovered %s interrupted job(s) during worker startup", recovered)
+        else:
+            logger.info("Recovered %s stale interrupted job(s)", recovered)
 
 
 def _acquire_worker_lock() -> None:
@@ -169,7 +228,7 @@ def main() -> None:
         pass
 
     logger.info("Worker started and listening for jobs")
-    _recover_interrupted_jobs(store, queue)
+    _recover_interrupted_jobs(store, queue, force=True)
     last_recovery_check = time.monotonic()
     if str(os.environ.get("PANELIA_WORKER_PREWARM") or "").strip().casefold() in {"1", "true", "yes"}:
         Thread(target=_prewarm_models_gently, daemon=True).start()
@@ -186,8 +245,8 @@ def main() -> None:
 
         logger.info("Processing job %s for project %s stage %s", message.job_id, message.project_id, message.stage)
         started_at = time.perf_counter()
-        try:
-            run_job(message, store=store, queue=queue)
+        exit_code = _run_job_isolated(message, store)
+        if exit_code == 0:
             logger.info(
                 "Completed job %s for project %s stage %s in %.2fs",
                 message.job_id,
@@ -195,10 +254,17 @@ def main() -> None:
                 message.stage,
                 time.perf_counter() - started_at,
             )
-        except Exception:
-            logger.exception(
-                "Job %s failed after %.2fs",
+        elif exit_code is None:
+            logger.warning(
+                "Job %s child exit was unavailable after %.2fs",
                 message.job_id,
+                time.perf_counter() - started_at,
+            )
+        else:
+            logger.error(
+                "Job %s crashed with child exit code %s after %.2fs",
+                message.job_id,
+                exit_code,
                 time.perf_counter() - started_at,
             )
 
