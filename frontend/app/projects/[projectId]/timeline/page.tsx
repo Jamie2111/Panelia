@@ -22,6 +22,7 @@ import {
   TimelineEditor,
   type PanelEdits,
 } from "@/components/editor/timeline/timeline-editor";
+import { estimateProjectCost } from "@/lib/cost-estimate";
 
 const POLL_INTERVAL_MS = 5_000;
 
@@ -142,48 +143,57 @@ export default function TimelinePage() {
   };
 
   return (
-    <main className="mx-auto max-w-[1600px] px-6 md:px-10 py-8 space-y-5">
-      {/* Top bar — breadcrumb + name + save status */}
-      <header className="flex flex-wrap items-center justify-between gap-3">
+    <main className="mx-auto max-w-[1680px] px-6 md:px-12 py-10 space-y-6">
+      {/* Hero header — title in display weight on accent gradient,
+          breadcrumb + meta sit above and below for hierarchy. */}
+      <header className="flex flex-wrap items-end justify-between gap-4">
         <div className="min-w-0">
           <Link
             href="/"
-            className="text-xs uppercase tracking-wider text-[rgb(var(--p-hint))] hover:text-[rgb(var(--p-text))] transition-colors duration-[var(--p-fast)]"
+            className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--p-hint))] hover:text-[rgb(var(--p-accent))] transition-colors duration-[var(--p-fast)] inline-flex items-center gap-1"
           >
-            ← All projects
+            <span aria-hidden>←</span> All projects
           </Link>
-          <h1 className="text-2xl md:text-3xl font-medium mt-1 text-[rgb(var(--p-text))]">
+          <h1
+            className="mt-2 text-3xl md:text-5xl font-semibold leading-tight tracking-tight"
+            style={{
+              backgroundImage:
+                "linear-gradient(180deg, rgb(var(--p-text)) 0%, rgb(var(--p-muted)) 110%)",
+              WebkitBackgroundClip: "text",
+              backgroundClip: "text",
+              color: "transparent",
+            }}
+          >
             {project.name}
           </h1>
-          <p className="text-xs text-[rgb(var(--p-muted))]">
-            {project.kept_panel_count}/{project.panel_count} panels kept
+          <p className="mt-2 text-sm text-[rgb(var(--p-muted))] flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="p-pill">
+              {project.kept_panel_count}/{project.panel_count} panels kept
+            </span>
             {savedAt && (
-              <>
-                {" "}
-                · saved{" "}
-                <time dateTime={new Date(savedAt).toISOString()}>
-                  {new Date(savedAt).toLocaleTimeString()}
-                </time>
-              </>
+              <span className="p-pill p-pill-ok">
+                saved {new Date(savedAt).toLocaleTimeString()}
+              </span>
             )}
-            {saving && " · saving…"}
-            {regenStatus && ` · ${regenStatus}`}
+            {saving && (
+              <span className="p-pill p-pill-info">
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-current p-anim-breathe" />
+                saving…
+              </span>
+            )}
+            {regenStatus && (
+              <span className="p-pill p-pill-accent">{regenStatus}</span>
+            )}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Link
-            href={`/projects/${project.id}/narration`}
-            className="p-btn-ghost"
-          >
-            Narration view
+        <nav className="flex items-center gap-2" aria-label="Other views">
+          <Link href={`/projects/${project.id}/narration`} className="p-btn-ghost">
+            Narration
           </Link>
-          <Link
-            href={`/projects/${project.id}/editor`}
-            className="p-btn-ghost"
-          >
-            Panel editor
+          <Link href={`/projects/${project.id}/editor`} className="p-btn-ghost">
+            Panels
           </Link>
-        </div>
+        </nav>
       </header>
 
       {/* "While you were away" — only shows when state has changed since
@@ -193,6 +203,7 @@ export default function TimelinePage() {
       {/* Pipeline at a glance — sentences, not numbers. */}
       <PipelineBlock
         stageStates={project.stage_states}
+        cost={estimateProjectCost(project)}
         primaryAction={undefined}
       />
 

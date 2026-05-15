@@ -31,6 +31,16 @@ import { TimelineTrack } from "./timeline-track";
 import { TimelinePlayhead } from "./timeline-playhead";
 import { TimelineInspector } from "./timeline-inspector";
 import { TimelinePreview } from "./timeline-preview";
+import {
+  IconRewind,
+  IconPause,
+  IconPlay,
+  IconZoomIn,
+  IconZoomOut,
+  IconMarkIn,
+  IconMarkOut,
+  IconSave,
+} from "./transport-icons";
 
 export interface TimelineEditorProps {
   panels: PanelBox[];
@@ -124,36 +134,78 @@ export function TimelineEditor({
 
       {/* Toolbar */}
       <section className="p-glass flex flex-wrap items-center justify-between gap-3 px-4 py-2">
-        <div className="flex items-center gap-2 text-xs">
-          <button type="button" className="p-btn-ghost" onClick={() => actions.bumpRate(-1)} aria-label="Reverse (J)">
-            J
+        <div className="flex items-center gap-1 text-xs">
+          <button
+            type="button"
+            className="p-btn-ghost !px-2.5 !py-2"
+            onClick={() => actions.bumpRate(-1)}
+            aria-label="Play backwards (J)"
+            title="Play backwards (J)"
+          >
+            <IconRewind size={16} />
           </button>
-          <button type="button" className="p-btn-ghost" onClick={() => actions.bumpRate(0)} aria-label="Pause (K)">
-            K
+          <button
+            type="button"
+            className="p-btn-ghost !px-2.5 !py-2"
+            onClick={() => actions.bumpRate(0)}
+            aria-label="Pause (K)"
+            title="Pause (K)"
+          >
+            <IconPause size={16} />
           </button>
-          <button type="button" className="p-btn-ghost" onClick={() => actions.bumpRate(1)} aria-label="Forward (L)">
-            L
+          <button
+            type="button"
+            className="p-btn-ghost !px-2.5 !py-2"
+            onClick={() => actions.bumpRate(1)}
+            aria-label="Play (L)"
+            title="Play (L)"
+          >
+            <IconPlay size={16} />
           </button>
           <span className="mx-2 h-5 w-px bg-[rgb(var(--p-hairline))]" />
-          <button type="button" className="p-btn-ghost" onClick={() => actions.setInMark()} aria-label="Set in mark (I)">
-            Set In
+          <button
+            type="button"
+            className="p-btn-ghost"
+            onClick={() => actions.setInMark()}
+            aria-label="Set in mark (I)"
+            title="Set in mark (I)"
+          >
+            <IconMarkIn size={14} /> In
           </button>
-          <button type="button" className="p-btn-ghost" onClick={() => actions.setOutMark()} aria-label="Set out mark (O)">
-            Set Out
+          <button
+            type="button"
+            className="p-btn-ghost"
+            onClick={() => actions.setOutMark()}
+            aria-label="Set out mark (O)"
+            title="Set out mark (O)"
+          >
+            <IconMarkOut size={14} /> Out
           </button>
           <button type="button" className="p-btn-ghost" onClick={() => actions.clearMarks()}>
             Clear
           </button>
         </div>
         <div className="flex items-center gap-2 text-xs">
-          <button type="button" className="p-btn-ghost" onClick={() => actions.zoomBy(1 / 1.4)} aria-label="Zoom out">
-            −
+          <button
+            type="button"
+            className="p-btn-ghost !px-2.5 !py-2"
+            onClick={() => actions.zoomBy(1 / 1.4)}
+            aria-label="Zoom out"
+            title="Zoom out (⌘−)"
+          >
+            <IconZoomOut size={16} />
           </button>
           <span className="p-pill min-w-[78px] justify-center">
             {state.pixelsPerSecond.toFixed(0)} px/s
           </span>
-          <button type="button" className="p-btn-ghost" onClick={() => actions.zoomBy(1.4)} aria-label="Zoom in">
-            +
+          <button
+            type="button"
+            className="p-btn-ghost !px-2.5 !py-2"
+            onClick={() => actions.zoomBy(1.4)}
+            aria-label="Zoom in"
+            title="Zoom in (⌘+)"
+          >
+            <IconZoomIn size={16} />
           </button>
           <span className="mx-2 h-5 w-px bg-[rgb(var(--p-hairline))]" />
           <span className="text-[rgb(var(--p-muted))] font-mono">
@@ -161,7 +213,7 @@ export function TimelineEditor({
           </span>
           {onSaveEdits && (
             <button type="button" className="p-btn-primary ml-2" onClick={handleSave}>
-              Save edits
+              <IconSave size={14} /> Save edits
             </button>
           )}
         </div>

@@ -16,6 +16,7 @@
 
 import * as React from "react";
 import { TimelineClip } from "./timeline-clip";
+import { WaveformStrip } from "./waveform-strip";
 import type { TimelineClip as Clip } from "./use-timeline-state";
 
 interface BaseProps {
@@ -83,50 +84,15 @@ export function TimelineTrack(props: TimelineTrackProps) {
             ))}
           </>
         ) : (
-          <AudioStrip
-            widthPx={widthPx}
+          <WaveformStrip
+            totalDurationSec={props.totalDurationSec}
+            pixelsPerSecond={props.pixelsPerSecond}
             waveformUrl={props.waveformUrl}
             tone={props.tone ?? "muted"}
+            seed={props.tone === "accent" ? 4242 : props.tone === "info" ? 9981 : 1337}
           />
         )}
       </div>
     </div>
-  );
-}
-
-function AudioStrip({
-  widthPx,
-  waveformUrl,
-  tone,
-}: {
-  widthPx: number;
-  waveformUrl?: string | null;
-  tone: "accent" | "info" | "muted";
-}) {
-  // Background gradient that hints at "audio energy" even without a real
-  // waveform. Replace with `<img src={waveformUrl}>` when audio is rendered.
-  const fill =
-    tone === "accent"
-      ? "rgb(var(--p-accent) / 0.18)"
-      : tone === "info"
-      ? "rgb(var(--p-info) / 0.18)"
-      : "rgb(255 255 255 / 0.06)";
-  return (
-    <div
-      aria-hidden
-      className="absolute inset-y-2 rounded-[12px] border border-[rgb(var(--p-hairline))]"
-      style={{
-        left: 0,
-        width: widthPx,
-        background:
-          waveformUrl
-            ? `url(${waveformUrl}) center/100% 100% no-repeat`
-            : `repeating-linear-gradient(
-                90deg,
-                ${fill} 0px, ${fill} 6px,
-                transparent 6px, transparent 14px
-              )`,
-      }}
-    />
   );
 }

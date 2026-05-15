@@ -85,7 +85,8 @@ class NarrationBatch:
 # ── The single narration prompt ───────────────────────────────────────────
 # This is the ONLY prompt in the whole pipeline. If output quality is bad,
 # we tune this — we don't add another service.
-_NARRATION_PROMPT = """You are narrating a single manga panel for a YouTube recap video.
+_NARRATION_PROMPT = """You are narrating a single panel from a sequential-art chapter
+(manga, manhwa, webtoon, or comic) for a YouTube recap video.
 
 You can see the panel image. Look at it carefully and describe what is happening
 in ONE narration line (15-30 words). The narration will be read aloud over this

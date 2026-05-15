@@ -29,6 +29,8 @@ import {
   shortStageLabel,
   toPipelineDisplay,
 } from "@/lib/pipeline-messages";
+import type { CostBreakdown } from "@/lib/cost-estimate";
+import { formatUsd } from "@/lib/cost-estimate";
 
 const DEFAULT_ORDER: PipelineStage[] = [
   "ingestion",
@@ -65,6 +67,8 @@ interface PipelineBlockProps {
     label: string;
     onClick: () => void;
   };
+  /** Optional cost breakdown — surfaces "$X to finish" in the block. */
+  cost?: CostBreakdown;
   className?: string;
 }
 
@@ -102,6 +106,7 @@ export function PipelineBlock({
   onSelectStage,
   primaryAction,
   secondaryAction,
+  cost,
   className,
 }: PipelineBlockProps) {
   const focus = pickFocusStage(stageStates);
@@ -178,6 +183,21 @@ export function PipelineBlock({
           {focusDisplay?.detail && (
             <p className="text-[rgb(var(--p-muted))] text-sm mt-1 line-clamp-2">
               {focusDisplay.detail}
+            </p>
+          )}
+          {cost && (
+            <p
+              className="text-[rgb(var(--p-muted))] text-xs mt-2 flex items-center gap-2"
+              title={cost.parts
+                .filter((p) => p.usd > 0 || p.note)
+                .map((p) => `${p.label}: ${formatUsd(p.usd)}${p.note ? ` (${p.note})` : ""}`)
+                .join("\n")}
+            >
+              <span className="p-pill p-pill-info">
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
+                {formatUsd(cost.remainingUsd)} to finish
+              </span>
+              <span className="hidden md:inline">{cost.sentence}</span>
             </p>
           )}
         </div>
