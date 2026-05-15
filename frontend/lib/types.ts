@@ -41,7 +41,20 @@ export interface PanelBox {
   narration_locked: boolean;
   manual_ocr_text: boolean;
   visual_caption?: string | null;
-  narration_source?: "ocr" | "vision_caption" | "fallback" | null;
+  narration_source?:
+    | "ocr"
+    | "vision_caption"
+    | "fallback"
+    | "panel_vision_narrator"
+    | "vision_failed"
+    | "vision_needs_regenerate"
+    | "manual"
+    | "restored_backup_20260430"
+    | "restored_and_generated"
+    | "aligned_visual_order"
+    | "aligned_to_visual_order"
+    | string
+    | null;
   review_flags: string[];
 }
 
@@ -176,9 +189,22 @@ export interface ProjectDetail extends ProjectSummary {
   script_lines: string[];
   script_story?: string | null;
   story_segments: StorySegment[];
+  script_display_metadata?: ScriptDisplayMetadata;
   audio_files: AudioFile[];
   videos: VideoFile[];
   available_music_tracks: MusicTrack[];
+}
+
+export interface ScriptDisplayMetadata {
+  displayed_script_path?: string | null;
+  displayed_script_job_id?: string | null;
+  displayed_script_created_at?: string | null;
+  latest_job_id?: string | null;
+  latest_job_status?: string | null;
+  latest_completed_script_path?: string | null;
+  latest_completed_script_job_id?: string | null;
+  is_displaying_stale_script?: boolean;
+  stale_reason?: string | null;
 }
 
 export interface StorySegment {

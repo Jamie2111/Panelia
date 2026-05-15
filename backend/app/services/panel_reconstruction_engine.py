@@ -346,6 +346,113 @@ class PanelReconstructionEngine:
         page_width: int,
         page_height: int,
     ) -> list[int]:
+        """Expand/shrink a panel bbox to fit actual panel content.
+
+        The previous implementation thresholded on luminance (gray < 242),
+        which silently broke whenever the page background was NOT white:
+          • non-white background → mask covers entire region → no shrink → margins stayed
+          • white speech bubble inside panel → bubble pixels treated as "not content"
+            → bbox shrunk to dark ink only → bubble clipped off the panel
+
+        This version uses Sobel edge density + horizontal/vertical projection
+        profiles to locate the panel's true rectangular extent. Edges are
+        invariant to absolute background color, and gutters (the strips
+        between panels) are reliably low-edge-density regions regardless of
+        whether the gutter is white, black, or textured.
+        """
+        try:
+            import cv2  # local import: heavy module, only paid here
+        except Exception:
+            return self._expand_bbox_to_content_legacy(image, bbox, page_width, page_height)
+
+        x, y, width, height = [int(value) for value in bbox[:4]]
+        # Probe a generous region around the seed. The seed may be just a
+        # speech-bubble crop, so we scale probe distance with PAGE size,
+        # not just with the seed — otherwise tiny seeds can never recover
+        # the full panel they belong to. A real panel can occupy up to
+        # ~half a page; capping probe at 45% of each page dimension keeps
+        # us from probing into neighbouring panels in most layouts.
+        pad_x = min(max(int(width * 1.5), 120), int(page_width * 0.45))
+        pad_y = min(max(int(height * 1.5), 120), int(page_height * 0.45))
+        x0 = max(x - pad_x, 0)
+        y0 = max(y - pad_y, 0)
+        x1 = min(x + width + pad_x, page_width)
+        y1 = min(y + height + pad_y, page_height)
+        region = image[y0:y1, x0:x1]
+        if region.size == 0 or region.shape[0] < 8 or region.shape[1] < 8:
+            return bbox
+
+        # Edge magnitude — robust to background color.
+        gray = cv2.cvtColor(region, cv2.COLOR_RGB2GRAY) if region.ndim == 3 else region
+        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        edge = cv2.magnitude(gx, gy)
+
+        # Threshold + bridge small gaps so single content blocks read as one.
+        edge_thresh = max(float(np.percentile(edge, 80)), 8.0)
+        edge_mask = (edge > edge_thresh).astype(np.uint8)
+        # Morphological close: bridge gutters' worth of distance vertically
+        # and horizontally between glyphs / line work in the same panel.
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+        edge_mask = cv2.morphologyEx(edge_mask, cv2.MORPH_CLOSE, kernel)
+
+        # Projection profiles: rows/cols that contain panel content show
+        # high mass, gutters show near-zero. We trim outer rows/cols whose
+        # mass is below a small fraction of the regional peak.
+        col_mass = edge_mask.sum(axis=0)
+        row_mass = edge_mask.sum(axis=1)
+        if col_mass.max() == 0 or row_mass.max() == 0:
+            return bbox
+        col_peak = float(col_mass.max())
+        row_peak = float(row_mass.max())
+        col_floor = max(col_peak * 0.05, 2.0)
+        row_floor = max(row_peak * 0.05, 2.0)
+
+        cols_with_content = np.where(col_mass >= col_floor)[0]
+        rows_with_content = np.where(row_mass >= row_floor)[0]
+        if cols_with_content.size == 0 or rows_with_content.size == 0:
+            return bbox
+
+        min_col = int(cols_with_content.min())
+        max_col = int(cols_with_content.max()) + 1
+        min_row = int(rows_with_content.min())
+        max_row = int(rows_with_content.max()) + 1
+        content_width = max_col - min_col
+        content_height = max_row - min_row
+
+        # Safety bounds: the result should be at least somewhat panel-shaped.
+        # Reject pathological collapses (single sliver of content).
+        region_h, region_w = edge_mask.shape[:2]
+        if content_width < max(40, region_w * 0.05):
+            return bbox
+        if content_height < max(40, region_h * 0.05):
+            return bbox
+
+        # Small inset so we keep the panel border itself, not just the
+        # ink inside it. Tighter than the legacy 4% to stop margin bleed.
+        extra_x = max(4, int(content_width * 0.015))
+        extra_y = max(4, int(content_height * 0.015))
+        new_x = max(x0 + min_col - extra_x, 0)
+        new_y = max(y0 + min_row - extra_y, 0)
+        new_right = min(x0 + max_col + extra_x, page_width)
+        new_bottom = min(y0 + max_row + extra_y, page_height)
+        return [
+            int(new_x),
+            int(new_y),
+            int(max(new_right - new_x, 1)),
+            int(max(new_bottom - new_y, 1)),
+        ]
+
+    def _expand_bbox_to_content_legacy(
+        self,
+        image: np.ndarray,
+        bbox: list[int],
+        page_width: int,
+        page_height: int,
+    ) -> list[int]:
+        """Original luminance-threshold path. Used only when OpenCV is
+        unavailable. Preserved verbatim so we have a fallback that won't
+        crash on systems without cv2 installed."""
         x, y, width, height = [int(value) for value in bbox[:4]]
         pad_x = max(int(width * 0.4), 40)
         pad_y = max(int(height * 0.65), 48)
@@ -356,13 +463,11 @@ class PanelReconstructionEngine:
         region = image[y0:y1, x0:x1]
         if region.size == 0:
             return bbox
-
         gray = np.mean(region, axis=2)
         content_mask = gray < 242
         coords = np.argwhere(content_mask)
         if coords.size == 0:
             return bbox
-
         min_row = int(coords[:, 0].min())
         max_row = int(coords[:, 0].max()) + 1
         min_col = int(coords[:, 1].min())
@@ -371,15 +476,18 @@ class PanelReconstructionEngine:
         content_height = max_row - min_row
         if content_width < width * 0.75 and content_height < height * 0.75:
             return bbox
-
         extra_x = max(10, int(content_width * 0.04))
         extra_y = max(10, int(content_height * 0.04))
         new_x = max(x0 + min_col - extra_x, 0)
         new_y = max(y0 + min_row - extra_y, 0)
         new_right = min(x0 + max_col + extra_x, page_width)
         new_bottom = min(y0 + max_row + extra_y, page_height)
-        expanded = [int(new_x), int(new_y), int(max(new_right - new_x, 1)), int(max(new_bottom - new_y, 1))]
-        return expanded
+        return [
+            int(new_x),
+            int(new_y),
+            int(max(new_right - new_x, 1)),
+            int(max(new_bottom - new_y, 1)),
+        ]
 
     def _dedupe_seed_boxes(
         self,

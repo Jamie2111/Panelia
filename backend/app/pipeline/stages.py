@@ -42,6 +42,7 @@ from app.services.ocr_cleaner import clean_ocr_lines, clean_ocr_text, combined_d
 from app.services.llm_router import LLMRouter
 from app.services.project_store import ProjectStore
 from app.services.script_quality_service import ScriptQualityService
+from app.services.script_generation_vnext import ScriptGenerationVNextService, ScriptVNextRedraftConfig
 from app.services.story_segment_repair_service import StorySegmentRepairService
 from app.services.story_script_service import StoryScriptService
 from app.services.style_vocabulary import StyleVocabulary, build_style_vocabulary
@@ -298,6 +299,86 @@ def _collect_pronunciation_names(project_dir: Path, narrated_texts: list[str]) -
     return unique_names
 
 
+def _collect_supported_narration_names(project_dir: Path, project: Any) -> list[str]:
+    names: list[str] = []
+
+    def add(value: object) -> None:
+        cleaned = _clean_pronunciation_candidate(str(value or ""))
+        if cleaned and not looks_like_false_character_name(cleaned):
+            names.append(cleaned)
+
+    style_payload = read_json(project_dir / "output" / "style_vocabulary.json", default={})
+    if isinstance(style_payload, dict):
+        for value in style_payload.get("named_characters") or []:
+            add(value)
+        protagonist = style_payload.get("protagonist")
+        if protagonist:
+            add(protagonist)
+
+    appearances_payload = read_json(project_dir / "output" / "character_appearances.json", default={})
+    if isinstance(appearances_payload, dict):
+        for key in appearances_payload.keys():
+            add(key)
+
+    canonical_payload = read_json(project_dir / "output" / "canonical_characters.json", default=[])
+    if isinstance(canonical_payload, list):
+        for item in canonical_payload:
+            if not isinstance(item, dict):
+                continue
+            add(item.get("name"))
+            for alias in item.get("aliases") or []:
+                add(alias)
+
+    metadata_raw = getattr(project.chapter_metadata, "raw", {}) or {}
+    manga = metadata_raw.get("manga") if isinstance(metadata_raw, dict) else {}
+    if isinstance(manga, dict):
+        for value in manga.get("cast") or manga.get("characters") or []:
+            if isinstance(value, dict):
+                add(value.get("name") or value.get("display_name"))
+            else:
+                add(value)
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(name)
+    return unique
+
+
+def _collect_narration_world_terms(project_dir: Path, project: Any) -> list[str]:
+    terms: list[str] = []
+    style_payload = read_json(project_dir / "output" / "style_vocabulary.json", default={})
+    if isinstance(style_payload, dict):
+        terms.extend(str(value).strip() for value in style_payload.get("world_terms") or [] if str(value).strip())
+        for key in ("antagonist_term", "team_term"):
+            value = str(style_payload.get(key) or "").strip()
+            if value:
+                terms.append(value)
+    metadata_raw = getattr(project.chapter_metadata, "raw", {}) or {}
+    manga = metadata_raw.get("manga") if isinstance(metadata_raw, dict) else {}
+    if isinstance(manga, dict):
+        terms.extend(str(value).strip() for value in manga.get("world_terms") or [] if str(value).strip())
+    for value in (
+        getattr(project.chapter_metadata, "manga_title", None),
+        getattr(project.chapter_metadata, "chapter_title", None),
+    ):
+        if str(value or "").strip():
+            terms.append(str(value).strip())
+    unique: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        key = term.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(term)
+    return unique
+
+
 def run_ingestion(context: PipelineContext) -> None:
     store = context.store
     project = store.get_project(context.project_id)
@@ -450,6 +531,12 @@ def run_panel_detection(context: PipelineContext) -> None:
 def _clear_script_generation_caches(project_dir: Path) -> None:
     output_dir = project_dir / "output"
     for path in (
+        output_dir / "dialogue_pipeline_manifest.json",
+        output_dir / "ocr_results.json",
+        output_dir / "transcript.json",
+        output_dir / "ocr_coverage.json",
+        output_dir / "gemini_scenes.json",
+        output_dir / "speaker_attributions.json",
         output_dir / "gemini_summary_cache.json",
         output_dir / "page_vision_cache.json",
         output_dir / "panel_captions_cache.json",
@@ -461,6 +548,23 @@ def _clear_script_generation_caches(project_dir: Path) -> None:
         output_dir / "narration_story.txt",
     ):
         path.unlink(missing_ok=True)
+
+
+def _script_dialogue_progress(progress: float, message: str) -> float:
+    """Map dialogue extraction's internal percent onto the script stage without a jumpy start."""
+    normalized = str(message or "").lower()
+    count_match = re.search(r"panel\s+(\d+)\s*/\s*(\d+)", normalized)
+    if count_match:
+        current = max(int(count_match.group(1)), 0)
+        total = max(int(count_match.group(2)), 1)
+        return 10 + min(current / total, 1.0) * 24
+
+    clamped = max(0.0, min(float(progress or 0.0), 100.0))
+    if clamped < 22:
+        return 10
+    if clamped < 74:
+        return 10 + ((clamped - 22) / 52) * 24
+    return 34 + ((clamped - 74) / 26) * 4
 
 
 def _persist_dialogue_artifacts(project_dir: Path, artifacts: dict[str, Any]) -> None:
@@ -501,6 +605,130 @@ def _dialogue_lines_for_scene(scene: dict[str, Any]) -> list[str]:
     if not lines and detected_text:
         lines = clean_ocr_lines([detected_text])
     return [line for line in lines if line]
+
+
+def _transcript_lines_by_panel_order(project_dir: Path) -> dict[int, list[str]]:
+    transcript = read_json(project_dir / "output" / "transcript.json", default={})
+    fragments = transcript.get("fragments", []) if isinstance(transcript, dict) else []
+    if not isinstance(fragments, list):
+        return {}
+    lines_by_order: dict[int, list[str]] = {}
+    seen_by_order: dict[int, set[str]] = {}
+    for item in fragments:
+        if not isinstance(item, dict) or not bool(item.get("accepted", True)):
+            continue
+        try:
+            order = int(item.get("panel_order") or 0)
+        except Exception:
+            order = 0
+        if order <= 0:
+            continue
+        text = clean_ocr_text(
+            str(item.get("repaired_text") or item.get("text") or item.get("cleaned_text") or "")
+        ).strip()
+        if not text or not is_usable_ocr_text(text):
+            continue
+        key = re.sub(r"\W+", " ", text.casefold()).strip()
+        if not key:
+            continue
+        seen = seen_by_order.setdefault(order, set())
+        if key in seen:
+            continue
+        seen.add(key)
+        lines_by_order.setdefault(order, []).append(text)
+    return lines_by_order
+
+
+def _transcript_evidence_records(project_dir: Path) -> list[dict[str, Any]]:
+    transcript = read_json(project_dir / "output" / "transcript.json", default={})
+    fragments = transcript.get("fragments", []) if isinstance(transcript, dict) else []
+    if not isinstance(fragments, list):
+        return []
+    merged_by_order: dict[int, dict[str, Any]] = {}
+    seen_by_order: dict[int, set[str]] = {}
+    for item in fragments:
+        if not isinstance(item, dict) or not bool(item.get("accepted", True)):
+            continue
+        try:
+            order = int(item.get("panel_order") or 0)
+        except Exception:
+            order = 0
+        if order <= 0:
+            continue
+        text = clean_ocr_text(
+            str(item.get("repaired_text") or item.get("text") or item.get("cleaned_text") or "")
+        ).strip()
+        if not text or not is_usable_ocr_text(text):
+            continue
+        key = re.sub(r"\W+", " ", text.casefold()).strip()
+        if not key:
+            continue
+        seen = seen_by_order.setdefault(order, set())
+        if key in seen:
+            continue
+        seen.add(key)
+        record = merged_by_order.setdefault(
+            order,
+            {
+                "panel_id": str(item.get("panel_id") or "").strip(),
+                "panel_order": order,
+                "dialogue_text": "",
+                "text_english": "",
+                "source": "transcript",
+                "regions": [],
+            },
+        )
+        if not record.get("panel_id") and str(item.get("panel_id") or "").strip():
+            record["panel_id"] = str(item.get("panel_id") or "").strip()
+        record["dialogue_text"] = " ".join(part for part in [record.get("dialogue_text", ""), text] if part).strip()
+        record["text_english"] = record["dialogue_text"]
+        record.setdefault("regions", []).append(
+            {
+                "bbox": item.get("bbox"),
+                "text_english": text,
+                "text_original": str(item.get("raw_text") or item.get("text") or text),
+                "confidence": item.get("confidence"),
+                "detector": item.get("detector") or item.get("source") or "transcript",
+                "ocr_engine": item.get("backend") or item.get("ocr_engine") or "transcript",
+            }
+        )
+    return list(merged_by_order.values())
+
+
+def _merge_panel_evidence_records(primary: list[dict[str, Any]] | None, secondary: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    merged: dict[int | str, dict[str, Any]] = {}
+
+    def key_for(item: dict[str, Any]) -> int | str:
+        try:
+            order = int(item.get("panel_order") or 0)
+        except Exception:
+            order = 0
+        if order:
+            return order
+        return str(item.get("panel_id") or "").strip()
+
+    for records in (primary or [], secondary or []):
+        for source in records:
+            if not isinstance(source, dict):
+                continue
+            key = key_for(source)
+            if not key:
+                continue
+            if key not in merged:
+                merged[key] = dict(source)
+                continue
+            current = merged[key]
+            for field in ("dialogue_text", "text_english", "caption_text", "text_original"):
+                incoming = str(source.get(field) or "").strip()
+                existing = str(current.get(field) or "").strip()
+                if incoming and incoming.casefold() not in existing.casefold():
+                    current[field] = " ".join(part for part in [existing, incoming] if part).strip()
+            if not current.get("panel_id") and source.get("panel_id"):
+                current["panel_id"] = source.get("panel_id")
+            regions = list(current.get("regions") or [])
+            regions.extend(source.get("regions") or [])
+            current["regions"] = regions
+    return list(merged.values())
 
 
 def _build_script_slot_evidence(
@@ -1165,6 +1393,204 @@ def _rewrite_story_segments_for_youtube_once(
     return changed
 
 
+def _run_script_generation_vision(
+    context: PipelineContext,
+    project: Any,
+    project_dir: Path,
+    job: Any,
+) -> None:
+    """Vision-grounded script generation. The new pipeline path.
+
+    Sends every kept panel image to Gemini Vision in visual reading order,
+    with rolling continuity context, and writes a single canonical
+    script_manifest.json + mirrors to panels.json + script.json + script.txt.
+
+    No polish/repair cascade. Panels that fail are flagged for in-place
+    regeneration in the UI — they are never silently filled with garbage.
+    """
+    import asyncio
+    import json as _json
+
+    from app.services.panel_vision_narrator import (
+        PanelVisionNarrator,
+        panels_from_store,
+        write_narration_outputs,
+    )
+
+    store = context.store
+    panels_path = project_dir / "panels.json"
+    if not panels_path.exists():
+        raise RuntimeError(f"panels.json missing for project {context.project_id}")
+
+    panels_json = _json.loads(panels_path.read_text(encoding="utf-8"))
+    panel_inputs = panels_from_store(project_dir, panels_json)
+    if not panel_inputs:
+        context.fail("No kept panels to narrate.")
+        return
+
+    context.progress(5, f"Starting vision narration for {len(panel_inputs)} panels")
+    narrator = PanelVisionNarrator()
+
+    def _progress(pct: float, msg: str) -> None:
+        # Reserve 5%-95% of the stage bar for the actual narration loop.
+        scaled = 5.0 + (pct * 0.9)
+        context.progress(scaled, msg)
+
+    batch = asyncio.run(
+        narrator.narrate_chapter(
+            panel_inputs,
+            progress_callback=_progress,
+            cancel_callback=context.ensure_not_cancelled,
+        )
+    )
+
+    context.progress(95, "Persisting narration outputs")
+    summary = write_narration_outputs(
+        project_dir, panel_inputs, batch.results, panels_json
+    )
+
+    # Post-write consistency check — catches any panels↔script drift before
+    # we hand off to TTS. Failing fast here beats discovering a desync after
+    # audio has been generated.
+    try:
+        from app.services.script_consistency_check import (
+            check_project, format_report,
+        )
+        report = check_project(project_dir, project_id=context.project_id)
+        if report.issues:
+            logger.warning(
+                "Script consistency report for %s:\n%s",
+                context.project_id,
+                format_report(report),
+            )
+        if report.has_errors:
+            error_messages = "; ".join(
+                f"{i.code}: {i.message}" for i in report.issues if i.severity == "error"
+            )[:400]
+            raise RuntimeError(
+                f"Script consistency check failed: {error_messages}"
+            )
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Consistency check could not run for %s: %s",
+            context.project_id, exc,
+        )
+
+    store.update_stage_state(
+        context.project_id,
+        PipelineStage.NARRATION_GENERATION,
+        StageStatus.READY,
+        progress=0,
+        message=(
+            f"Vision script ready: {batch.successful}/{len(panel_inputs)} narrations. "
+            f"{summary['panels_needing_review']} panels flagged for review. "
+            f"Generate audio when ready."
+        ),
+    )
+
+    logger.info(
+        "Vision script generation for %s done in %.1fs: %d ok / %d need review",
+        context.project_id,
+        batch.elapsed_seconds,
+        batch.successful,
+        batch.failed,
+    )
+    context.complete(
+        f"Vision script done: {batch.successful}/{len(panel_inputs)} panels narrated "
+        f"({batch.elapsed_seconds:.0f}s, {summary['panels_needing_review']} need review)"
+    )
+
+
+def _run_script_generation_vnext(
+    context: PipelineContext,
+    project: Any,
+    project_dir: Path,
+    job: Any,
+) -> None:
+    stop_after_stage = bool(job.payload.get("stop_after_stage"))
+    max_cost_usd = float(job.payload.get("max_cost_usd") or job.payload.get("vnext_redraft_max_cost_usd") or 0.0)
+    redraft_config = ScriptVNextRedraftConfig(
+        enabled=bool(job.payload.get("vnext_redraft_enabled")) or max_cost_usd > 0,
+        dry_run=bool(job.payload.get("vnext_redraft_dry_run")),
+        max_calls=int(job.payload.get("vnext_redraft_max_calls") or 4),
+        max_scenes_per_batch=int(job.payload.get("vnext_redraft_max_scenes_per_batch") or 4),
+        max_prompt_chars=int(job.payload.get("vnext_redraft_max_prompt_chars") or 12000),
+        max_output_tokens=int(job.payload.get("vnext_redraft_max_output_tokens") or 1800),
+        max_estimated_cost_usd=max_cost_usd,
+        style_threshold=int(job.payload.get("vnext_redraft_style_threshold") or 68),
+    )
+    context.progress(8, "Planning chronological vNext scenes from existing artifacts")
+    service = ScriptGenerationVNextService()
+    result = service.run(
+        project_id=context.project_id,
+        project_name=project.name or "",
+        project_dir=project_dir,
+        chapter_metadata=project.chapter_metadata,
+        panels=project.panels,
+        job_id=job.id,
+        max_cost_usd=max_cost_usd,
+        redraft_config=redraft_config,
+    )
+    context.ensure_not_cancelled()
+    context.progress(88, "Saving vNext scene-level script artifacts")
+    if stop_after_stage:
+        context.complete("vNext side-by-side script artifacts ready")
+        return
+
+    context.store.save_story_segments(
+        context.project_id,
+        result.story_segments,
+        story_block=result.story_text,
+        job_id=job.id,
+    )
+    output_dir = project_dir / "output"
+    write_json(output_dir / "scene_plan.json", result.scene_plan)
+    write_json(output_dir / "narration_chunks.json", result.narration_chunks)
+    write_json(output_dir / "qc_report.json", result.qc_report)
+    write_json(output_dir / "script_quality.json", result.qc_report)
+    write_json(output_dir / "cost_report.json", result.cost_report)
+    write_json(output_dir / "benchmark_report.json", {
+        "script_pipeline_version": "vNext",
+        "quality_score": result.qc_report.get("quality_score"),
+        "should_block_tts": result.qc_report.get("should_block_tts"),
+        "meaningful_panel_usage_rate": result.qc_report.get("meaningful_panel_usage_rate"),
+        "long_no_tts_gap_count": result.qc_report.get("long_no_tts_gap_count"),
+        "estimated_cost_usd": result.cost_report.get("estimated_cost_usd"),
+        "gemini_calls_total": result.cost_report.get("gemini_calls_total"),
+    })
+    (output_dir / "final_script.md").write_text(result.story_text.strip() + ("\n" if result.story_text.strip() else ""), encoding="utf-8")
+
+    if bool(result.qc_report.get("should_block_tts")):
+        context.store.update_stage_state(
+            context.project_id,
+            PipelineStage.NARRATION_GENERATION,
+            StageStatus.NEEDS_REVIEW,
+            progress=0,
+            message=str(result.qc_report.get("summary") or "vNext QC blocked audio generation."),
+        )
+        context.complete("vNext script needs review before audio")
+        return
+
+    context.store.update_stage_state(
+        context.project_id,
+        PipelineStage.NARRATION_GENERATION,
+        StageStatus.READY,
+        progress=0,
+        message="vNext script ready. Generate audio when you want to continue." if stop_after_stage else "Starting narration audio automatically",
+    )
+    context.complete("vNext narration script ready")
+    if not stop_after_stage:
+        queue_stage_once(
+            context.store,
+            context.queue,
+            context.project_id,
+            PipelineStage.NARRATION_GENERATION,
+            "Queued automatically after vNext script generation",
+        )
+
+
 def run_character_portrait(context: PipelineContext) -> None:
     store = context.store
     project = store.get_project(context.project_id)
@@ -1330,6 +1756,19 @@ def run_script_generation(context: PipelineContext) -> None:
         return
 
     context.start("Generating recap script")
+    configured_script_version = str(
+        job.payload.get("script_pipeline_version")
+        or getattr(project.pipeline_config, "script_pipeline_version", "legacy")
+        or "legacy"
+    ).strip()
+    version_lower = configured_script_version.casefold()
+    if version_lower == "vision":
+        _run_script_generation_vision(context, project, project_dir, job)
+        return
+    if version_lower == "vnext":
+        _run_script_generation_vnext(context, project, project_dir, job)
+        return
+
     if force_refresh:
         _clear_script_generation_caches(project_dir)
         project = project.model_copy(
@@ -1356,6 +1795,7 @@ def run_script_generation(context: PipelineContext) -> None:
 
     narration_mode = NarrationMode.PANEL.value
     panel_vision_records = None
+    panel_evidence_records = None
     canonical_characters = None
 
     # ── Step 1: Dialogue extraction (unchanged) ─────────────────────
@@ -1390,7 +1830,8 @@ def run_script_generation(context: PipelineContext) -> None:
         project.chapter_metadata,
         page_text_boxes=page_text_boxes,
         allow_expensive_ocr=allow_expensive_dialogue_ocr,
-        progress_callback=lambda progress, message: context.progress(10 + progress * 0.25, message),
+        force_refresh=force_refresh or bool(job.payload.get("refresh_dialogue_context")),
+        progress_callback=lambda progress, message: context.progress(_script_dialogue_progress(progress, message), message),
         cancel_callback=context.ensure_not_cancelled,
     )
     review_service = CharacterReviewService()
@@ -1443,6 +1884,25 @@ def run_script_generation(context: PipelineContext) -> None:
                 )
         except Exception as exc:
             logger.warning("Could not load panel_vision_final.json (non-fatal): %s", exc)
+    try:
+        panel_evidence_records = load_panel_evidence_records(project_dir)
+        if panel_evidence_records:
+            logger.info(
+                "Loaded %d panel evidence records for %s (story-script OCR enrichment)",
+                len(panel_evidence_records),
+                context.project_id,
+            )
+    except Exception as exc:
+        logger.warning("Could not load panel_evidence.json (non-fatal): %s", exc)
+    had_panel_evidence_records = bool(panel_evidence_records)
+    transcript_evidence_records = _transcript_evidence_records(project_dir)
+    if transcript_evidence_records:
+        panel_evidence_records = _merge_panel_evidence_records(panel_evidence_records, transcript_evidence_records)
+        logger.info(
+            "Merged %d transcript evidence records into story-script evidence for %s",
+            len(transcript_evidence_records),
+            context.project_id,
+        )
     if canonical_path.exists():
         try:
             canonical_list = read_json(canonical_path, default=[])
@@ -1460,6 +1920,7 @@ def run_script_generation(context: PipelineContext) -> None:
 
     # Update panel OCR text from dialogue extraction
     scene_lookup = {scene["panel_id"]: scene for scene in scenes if scene.get("panel_id")}
+    transcript_by_order = _transcript_lines_by_panel_order(project_dir)
     updated_panels = []
     kept_after_skip = 0
     recovered_auto_skipped_panels = 0
@@ -1480,6 +1941,9 @@ def run_script_generation(context: PipelineContext) -> None:
             if not cleaned_lines and scene.get("detected_text"):
                 cleaned_lines = clean_ocr_lines([str(scene.get("detected_text", ""))])
             detected_text = " ".join(cleaned_lines).strip()
+            has_dialogue = is_usable_ocr_text(detected_text)
+        elif transcript_by_order.get(int(panel.order)):
+            detected_text = " ".join(transcript_by_order[int(panel.order)]).strip()
             has_dialogue = is_usable_ocr_text(detected_text)
         else:
             detected_text = _page_ocr_text_for_panel(panel, page_text_boxes)
@@ -1541,6 +2005,26 @@ def run_script_generation(context: PipelineContext) -> None:
         )
     context.ensure_not_cancelled()
 
+    if not had_panel_evidence_records:
+        context.progress(34, "Extracting clean panel text evidence")
+        evidence_extractor = PanelEvidenceExtractor()
+        panel_evidence_records = evidence_extractor.run(
+            project_dir=project_dir,
+            page_paths=page_paths,
+            panels=updated_panels,
+            chapter_metadata=project.chapter_metadata,
+            force_refresh=force_refresh or bool(job.payload.get("refresh_panel_evidence")),
+            allow_crop_ocr=bool(job.payload.get("deep_panel_evidence_scan")),
+            allow_apple_vision=bool(job.payload.get("apple_vision_panel_evidence")),
+            allow_metadata_ocr=bool(job.payload.get("metadata_panel_evidence")),
+            progress_callback=lambda progress, message: context.progress(34 + progress * 0.02, message),
+            cancel_callback=context.ensure_not_cancelled,
+        )
+        context.ensure_not_cancelled()
+        transcript_evidence_records = _transcript_evidence_records(project_dir)
+        if transcript_evidence_records:
+            panel_evidence_records = _merge_panel_evidence_records(panel_evidence_records, transcript_evidence_records)
+
     evidence_snapshot = _script_evidence_snapshot(
         [panel for panel in updated_panels if bool(getattr(panel, "keep", False))],
         panel_vision_records,
@@ -1571,18 +2055,26 @@ def run_script_generation(context: PipelineContext) -> None:
     # Enrich character_dictionary with appearance descriptions so the
     # LLM can identify characters visually in panels with no OCR text.
     context.progress(36, "Profiling character appearances")
-    try:
-        profiler = CharacterVisualProfiler()
-        character_dictionary = profiler.enrich_character_dictionary(
-            character_dictionary,
-            updated_panels,
-            scenes,
-            panel_image_dir=project_dir / "panels",
-            cache_dir=project_dir / "output",
+    kept_panel_count = sum(1 for panel in updated_panels if bool(getattr(panel, "keep", False)))
+    if kept_panel_count > 240 and (panel_vision_records or canonical_characters):
+        logger.info(
+            "Skipping character visual profiling for %s (%d kept panels; existing vision/canonical evidence is available)",
+            context.project_id,
+            kept_panel_count,
         )
-        write_json(project_dir / "output" / "character_dictionary.json", character_dictionary)
-    except Exception as exc:
-        logger.warning("Character visual profiling failed (non-fatal): %s", exc)
+    else:
+        try:
+            profiler = CharacterVisualProfiler()
+            character_dictionary = profiler.enrich_character_dictionary(
+                character_dictionary,
+                updated_panels,
+                scenes,
+                panel_image_dir=project_dir / "panels",
+                cache_dir=project_dir / "output",
+            )
+            write_json(project_dir / "output" / "character_dictionary.json", character_dictionary)
+        except Exception as exc:
+            logger.warning("Character visual profiling failed (non-fatal): %s", exc)
 
     # ── Step 2: Story-first script generation ───────────────────────
     context.progress(38, "Building scene-level story script")
@@ -1641,7 +2133,7 @@ def run_script_generation(context: PipelineContext) -> None:
         series_context=series_context,
         progress_callback=lambda p, msg: context.progress(39 + p * 0.55, msg),
         panel_vision_records=panel_vision_records,
-        panel_evidence_records=None,
+        panel_evidence_records=panel_evidence_records,
         canonical_characters=canonical_characters,
         style_vocab=style_vocab,
         disable_multimodal_rescue=bool(job.payload.get("disable_multimodal_rescue")),
@@ -1676,6 +2168,7 @@ def run_script_generation(context: PipelineContext) -> None:
         context.project_id,
         story_bundle.story_segments,
         story_block=story_bundle.story_text,
+        job_id=job.id,
     )
     if story_bundle.story_text:
         story_path = project_dir / "output" / "narration_story.txt"
@@ -1817,6 +2310,8 @@ def run_narration_generation(context: PipelineContext) -> None:
     narration_texts = [segment.text.strip() for segment in story_segments if segment.text.strip()] or script_lines
     narration_ids = [segment.id for segment in story_segments if segment.text.strip()] or [f"segment_{index:03d}" for index, _ in enumerate(narration_texts, start=1)]
     character_names = _collect_pronunciation_names(project_dir, narration_texts + list(script_lines))
+    supported_character_names = _collect_supported_narration_names(project_dir, project)
+    world_terms = _collect_narration_world_terms(project_dir, project)
     generate_narration(
         narration_texts,
         Path(store._project_dir(context.project_id) / "audio"),
@@ -1827,6 +2322,8 @@ def run_narration_generation(context: PipelineContext) -> None:
         language_hint=project.chapter_metadata.language,
         pronunciation_dictionary={},
         character_names=character_names,
+        supported_character_names=supported_character_names,
+        world_terms=world_terms,
     )
     store.update_stage_state(
         context.project_id,

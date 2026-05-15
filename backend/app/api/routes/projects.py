@@ -29,6 +29,7 @@ from app.schemas.project import (
     PipelineStage,
     PanelRewriteRequest,
     PanelRewriteResponse,
+    ProjectRenameRequest,
     ProjectSettingsUpdateRequest,
     QueueStageRequest,
     RewindStageRequest,
@@ -402,24 +403,32 @@ async def create_project(
     try:
         if source_type == SourceType.MANGADEX_URL and mangadex_url:
             urls = [entry.strip() for entry in mangadex_url.splitlines() if entry.strip()]
-            source_reference = "\n".join(
-                mangadex_service.resolve_import_urls(
-                    urls,
-                    chapter_range=chapter_range,
-                    preferred_language=source_language,
-                    duplicate_mode=duplicate_mode.value,
+            try:
+                source_reference = "\n".join(
+                    mangadex_service.resolve_import_urls(
+                        urls,
+                        chapter_range=chapter_range,
+                        preferred_language=source_language,
+                        duplicate_mode=duplicate_mode.value,
+                    )
                 )
-            )
+            except Exception as exc:
+                logger.warning(f"Failed to resolve MangaDex URLs, using raw URLs: {exc}")
+                source_reference = mangadex_url
         elif source_type == SourceType.COMIX_TO_URL and comix_url:
             urls = [entry.strip() for entry in comix_url.splitlines() if entry.strip()]
-            source_reference = "\n".join(
-                comix_service.resolve_import_urls(
-                    urls,
-                    chapter_range=chapter_range,
-                    preferred_language=source_language,
-                    duplicate_mode=duplicate_mode.value,
+            try:
+                source_reference = "\n".join(
+                    comix_service.resolve_import_urls(
+                        urls,
+                        chapter_range=chapter_range,
+                        preferred_language=source_language,
+                        duplicate_mode=duplicate_mode.value,
+                    )
                 )
-            )
+            except Exception as exc:
+                logger.warning(f"Failed to resolve comix.to URLs, using raw URLs: {exc}")
+                source_reference = comix_url
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     project = store.create_project(name=name, source_type=source_type, source_reference=source_reference)
@@ -511,9 +520,16 @@ def update_panels(project_id: str, payload: PanelUpdateRequest):
     ):
         (output_dir / filename).unlink(missing_ok=True)
     store.invalidate_script_outputs(project_id, clear_generated_panel_narration=True)
-    saved_panels = store.load_panels(project_id)
-    _save_human_panel_training_examples(project_id, existing_panels, saved_panels)
-    _save_human_ocr_training_examples(project_id, existing_panels, saved_panels)
+
+    # Save training examples in background to avoid blocking the response
+    def save_training_examples():
+        try:
+            _save_human_panel_training_examples(project_id, existing_panels, panels_to_save)
+            _save_human_ocr_training_examples(project_id, existing_panels, panels_to_save)
+        except Exception:
+            logger.exception("Failed to save human training examples")
+
+    queue.enqueue(save_training_examples)
 
     # Detector training is intentionally manual by default because background
     # training can make the laptop sluggish right after a panel-review save.
@@ -691,6 +707,117 @@ def rewrite_script_panel(project_id: str, payload: PanelRewriteRequest):
     return PanelRewriteResponse(panel_id=panel.id, narration=narration, mode=payload.mode)
 
 
+@router.post("/{project_id}/script/regenerate-panel-vision")
+def regenerate_panel_vision(project_id: str, payload: PanelRewriteRequest):
+    """Regenerate a single panel's narration using vision-grounded narration.
+
+    This is the per-panel "fix-in-place" endpoint for the vision pipeline.
+    Loads the panel image, sends it to Gemini Vision with surrounding panel
+    narrations as continuity, and writes the result back to panels.json
+    plus the manifest. Lets the UI fix flagged panels without rerunning
+    the entire chapter.
+    """
+    import asyncio as _asyncio
+    import json as _json
+    from app.services.panel_vision_narrator import PanelInput, PanelVisionNarrator
+
+    if not store.project_exists(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    project = store.get_project(project_id)
+    panel = next((item for item in project.panels if item.id == payload.panel_id), None)
+    if panel is None:
+        raise HTTPException(status_code=404, detail="Panel not found")
+    if not panel.keep:
+        raise HTTPException(status_code=400, detail="Panel is not kept; cannot regenerate")
+
+    project_dir = store._project_dir(project_id)
+    image_path = project_dir / "panels" / f"panel_{panel.order:03d}.png"
+    if not image_path.exists():
+        # Fall back to alternate naming
+        for ext in ("jpg", "jpeg", "webp"):
+            alt = project_dir / "panels" / f"panel_{panel.order:03d}.{ext}"
+            if alt.exists():
+                image_path = alt
+                break
+    if not image_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Panel image not found: panel_{panel.order:03d}.*",
+        )
+
+    # Build continuity context from the immediately preceding kept panels
+    kept_ordered = sorted(
+        [p for p in project.panels if p.keep],
+        key=lambda p: (p.page, p.panel),
+    )
+    panel_index = next(
+        (i for i, p in enumerate(kept_ordered) if p.id == panel.id), 0
+    )
+    prior = kept_ordered[max(0, panel_index - 4):panel_index]
+    context_str = "\n".join(
+        f"  • {(p.narration or '').strip()}"
+        for p in prior
+        if (p.narration or "").strip()
+    ) or "  (this is the opening panel)"
+
+    panel_input = PanelInput(
+        panel_id=panel.id,
+        order=panel.order,
+        page=panel.page,
+        panel=panel.panel,
+        image_path=image_path,
+        ocr_text=panel.ocr_text or "",
+        character_hints=[],
+    )
+
+    narrator = PanelVisionNarrator()
+    async def _run_one() -> Any:
+        # Use a fresh semaphore of size 1 so the call serializes properly
+        semaphore = _asyncio.Semaphore(1)
+        return await narrator._narrate_one(panel_input, context_str, semaphore)
+    result = _asyncio.run(_run_one())
+
+    if result.status != "ok":
+        raise HTTPException(
+            status_code=502,
+            detail=f"Vision narration failed: {result.reason}",
+        )
+
+    # Persist: update panels.json and the manifest in lockstep.
+    panels_path = project_dir / "panels.json"
+    panels_json = _json.loads(panels_path.read_text(encoding="utf-8"))
+    for p in panels_json:
+        if p["id"] == panel.id:
+            p["narration"] = result.narration
+            p["narration_source"] = "panel_vision_narrator"
+            flags = [f for f in (p.get("review_flags") or []) if not f.startswith("vision_")]
+            p["review_flags"] = flags
+            break
+    panels_path.write_text(_json.dumps(panels_json, indent=2), encoding="utf-8")
+
+    # Update manifest in-place (keep ordering, just edit this segment's text)
+    manifest_path = project_dir / "script_manifest.json"
+    if manifest_path.exists():
+        manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+        for seg in manifest.get("story_segments", []):
+            if panel.id in (seg.get("panel_ids") or []):
+                seg["text"] = result.narration
+                seg["narration"] = result.narration
+                seg["needs_regenerate"] = False
+                seg["regenerate_reason"] = ""
+                break
+        # Rebuild script_lines from segments to stay in sync
+        manifest["script_lines"] = [s.get("text", "") for s in manifest.get("story_segments", [])]
+        manifest["script_story"] = "\n".join(line for line in manifest["script_lines"] if line)
+        manifest_path.write_text(_json.dumps(manifest, indent=2), encoding="utf-8")
+
+    return PanelRewriteResponse(
+        panel_id=panel.id,
+        narration=result.narration,
+        mode=payload.mode,
+    )
+
+
 @router.patch("/{project_id}/settings")
 def update_project_settings(project_id: str, payload: ProjectSettingsUpdateRequest):
     if not store.project_exists(project_id):
@@ -732,6 +859,16 @@ def update_project_settings(project_id: str, payload: ProjectSettingsUpdateReque
         continue_auto_run_pipeline(store, queue, project_id, source="enabling auto-run")
 
     return store.get_project(project_id)
+
+
+@router.patch("/{project_id}/name")
+def rename_project(project_id: str, payload: ProjectRenameRequest):
+    if not store.project_exists(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Project name cannot be blank")
+    return store.update_project_metadata(project_id, name=name)
 
 
 @router.post("/{project_id}/jobs")

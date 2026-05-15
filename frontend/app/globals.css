@@ -2,8 +2,59 @@
 @tailwind components;
 @tailwind utilities;
 
+/* =========================================================================
+   Panelia design tokens — liquid-glass aesthetic, Notion-inspired IA.
+   Single source of truth for the visual system. Every component should
+   pull from these vars, never hardcode colors or radii.
+   ========================================================================= */
 :root {
   color-scheme: dark;
+
+  /* Foundation */
+  --p-bg-base: 10 10 15;
+  --p-bg-tint: 26 26 46;
+
+  /* Surfaces — translucent glass, layered by depth */
+  --p-surface-1: 255 255 255 / 0.03;
+  --p-surface-2: 255 255 255 / 0.06;
+  --p-surface-3: 255 255 255 / 0.10;
+  --p-hairline:  255 255 255 / 0.08;
+
+  /* Text — high contrast, never pure white */
+  --p-text:      244 244 245;
+  --p-muted:     161 161 170;
+  --p-hint:      113 113 122;
+
+  /* Accent — single mint/aqua family */
+  --p-accent:        127 255 212;
+  --p-accent-soft:   127 255 212 / 0.12;
+  --p-accent-ring:   127 255 212 / 0.35;
+
+  /* Semantic — ambient glows for confidence shading */
+  --p-ok:        134 239 172;
+  --p-warn:      253 224 71;
+  --p-fail:      251 113 133;
+  --p-info:      147 197 253;
+
+  /* Motion */
+  --p-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --p-fast: 120ms;
+  --p-mid:  260ms;
+  --p-slow: 520ms;
+
+  /* Radii */
+  --p-r-sm: 8px;
+  --p-r-md: 16px;
+  --p-r-lg: 24px;
+  --p-r-xl: 32px;
+
+  /* Shadows */
+  --p-shadow-card:
+    0 1px 0 0 rgb(255 255 255 / 0.04) inset,
+    0 12px 32px -8px rgb(0 0 0 / 0.4);
+  --p-shadow-glow:
+    0 0 0 1px rgb(var(--p-accent-ring)),
+    0 0 32px -4px rgb(var(--p-accent) / 0.6);
 }
 
 * {
@@ -13,25 +64,22 @@
 html,
 body {
   min-height: 100%;
-  background: hsl(240 17% 7%);
 }
 
 body {
   margin: 0;
-  color: hsl(0 0% 98%);
+  color: rgb(var(--p-text));
+  background:
+    radial-gradient(60% 60% at 50% 0%, rgb(var(--p-bg-tint) / 0.7), transparent 70%),
+    rgb(var(--p-bg-base));
+  background-attachment: fixed;
+  font-family: "Geist", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-button,
-input,
-textarea,
-select {
-  font: inherit;
-}
+a { color: inherit; text-decoration: none; }
+button, input, textarea, select { font: inherit; }
 
 select {
   appearance: none;
@@ -41,10 +89,7 @@ select {
   background-size: 0.9rem;
   padding-right: 2.9rem;
 }
-
-select::-ms-expand {
-  display: none;
-}
+select::-ms-expand { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -55,4 +100,113 @@ select::-ms-expand {
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* =========================================================================
+   Reusable component layer.
+   ========================================================================= */
+@layer components {
+  /* Liquid glass surface — the foundational primitive */
+  .p-glass {
+    background: rgb(var(--p-surface-1));
+    backdrop-filter: blur(24px) saturate(1.2);
+    -webkit-backdrop-filter: blur(24px) saturate(1.2);
+    border: 1px solid rgb(var(--p-hairline));
+    border-radius: var(--p-r-lg);
+    box-shadow: var(--p-shadow-card);
+    transition: background var(--p-mid) var(--p-ease),
+                border-color var(--p-mid) var(--p-ease),
+                transform var(--p-mid) var(--p-ease);
+  }
+  .p-glass-hover:hover {
+    background: rgb(var(--p-surface-2));
+    border-color: rgb(var(--p-accent-soft));
+  }
+  .p-glass-active {
+    background: rgb(var(--p-surface-2));
+    border-color: rgb(var(--p-accent-ring));
+    box-shadow: var(--p-shadow-glow);
+  }
+
+  /* Pill — used everywhere for status, tags, meta */
+  .p-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    background: rgb(var(--p-surface-2));
+    border: 1px solid rgb(var(--p-hairline));
+    color: rgb(var(--p-muted));
+    line-height: 1.4;
+  }
+  .p-pill-ok    { color: rgb(var(--p-ok));     border-color: rgb(var(--p-ok)     / 0.25); background: rgb(var(--p-ok)     / 0.08); }
+  .p-pill-warn  { color: rgb(var(--p-warn));   border-color: rgb(var(--p-warn)   / 0.25); background: rgb(var(--p-warn)   / 0.08); }
+  .p-pill-fail  { color: rgb(var(--p-fail));   border-color: rgb(var(--p-fail)   / 0.25); background: rgb(var(--p-fail)   / 0.08); }
+  .p-pill-info  { color: rgb(var(--p-info));   border-color: rgb(var(--p-info)   / 0.25); background: rgb(var(--p-info)   / 0.08); }
+  .p-pill-accent{ color: rgb(var(--p-accent)); border-color: rgb(var(--p-accent-ring));   background: rgb(var(--p-accent-soft)); }
+
+  /* Primary action — the only "loud" element */
+  .p-btn-primary {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    padding: 0.625rem 1.25rem;
+    border-radius: var(--p-r-md);
+    font-weight: 500;
+    color: rgb(var(--p-bg-base));
+    background: rgb(var(--p-accent));
+    box-shadow: 0 0 24px -4px rgb(var(--p-accent) / 0.5);
+    transition: transform var(--p-fast) var(--p-ease),
+                box-shadow var(--p-mid) var(--p-ease);
+  }
+  .p-btn-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 0 32px -2px rgb(var(--p-accent) / 0.7);
+  }
+  .p-btn-primary:disabled {
+    opacity: 0.5; transform: none; cursor: not-allowed;
+  }
+
+  /* Ghost button — secondary actions */
+  .p-btn-ghost {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: var(--p-r-md);
+    color: rgb(var(--p-text));
+    background: rgb(var(--p-surface-2));
+    border: 1px solid rgb(var(--p-hairline));
+    transition: background var(--p-fast) var(--p-ease);
+  }
+  .p-btn-ghost:hover {
+    background: rgb(var(--p-surface-3));
+  }
+
+  /* Confidence shading — left border accent for cards. */
+  .p-edge-ok   { box-shadow: inset 3px 0 0 0 rgb(var(--p-ok)   / 0.7), var(--p-shadow-card); }
+  .p-edge-warn { box-shadow: inset 3px 0 0 0 rgb(var(--p-warn) / 0.7), var(--p-shadow-card); }
+  .p-edge-fail { box-shadow: inset 3px 0 0 0 rgb(var(--p-fail) / 0.7), var(--p-shadow-card); }
+  .p-edge-info { box-shadow: inset 3px 0 0 0 rgb(var(--p-info) / 0.7), var(--p-shadow-card); }
+}
+
+/* Motion keyframes */
+@keyframes p-breathe {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1;    }
+}
+@keyframes p-shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%);  }
+}
+.p-anim-breathe { animation: p-breathe 2.4s var(--p-ease) infinite; }
+.p-anim-shimmer-track {
+  position: relative; overflow: hidden;
+}
+.p-anim-shimmer-track::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgb(var(--p-accent) / 0.15) 50%,
+    transparent 100%);
+  animation: p-shimmer 1.8s var(--p-ease) infinite;
 }

@@ -194,6 +194,9 @@ class NarrationMode(str, Enum):
 class PipelineConfig(BaseModel):
     auto_run_end_to_end: bool = False
     narration_mode: NarrationMode = NarrationMode.PANEL
+    # Default for new projects: the vision-grounded narration pipeline.
+    # Existing projects keep whatever value is already saved in metadata.
+    script_pipeline_version: str = "vision"
 
     @field_validator("narration_mode", mode="before")
     @classmethod
@@ -203,6 +206,16 @@ class PipelineConfig(BaseModel):
         if v not in (NarrationMode.PANEL, NarrationMode.PANEL.value):
             return NarrationMode.PANEL
         return v
+
+    @field_validator("script_pipeline_version", mode="before")
+    @classmethod
+    def _coerce_script_pipeline_version(cls, v: object) -> str:
+        value = str(v or "vision").strip().casefold()
+        if value == "vision":
+            return "vision"
+        if value == "vnext":
+            return "vNext"
+        return "legacy"
 
 
 class ChapterMetadata(BaseModel):
@@ -259,6 +272,7 @@ class PanelVisionRecord(BaseModel):
     scene_change: bool = False
     confidence: float = 0.0
     character_names: list[str] = Field(default_factory=list)
+    character_roles: dict[str, list[str]] = Field(default_factory=dict)
     visual_only: bool = False
     suppression_reason: str | None = None
 
@@ -322,6 +336,7 @@ class ProjectDetail(ProjectSummary):
     script_lines: list[str] = Field(default_factory=list)
     script_story: str | None = None
     story_segments: list[StorySegment] = Field(default_factory=list)
+    script_display_metadata: dict[str, Any] = Field(default_factory=dict)
     audio_files: list[AudioFile] = Field(default_factory=list)
     videos: list[VideoFile] = Field(default_factory=list)
     available_music_tracks: list[dict[str, Any]] = Field(default_factory=list)
@@ -370,6 +385,10 @@ class DuplicateProjectRequest(BaseModel):
     name: str | None = None
     video_name: str | None = None
     copy_all_videos: bool = False
+
+
+class ProjectRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
 
 
 class BatchProjectRequest(BaseModel):

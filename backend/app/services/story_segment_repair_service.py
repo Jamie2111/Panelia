@@ -1,3 +1,11 @@
+"""DEPRECATED — see app/services/DEPRECATED.md.
+
+StorySegmentRepairService patches weak narrations after the legacy cascade.
+The vision pipeline doesn't produce "weak" narrations to repair — bad panels
+get flagged for in-place regeneration in the UI instead. Retained for
+projects still on script_pipeline_version="legacy".
+"""
+
 from __future__ import annotations
 
 import asyncio

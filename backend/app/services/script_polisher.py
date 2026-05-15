@@ -1,5 +1,9 @@
 """Script polishing service.
 
+DEPRECATED (see app/services/DEPRECATED.md). New code should not import
+ScriptPolisher. Use PanelVisionNarrator instead — it produces panel-grounded
+narrations on the first pass, so a polish cascade is no longer needed.
+
 Post-processes draft narration for cohesion and quality.
 Replaces the cohesive rewrite in stages.py, all dedup/repair in
 panel_script_builder.py, and script_cleaner_service.py with a single
