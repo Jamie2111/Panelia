@@ -2028,15 +2028,15 @@ class PanelDetectorAdapter:
         panels = adapter.detect_panels(page_paths, ...)
     """
 
-    _DETECTOR_VERSION = "2.4.1"
+    _DETECTOR_VERSION = "2.5.7"
 
     # ── Cross-page duplicate detection ────────────────────────────
-    # Panels whose downscaled thumbnails match within this threshold
-    # (mean absolute pixel difference, 0-255 scale) are considered
-    # duplicates.  Title cards and cover pages across chapters are
-    # the primary target.
-    _DEDUP_THUMB_SIZE: int = 32
-    _DEDUP_MAX_DIFF: float = 6.0
+    # Panels are compared with a perceptual difference hash (dHash):
+    # an 8×8 grid of horizontal gradient bits (64-bit integer).
+    # Panels whose hashes differ by at most this many bits (Hamming
+    # distance) are considered duplicates.  Title cards and cover
+    # pages across chapters are the primary target.
+    _DEDUP_HASH_MAX_HAMMING: int = 8
 
     # ── Boundary-panel detection ─────────────────────────────────
     # Panels that touch the very top or bottom edge of a page and
@@ -2047,6 +2047,7 @@ class PanelDetectorAdapter:
     _SAME_PAGE_OVERLAP_PX: int = 160
     _SAME_PAGE_GAP_RATIO: float = 0.12
     _WHITE_GAP_SHORT_RATIO: float = 0.32
+    _FORCED_PANEL_INSET_RATIO: float = 0.05
 
     def __init__(self, magi_model: Any | None = None) -> None:
         self._settings = get_settings()
@@ -2301,6 +2302,20 @@ class PanelDetectorAdapter:
             "characters": character_entries,
         }
 
+    def _dhash(self, crop: np.ndarray) -> int:
+        """Compute a 64-bit perceptual difference hash for a grayscale crop.
+
+        Resizes the crop to a 9×8 grid, then encodes the direction of each
+        horizontal gradient (right pixel brighter than left) as one bit.
+        The result is a 64-bit integer.  Two panels are considered duplicates
+        when their Hamming distance is ≤ _DEDUP_HASH_MAX_HAMMING (12.5% of
+        bits), making the check robust to minor compression or resize artefacts
+        while still distinguishing panels that differ only in small text.
+        """
+        resized = cv2.resize(crop, (9, 8), interpolation=cv2.INTER_AREA)
+        diff = resized[:, 1:] > resized[:, :-1]  # 8×8 boolean grid = 64 bits
+        return sum(int(bool(b)) << i for i, b in enumerate(diff.flatten()))
+
     def _deduplicate_across_pages(
         self,
         panel_boxes: list[dict],
@@ -2313,7 +2328,7 @@ class PanelDetectorAdapter:
         Keeps the first occurrence and marks subsequent duplicates as
         auto-skipped.
         """
-        thumbs: list[np.ndarray | None] = []
+        hashes: list[int | None] = []
         page_cache: dict[int, np.ndarray] = {}
 
         for pb in panel_boxes:
@@ -2328,7 +2343,7 @@ class PanelDetectorAdapter:
 
             page_gray = page_cache.get(page_idx)
             if page_gray is None:
-                thumbs.append(None)
+                hashes.append(None)
                 continue
 
             x, y = int(pb["x"]), int(pb["y"])
@@ -2338,34 +2353,26 @@ class PanelDetectorAdapter:
                 max(x, 0):min(x + w, page_gray.shape[1]),
             ]
             if crop.size == 0:
-                thumbs.append(None)
+                hashes.append(None)
                 continue
 
-            # Resize to small thumbnail for fast comparison
-            thumb = cv2.resize(
-                crop,
-                (self._DEDUP_THUMB_SIZE, self._DEDUP_THUMB_SIZE),
-                interpolation=cv2.INTER_AREA,
-            )
-            thumbs.append(thumb)
+            hashes.append(self._dhash(crop))
 
         # Mark duplicates (keep first occurrence)
         seen_indices: list[int] = []
-        for i, thumb_i in enumerate(thumbs):
-            if thumb_i is None or panel_boxes[i].get("auto_skipped"):
+        for i, hash_i in enumerate(hashes):
+            if hash_i is None or panel_boxes[i].get("auto_skipped"):
                 continue
             is_dup = False
             for j in seen_indices:
-                thumb_j = thumbs[j]
-                if thumb_j is None:
+                hash_j = hashes[j]
+                if hash_j is None:
                     continue
                 # Same-page panels are handled by per-page dedup already
                 if panel_boxes[i]["page"] == panel_boxes[j]["page"]:
                     continue
-                diff = float(np.mean(np.abs(
-                    thumb_i.astype(np.float32) - thumb_j.astype(np.float32)
-                )))
-                if diff <= self._DEDUP_MAX_DIFF:
+                hamming = bin(hash_i ^ hash_j).count("1")
+                if hamming <= self._DEDUP_HASH_MAX_HAMMING:
                     is_dup = True
                     break
             if is_dup:
@@ -2479,6 +2486,58 @@ class PanelDetectorAdapter:
                     boxes.append((x, y, width, height))
             return boxes
 
+        def page_text_boxes(page_idx: int) -> list[tuple[int, int, int, int]]:
+            """Return OCR text box coordinates for the given page."""
+            payload = self._last_character_review_page_payloads.get(int(page_idx), {})
+            boxes: list[tuple[int, int, int, int]] = []
+            for item in payload.get("texts", []) or []:
+                try:
+                    x, y, width, height = [int(value) for value in (item.get("bbox") or [])[:4]]
+                except Exception:
+                    continue
+                if width > 0 and height > 0:
+                    boxes.append((x, y, width, height))
+            return boxes
+
+        def has_text_box_inside(pb: dict, text_boxes: list[tuple[int, int, int, int]]) -> bool:
+            """True if at least one OCR text box falls within the panel bbox."""
+            px, py = int(pb["x"]), int(pb["y"])
+            pr, pb_bottom = px + int(pb["width"]), py + int(pb["height"])
+            for tx, ty, tw, th in text_boxes:
+                # Center of the text box must be inside the panel
+                cx = tx + tw / 2
+                cy = ty + th / 2
+                if px <= cx <= pr and py <= cy <= pb_bottom:
+                    return True
+            return False
+
+        def text_density_inside(pb: dict, text_boxes: list[tuple[int, int, int, int]]) -> float:
+            """Fraction of the panel area covered by OCR text bboxes.
+
+            Used by the caption-only filter: a panel whose visible content
+            is dominated by a speech bubble has text density ≥ 0.20 (the
+            text is most of what's drawn). Real story panels have art
+            outside the bubble, so density stays low (<0.10) even when
+            dialogue is present.
+            """
+            px, py = int(pb["x"]), int(pb["y"])
+            pw, ph = int(pb["width"]), int(pb["height"])
+            if pw <= 0 or ph <= 0:
+                return 0.0
+            panel_area = pw * ph
+            covered = 0
+            pr = px + pw
+            pb_bottom = py + ph
+            for tx, ty, tw, th in text_boxes:
+                # Clip the text box to the panel rectangle and sum the overlap.
+                x1 = max(tx, px)
+                y1 = max(ty, py)
+                x2 = min(tx + tw, pr)
+                y2 = min(ty + th, pb_bottom)
+                if x2 > x1 and y2 > y1:
+                    covered += (x2 - x1) * (y2 - y1)
+            return covered / float(panel_area)
+
         def has_character_center_inside(pb: dict, character_boxes: list[tuple[int, int, int, int]]) -> bool:
             x, y = int(pb["x"]), int(pb["y"])
             right = x + int(pb["width"])
@@ -2539,6 +2598,7 @@ class PanelDetectorAdapter:
             page_h, page_w = page_img.shape[:2]
             is_webtoon_page = self._is_webtoon_page(page_w, page_h)
             character_boxes = page_character_boxes(page_idx)
+            text_boxes_on_page = page_text_boxes(page_idx)
             active = sorted(
                 [pb for pb in items if not pb.get("auto_skipped")],
                 key=lambda pb: (int(pb["y"]), int(pb["x"]), int(pb["panel"])),
@@ -2659,6 +2719,9 @@ class PanelDetectorAdapter:
                 )
                 source = str(current.get("reconstruction_source") or "")
                 no_character_center = not has_character_center_inside(current, character_boxes)
+                # If character detection missed the character but the panel
+                # contains OCR text (speech bubbles), treat it as a real panel.
+                has_dialogue = has_text_box_inside(current, text_boxes_on_page)
                 near_story_panel = (
                     (prev_panel is not None and gap_above <= max(int(page_h * 0.18), 220))
                     or (next_panel is not None and gap_below <= max(int(page_h * 0.18), 220))
@@ -2667,6 +2730,7 @@ class PanelDetectorAdapter:
                 )
                 floating_text_fragment_like = (
                     no_character_center
+                    and not has_dialogue  # panel with dialogue is a real panel
                     and near_story_panel
                     and area_ratio <= 0.16
                     and int(current["width"]) <= page_w * 0.48
@@ -2682,6 +2746,24 @@ class PanelDetectorAdapter:
                             and float(current_metrics["edge_density"]) <= 0.13
                         )
                     )
+                )
+                # Caption-only panel detection. Catches panels where the
+                # visible content is overwhelmingly text (a speech bubble
+                # occupying the whole panel, like the "WHICH MEANS UNTIL
+                # THEY FIND THEIR OTHER HALF" example). Unlike
+                # `speech_bubble_strip_like` this works for ANY shape:
+                #   • Mostly-white background      (white_ratio ≥ 0.50)
+                #   • Sparse linework               (edge_density ≤ 0.10)
+                #   • No character bbox center      (character_hits == 0)
+                #   • OCR text occupies ≥ 20% of    (text_density ≥ 0.20)
+                #     the panel area
+                # All four signals together = caption panel, not story.
+                text_density = text_density_inside(current, text_boxes_on_page)
+                caption_only_panel_like = (
+                    no_character_center
+                    and float(current_metrics["white_ratio"]) >= 0.50
+                    and float(current_metrics["edge_density"]) <= 0.10
+                    and text_density >= 0.20
                 )
                 if top_continuation_like:
                     current["auto_skipped"] = True
@@ -2711,6 +2793,10 @@ class PanelDetectorAdapter:
                     current["auto_skipped"] = True
                     current["keep"] = False
                     current["skip_reason"] = "floating speech-bubble/text fragment"
+                elif caption_only_panel_like:
+                    current["auto_skipped"] = True
+                    current["keep"] = False
+                    current["skip_reason"] = "caption-only panel (mostly text bubble)"
 
         return panel_boxes
 
@@ -2822,9 +2908,39 @@ class PanelDetectorAdapter:
             if mask_trimmed is not None:
                 pb = mask_trimmed
 
+            inset = self._force_inner_panel_crop(page_img, pb)
+            if inset is not None:
+                pb = inset
+
             refined.append(pb)
 
         return refined
+
+    def _force_inner_panel_crop(self, page_img: np.ndarray, pb: dict) -> dict | None:
+        x, y = int(pb["x"]), int(pb["y"])
+        w, h = int(pb["width"]), int(pb["height"])
+        if w < 120 or h < 120:
+            return None
+
+        inset_x = max(2, int(round(w * self._FORCED_PANEL_INSET_RATIO)))
+        inset_y = max(2, int(round(h * self._FORCED_PANEL_INSET_RATIO)))
+        if w - inset_x * 2 < 60 or h - inset_y * 2 < 60:
+            return None
+
+        page_h, page_w = page_img.shape[:2]
+        new_x = min(max(x + inset_x, 0), max(page_w - 1, 0))
+        new_y = min(max(y + inset_y, 0), max(page_h - 1, 0))
+        new_right = max(min(x + w - inset_x, page_w), new_x + 1)
+        new_bottom = max(min(y + h - inset_y, page_h), new_y + 1)
+        if new_right <= new_x or new_bottom <= new_y:
+            return None
+
+        tightened = dict(pb)
+        tightened["x"] = int(new_x)
+        tightened["y"] = int(new_y)
+        tightened["width"] = int(new_right - new_x)
+        tightened["height"] = int(new_bottom - new_y)
+        return tightened
 
     def _trim_border_connected_blank_regions(self, page_img: np.ndarray, pb: dict) -> dict | None:
         x, y = int(pb["x"]), int(pb["y"])

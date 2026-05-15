@@ -1411,6 +1411,7 @@ def _run_script_generation_vision(
     import asyncio
     import json as _json
 
+    from app.services.cast_bible_service import CastBibleService
     from app.services.panel_vision_narrator import (
         PanelVisionNarrator,
         panels_from_store,
@@ -1428,6 +1429,33 @@ def _run_script_generation_vision(
         context.fail("No kept panels to narrate.")
         return
 
+    # ── Build / load the cast bible BEFORE narrating ─────────────────────
+    # One Gemini call per project, cached at output/cast_bible.json. For
+    # popular series the model already knows the cast, so we get reliable
+    # character names ("Zero Two") instead of generic descriptions
+    # ("a pink-haired girl"). For obscure series the bible is empty and
+    # the narrator falls back to its existing generic-description prompt.
+    context.progress(2, "Looking up cast for character names")
+    chapter_meta = getattr(project, "chapter_metadata", None)
+    manga_title = getattr(chapter_meta, "manga_title", None) or project.name
+    chapter_title = getattr(chapter_meta, "chapter_title", None) or ""
+    try:
+        cast_service = CastBibleService()
+        bible = cast_service.ensure_bible(
+            project_dir,
+            manga_title=manga_title or "(unknown)",
+            chapter_title=chapter_title or "(unknown)",
+        )
+        cast_block = CastBibleService.format_for_prompt(bible)
+        if bible and bible.members:
+            logger.info(
+                "Cast bible loaded for %s: %d characters (%s)",
+                context.project_id, len(bible.members), bible.source,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Cast bible step failed (continuing without): %s", exc)
+        cast_block = ""
+
     context.progress(5, f"Starting vision narration for {len(panel_inputs)} panels")
     narrator = PanelVisionNarrator()
 
@@ -1439,6 +1467,7 @@ def _run_script_generation_vision(
     batch = asyncio.run(
         narrator.narrate_chapter(
             panel_inputs,
+            cast_block=cast_block,
             progress_callback=_progress,
             cancel_callback=context.ensure_not_cancelled,
         )

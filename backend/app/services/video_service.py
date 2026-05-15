@@ -1461,16 +1461,30 @@ class VideoRenderService:
         write_json(path, result)
 
     def _panel_time(self, script_line: str, audio_duration: float, manual_duration: float | None) -> float:
+        """Compute the on-screen time for one panel.
+
+        Goal: each panel's display duration matches its narration audio
+        plus a small tail so the whole video feels like one continuous
+        read-through with no dead air. Concretely:
+
+          • If we have audio: target = audio + 80ms tail. Cap floor at
+            0.45s (the minimum a panel can be on screen before the eye
+            registers anything). DROP the legacy 1.9s minimum — it was
+            inserting up to 1.5s of silence after short panels.
+          • If we don't have audio (rare — preview before TTS), fall back
+            to a word-count heuristic that's also a touch tighter than
+            before.
+          • A user-set `manual_duration` (the inspector slider) wins over
+            any heuristic, since that's an explicit override.
+        """
         words = len([word for word in script_line.split() if word.strip()])
-        heuristic = max(3.0, words * 0.35) if words else 2.5
+        heuristic = max(1.5, words * 0.32) if words else 1.2
         if manual_duration is not None:
-            heuristic = max(heuristic, float(manual_duration))
+            return round(max(float(manual_duration), 0.45), 2)
         if audio_duration:
-            padding = min(max(float(audio_duration) * 0.08, 0.15), 0.4)
-            target = max(float(audio_duration) + padding, 1.9)
-            if manual_duration is not None:
-                target = max(target, float(manual_duration))
-            return round(target, 2)
+            tail = 0.08  # ~one frame plus a hair of breath before the next clip starts
+            target = float(audio_duration) + tail
+            return round(max(target, 0.45), 2)
         return round(heuristic, 2)
 
     def _same_page_transition_duration(

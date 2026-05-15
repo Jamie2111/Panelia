@@ -144,7 +144,7 @@ If the panel is borderline OR explicit, give a short factual reason
 (under 12 words) explaining what triggered the rating, so the user can
 review.
 
-CONTINUITY CONTEXT (last few narrations leading into this panel):
+{cast_block}CONTINUITY CONTEXT (last few narrations leading into this panel):
 {context}
 
 THIS PANEL:
@@ -243,16 +243,20 @@ class PanelVisionNarrator:
         self,
         panels: list[PanelInput],
         *,
+        cast_block: str = "",
         progress_callback: Callable[[float, str], None] | None = None,
         cancel_callback: Callable[[], None] | None = None,
     ) -> NarrationBatch:
         """Narrate a full ordered list of panels with continuity.
 
         Panels MUST be supplied in visual reading order (sorted by page,
-        then by panel-within-page).
+        then by panel-within-page). When `cast_block` is non-empty it is
+        prepended to every panel's prompt — that's how the cast bible
+        threads into character recognition.
         """
         started = time.perf_counter()
         results: list[NarrationResult] = [None] * len(panels)  # type: ignore[list-item]
+        cast_prefix = (cast_block + "\n\n") if cast_block else ""
 
         # Build a rolling context window. To keep continuity meaningful we
         # process in small sequential chunks of size _MAX_CONCURRENCY: each
@@ -274,7 +278,7 @@ class PanelVisionNarrator:
             context_str = "\n".join(f"  • {line}" for line in context_lines) or "  (this is the opening panel)"
 
             tasks = [
-                self._narrate_one(panel, context_str, semaphore)
+                self._narrate_one(panel, context_str, semaphore, cast_prefix=cast_prefix)
                 for panel in chunk
             ]
             chunk_results = await asyncio.gather(*tasks, return_exceptions=False)
@@ -305,6 +309,7 @@ class PanelVisionNarrator:
         panel: PanelInput,
         context_str: str,
         semaphore: asyncio.Semaphore,
+        cast_prefix: str = "",
     ) -> NarrationResult:
         async with semaphore:
             start = time.perf_counter()
@@ -328,6 +333,7 @@ class PanelVisionNarrator:
                     )
 
                 prompt = _NARRATION_PROMPT.format(
+                    cast_block=cast_prefix,
                     context=context_str,
                     page=panel.page,
                     panel_num=panel.panel,
@@ -547,7 +553,43 @@ class PanelVisionNarrator:
                     reason = str(data.get("rating_reason") or "").strip()
                     return narration, rating_raw, reason
             except (_json.JSONDecodeError, ValueError):
+                # JSON broke (typically because the model put unescaped
+                # inner quotes inside the narration string). Fall through
+                # to the regex extractor — we'd rather salvage a good
+                # narration than throw the whole panel away.
                 pass
+
+            # Regex-based salvage: pull out the narration + rating fields
+            # tolerantly so malformed JSON still yields a usable result.
+            narr_match = _re.search(
+                r'"narration"\s*:\s*"((?:[^"\\]|\\.)*?)"\s*,\s*"rating"',
+                json_text,
+                _re.DOTALL,
+            )
+            if not narr_match:
+                # Looser pattern: take everything up to the rating field
+                # even if there are unescaped inner quotes.
+                narr_match = _re.search(
+                    r'"narration"\s*:\s*"(.*?)"\s*,\s*"rating"',
+                    json_text,
+                    _re.DOTALL,
+                )
+            rating_match = _re.search(
+                r'"rating"\s*:\s*"(safe|borderline|explicit)"',
+                json_text,
+            )
+            reason_match = _re.search(
+                r'"rating_reason"\s*:\s*"((?:[^"\\]|\\.)*?)"',
+                json_text,
+                _re.DOTALL,
+            )
+            if narr_match:
+                narration = cls._post_process(
+                    narr_match.group(1).replace('\\"', '"').replace("\\n", " ")
+                )
+                rating_raw = rating_match.group(1) if rating_match else "safe"
+                reason = reason_match.group(1) if reason_match else ""
+                return narration, rating_raw, reason
 
         # Fallback: treat whole response as a bare narration line.
         return cls._post_process(text), "safe", ""

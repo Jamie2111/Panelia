@@ -152,7 +152,10 @@ class PanelBox(BaseModel):
 
 
 class VoiceConfig(BaseModel):
-    voice: str = "af_bella"
+    # Default to Edge TTS (Microsoft Azure Neural). It's free, requires no
+    # API key, and sounds dramatically more human than Kokoro. The narrator
+    # falls back to Kokoro automatically if Edge synthesis fails.
+    voice: str = "edge_ava"
     lang_code: str = "a"
     speed: float = 1.0
 

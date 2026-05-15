@@ -75,9 +75,36 @@ async def _run(project_id: str, limit: int | None) -> None:
     if missing_images:
         print(f"⚠ {len(missing_images)} panel images are missing; they will be marked failed.")
 
+    # Build / load the cast bible so the narrator can refer to characters
+    # by name. Reads the manga / chapter title from metadata.json.
+    from app.services.cast_bible_service import CastBibleService
+    cast_block = ""
+    try:
+        metadata_path = project_dir / "metadata.json"
+        manga_title = ""
+        chapter_title = ""
+        if metadata_path.exists():
+            meta = json.loads(metadata_path.read_text())
+            chapter_meta = meta.get("chapter_metadata") or {}
+            manga_title = str(chapter_meta.get("manga_title") or meta.get("name") or "").strip()
+            chapter_title = str(chapter_meta.get("chapter_title") or "").strip()
+        bible = CastBibleService().ensure_bible(
+            project_dir,
+            manga_title=manga_title or "(unknown)",
+            chapter_title=chapter_title or "(unknown)",
+        )
+        cast_block = CastBibleService.format_for_prompt(bible)
+        print(f"Cast bible: {len(bible.members)} characters ({bible.source})")
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠ Cast bible step skipped: {exc}")
+
     narrator = PanelVisionNarrator()
     started = time.perf_counter()
-    batch = await narrator.narrate_chapter(panel_inputs, progress_callback=_progress)
+    batch = await narrator.narrate_chapter(
+        panel_inputs,
+        cast_block=cast_block,
+        progress_callback=_progress,
+    )
     elapsed = time.perf_counter() - started
     print()  # newline after progress bar
 
