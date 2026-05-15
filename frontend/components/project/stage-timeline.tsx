@@ -3,10 +3,14 @@ import { CheckCircle2, Clock3, LoaderCircle, Sparkles, XCircle } from "lucide-re
 import { Badge, type BadgeTone } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { getStageProgressMeta } from "@/lib/progress";
-import { toPipelineDisplay, shortStageLabel } from "@/lib/pipeline-messages";
-import type { ProjectSummary, StageStatus } from "@/lib/types";
+import {
+  LEGACY_STAGES_HIDDEN_IN_VISION,
+  toPipelineDisplay,
+  shortStageLabel,
+} from "@/lib/pipeline-messages";
+import type { PipelineStage, ProjectSummary, StageStatus } from "@/lib/types";
 
-const order = [
+const FULL_ORDER: PipelineStage[] = [
   "ingestion",
   "panel_detection",
   "panel_review",
@@ -16,8 +20,9 @@ const order = [
   "panel_vision_quality",
   "script_generation",
   "narration_generation",
-  "video_rendering"
-] as const;
+  "video_rendering",
+  "youtube_bundle",
+];
 
 function statusIcon(status: StageStatus) {
   const cls = "h-4 w-4";
@@ -48,9 +53,15 @@ function toneFor(status: StageStatus): BadgeTone {
  *   • Tone-aware Badge
  */
 export function StageTimeline({ project }: { project: ProjectSummary }) {
+  const usingVision =
+    (project.pipeline_config as any)?.script_pipeline_version === "vision";
+  const visibleStages = usingVision
+    ? FULL_ORDER.filter((s) => !LEGACY_STAGES_HIDDEN_IN_VISION.has(s))
+    : FULL_ORDER;
+
   return (
     <div className="space-y-2">
-      {order.map((stage) => {
+      {visibleStages.map((stage) => {
         const state = project.stage_states[stage];
         if (!state) return null;
         const status = state.status as StageStatus;

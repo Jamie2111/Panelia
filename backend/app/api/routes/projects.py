@@ -818,6 +818,52 @@ def regenerate_panel_vision(project_id: str, payload: PanelRewriteRequest):
     )
 
 
+@router.get("/{project_id}/youtube-bundle")
+def get_youtube_bundle(project_id: str):
+    """Return the latest YouTube publish bundle metadata for a project.
+
+    Used by the frontend's "Ready to publish" card to show the title,
+    description, and a preview of the thumbnail without the user having
+    to dig through the file system. The thumbnail and source PNG are
+    served as static media under `/media/...`.
+    """
+    import json as _json
+    from app.services.project_store import ProjectStore
+
+    if not store.project_exists(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_dir = store._project_dir(project_id)
+    manifest_path = project_dir / "youtube_bundle" / "manifest.json"
+    if not manifest_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="YouTube bundle has not been generated yet.",
+        )
+    try:
+        manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Bundle manifest corrupt: {exc}")
+
+    # Convert internal relative paths into static media URLs the frontend
+    # can use directly.
+    def _media(url_path: str | None) -> str | None:
+        if not url_path:
+            return None
+        return f"/media/projects/{project_id}/{url_path}"
+
+    return {
+        "project_id": project_id,
+        "title": manifest.get("title"),
+        "title_variants": manifest.get("title_variants") or [],
+        "description": manifest.get("description"),
+        "thumbnail_url": _media(manifest.get("thumbnail_path")),
+        "thumbnail_source_url": _media(manifest.get("thumbnail_source_path")),
+        "thumbnail_source_panel_id": manifest.get("thumbnail_source_panel_id"),
+        "bundle_dir": manifest.get("bundle_dir"),
+    }
+
+
 @router.patch("/{project_id}/settings")
 def update_project_settings(project_id: str, payload: ProjectSettingsUpdateRequest):
     if not store.project_exists(project_id):

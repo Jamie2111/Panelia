@@ -2370,6 +2370,53 @@ def run_video_rendering(context: PipelineContext) -> None:
     context.complete("Video exported")
 
 
+def run_youtube_bundle(context: PipelineContext) -> None:
+    """Build the YouTube publish bundle (title + description + thumbnail).
+
+    Runs after the video has rendered. Output goes to
+    `<project>/youtube_bundle/` with title.txt, description.md,
+    thumbnail.png, thumbnail_source.png, and manifest.json.
+    """
+    import json as _json
+    from app.services.youtube_bundle_service import YouTubeBundleService
+
+    store = context.store
+    project = store.get_project(context.project_id)
+    project_dir = store._project_dir(context.project_id)
+
+    panels_path = project_dir / "panels.json"
+    if not panels_path.exists():
+        raise RuntimeError("panels.json is missing — cannot pick a thumbnail.")
+    panels_json = _json.loads(panels_path.read_text(encoding="utf-8"))
+    if not any(p.get("keep") for p in panels_json):
+        raise RuntimeError("No kept panels — nothing to thumbnail.")
+
+    script_lines = list(project.script_lines or store.load_script(context.project_id))
+    if not script_lines:
+        raise RuntimeError("No script is available — generate a script first.")
+
+    context.start("Generating your YouTube bundle")
+
+    service = YouTubeBundleService()
+    result = service.build(
+        project_dir=project_dir,
+        project_name=project.name,
+        chapter_title=getattr(project.chapter_metadata, "chapter_title", None),
+        manga_title=getattr(project.chapter_metadata, "manga_title", None),
+        panels_json=panels_json,
+        script_lines=script_lines,
+        progress_callback=context.progress,
+    )
+
+    logger.info(
+        "YouTube bundle for %s: title=%r thumbnail=%s",
+        context.project_id, result.title, result.thumbnail_path,
+    )
+    context.complete(
+        f"Bundle ready. Title: {result.title[:60]}{'…' if len(result.title) > 60 else ''}"
+    )
+
+
 STAGE_HANDLERS = {
     PipelineStage.INGESTION: run_ingestion,
     PipelineStage.PANEL_DETECTION: run_panel_detection,
@@ -2380,4 +2427,5 @@ STAGE_HANDLERS = {
     PipelineStage.SCRIPT_GENERATION: run_script_generation,
     PipelineStage.NARRATION_GENERATION: run_narration_generation,
     PipelineStage.VIDEO_RENDERING: run_video_rendering,
+    PipelineStage.YOUTUBE_BUNDLE: run_youtube_bundle,
 }

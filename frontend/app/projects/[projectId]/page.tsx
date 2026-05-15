@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { PipelineBlock } from "@/components/ui/pipeline-block";
 import { WhileYouWereAway } from "@/components/ui/while-you-were-away";
+import { PublishBundleCard, type PublishBundle } from "@/components/ui/publish-bundle";
 import { api } from "@/lib/api";
 import { formatProgressPercent, getStageProgressMeta } from "@/lib/progress";
 import { shortStageLabel, toPipelineDisplay } from "@/lib/pipeline-messages";
@@ -49,6 +50,7 @@ export default function ProjectOverviewPage() {
   const params = useParams<{ projectId: string }>();
   const projectId = Array.isArray(params.projectId) ? params.projectId[0] : params.projectId;
   const [project, setProject] = useState<ProjectSummary | null>(null);
+  const [bundle, setBundle] = useState<PublishBundle | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [stageActionBusy, setStageActionBusy] = useState<PipelineStage | null>(null);
@@ -63,8 +65,17 @@ export default function ProjectOverviewPage() {
   async function load() {
     if (!projectId) return;
     try {
-      setProject(await api.getProjectSummary(projectId));
+      const next = await api.getProjectSummary(projectId);
+      setProject(next);
       setError(null);
+      // Fetch the publish bundle in parallel; it'll be null until the
+      // youtube_bundle stage finishes.
+      try {
+        const fetched = await api.getYouTubeBundle(projectId);
+        if (fetched) setBundle(fetched as PublishBundle);
+      } catch {
+        /* non-fatal — bundle hasn't been generated yet */
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load project.");
     } finally {
@@ -188,6 +199,11 @@ export default function ProjectOverviewPage() {
           stageStates={project.stage_states}
           cost={estimateProjectCost(project as any)}
         />
+
+        {/* Publish bundle — appears once youtube_bundle stage completes */}
+        {project.stage_states.youtube_bundle?.status === "completed" || bundle ? (
+          <PublishBundleCard bundle={bundle} />
+        ) : null}
 
         <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
           <div className="space-y-6">

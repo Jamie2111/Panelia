@@ -12,7 +12,8 @@ export type PipelineStage =
   | "panel_vision_quality"
   | "script_generation"
   | "narration_generation"
-  | "video_rendering";
+  | "video_rendering"
+  | "youtube_bundle";
 
 export type Orientation = "landscape" | "vertical";
 export type PanelLayout = "card" | "fullscreen";

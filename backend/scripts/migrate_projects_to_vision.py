@@ -26,19 +26,24 @@ PROJECTS_DIR = REPO_ROOT / "backend" / "data" / "projects"
 
 
 def migrate(project_id: str, *, dry_run: bool) -> tuple[str, str]:
+    """Flip a project's pipeline_config to use the vision pipeline +
+    end-to-end auto-run. Existing legacy values are preserved if a key
+    is missing entirely."""
     meta_path = PROJECTS_DIR / project_id / "metadata.json"
     if not meta_path.exists():
         return ("missing", "metadata.json not found")
     metadata = json.loads(meta_path.read_text(encoding="utf-8"))
-    pipeline = metadata.get("pipeline_config") or {}
-    current = str(pipeline.get("script_pipeline_version") or "legacy").strip()
-    if current.casefold() == "vision":
-        return ("already", current)
+    pipeline = dict(metadata.get("pipeline_config") or {})
+    current_version = str(pipeline.get("script_pipeline_version") or "legacy").strip()
+    current_auto = bool(pipeline.get("auto_run_end_to_end", False))
+    if current_version.casefold() == "vision" and current_auto:
+        return ("already", "vision + auto_run on")
     pipeline["script_pipeline_version"] = "vision"
+    pipeline["auto_run_end_to_end"] = True
     metadata["pipeline_config"] = pipeline
     if not dry_run:
         meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    return ("migrated", f"{current} → vision")
+    return ("migrated", f"{current_version}+auto={current_auto} → vision+auto=True")
 
 
 def main() -> int:

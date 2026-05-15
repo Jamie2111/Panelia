@@ -1,0 +1,611 @@
+"""
+YouTubeBundleService — generates the "publish to YouTube" bundle.
+
+What this service produces after a project's video has rendered:
+
+  1. youtube_bundle/title.txt          — single best YouTube title (≤100 chars)
+  2. youtube_bundle/title_variants.json — three alternative titles ranked
+  3. youtube_bundle/description.md     — description with hook, summary,
+                                         chapters (if multiple), and a
+                                         caption-friendly tags line
+  4. youtube_bundle/thumbnail_source.png — the panel image we selected
+                                           as the visual base for the
+                                           thumbnail
+  5. youtube_bundle/thumbnail.png      — viral-style thumbnail with text
+                                         overlay, 1280×720, ready to upload
+  6. youtube_bundle/manifest.json      — paths + metadata for the API
+
+The whole bundle is intended to be drag-and-drop into YouTube Studio.
+Title goes in the title field, description.md content goes in the
+description field, thumbnail.png is the custom thumbnail.
+
+Best-panel selection heuristic:
+  • Skip the first 10% of panels (almost always title/credits boring)
+  • Prefer panels whose vision narration matches "shocked", "revealed",
+    "explodes", "appears", "kiss", "screams", "destroyed", "transforms"
+    etc. — the moments that pop on a thumbnail
+  • Prefer larger original-image panels (more visual surface area)
+  • Final tie-breaker: panel close to the climax (60-80% through the
+    chapter)
+
+Viral thumbnail composition:
+  • Take the selected panel, fit to 1280×720 with a slight zoom-in
+  • Add a soft mint glow vignette in one corner
+  • Add a bold uppercase title overlay (≤4 words) bottom-left with
+    white fill + heavy stroke, plus a colored highlight word
+  • Optional: add a small red circle/arrow accent pointing at the
+    subject if we can detect a focal region (heuristic: brightest
+    quadrant)
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import math
+import random
+import re
+import textwrap
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Any
+
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
+
+from app.core.config import get_settings
+from app.utils.files import write_json
+
+try:
+    import google.generativeai as genai
+    _GEMINI_AVAILABLE = True
+except ImportError:
+    _GEMINI_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
+
+
+# ── Tuning constants ──────────────────────────────────────────────────────
+THUMBNAIL_SIZE = (1280, 720)
+TITLE_CHAR_BUDGET = 70           # Aim short; YouTube caps at 100 chars.
+DESCRIPTION_CHAR_BUDGET = 4500   # YouTube max is 5000; leave headroom.
+
+# Keywords that strongly correlate with thumbnail-worthy moments.
+_THUMBNAIL_KEYWORDS = (
+    "shock", "shouts", "screams", "explodes", "explosion", "destroyed",
+    "reveal", "appears", "transforms", "kisses", "kiss", "punch", "fall",
+    "dies", "monster", "giant", "huge", "massive", "tears", "blood",
+    "weapon", "sword", "burning", "fire", "lightning",
+)
+
+
+@dataclass
+class BundleResult:
+    """What the runner returns once the bundle is written to disk."""
+    title: str
+    description: str
+    title_variants: list[str]
+    thumbnail_source_panel_id: str | None
+    thumbnail_source_path: str
+    thumbnail_path: str
+    bundle_dir: str
+
+
+# ── The bundle generator ─────────────────────────────────────────────────
+
+class YouTubeBundleService:
+    """Build the YouTube publish bundle for one project."""
+
+    def __init__(self, settings: Any | None = None) -> None:
+        self.settings = settings or get_settings()
+        self._model = self._init_gemini()
+
+    def _init_gemini(self):
+        if not _GEMINI_AVAILABLE or not self.settings.gemini_api_key:
+            return None
+        try:
+            genai.configure(api_key=self.settings.gemini_api_key)
+            preferred = (self.settings.gemini_model or "gemini-2.5-flash").strip()
+            if preferred in {"gemini-2.0-flash", "gemini-2.0-flash-exp"}:
+                preferred = "gemini-2.5-flash"
+            return genai.GenerativeModel(preferred)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("YouTubeBundleService Gemini init failed: %s", exc)
+            return None
+
+    # ── Public API ────────────────────────────────────────────────────────
+
+    def build(
+        self,
+        project_dir: Path,
+        *,
+        project_name: str,
+        chapter_title: str | None,
+        manga_title: str | None,
+        panels_json: list[dict[str, Any]],
+        script_lines: list[str],
+        progress_callback=None,
+    ) -> BundleResult:
+        """Generate the full bundle. Returns paths + metadata."""
+
+        bundle_dir = project_dir / "youtube_bundle"
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+
+        if progress_callback:
+            progress_callback(10, "Selecting the best panel for your thumbnail")
+        thumb_panel = self._select_thumbnail_panel(panels_json, script_lines)
+        if thumb_panel is None:
+            raise RuntimeError("No kept panels available to use as a thumbnail.")
+
+        thumb_source_path = self._copy_thumbnail_source(
+            project_dir, thumb_panel, bundle_dir,
+        )
+
+        if progress_callback:
+            progress_callback(30, "Drafting your title and description")
+        title, variants, description = self._generate_text_metadata(
+            project_name=project_name,
+            chapter_title=chapter_title,
+            manga_title=manga_title,
+            script_lines=script_lines,
+            thumb_panel_narration=self._panel_narration(thumb_panel, script_lines, panels_json),
+        )
+
+        if progress_callback:
+            progress_callback(70, "Painting the viral thumbnail")
+        thumbnail_path = self._compose_thumbnail(
+            base_image=thumb_source_path,
+            title=title,
+            output_path=bundle_dir / "thumbnail.png",
+        )
+
+        # Persist text + manifest
+        (bundle_dir / "title.txt").write_text(title.strip() + "\n", encoding="utf-8")
+        (bundle_dir / "title_variants.json").write_text(
+            json.dumps(variants, indent=2), encoding="utf-8",
+        )
+        (bundle_dir / "description.md").write_text(description.strip() + "\n", encoding="utf-8")
+
+        manifest = {
+            "version": "youtube_bundle_v1",
+            "title": title,
+            "title_variants": variants,
+            "description": description,
+            "thumbnail_source_panel_id": thumb_panel.get("id"),
+            "thumbnail_source_path": str(thumb_source_path.relative_to(project_dir)),
+            "thumbnail_path": str((bundle_dir / "thumbnail.png").relative_to(project_dir)),
+            "bundle_dir": str(bundle_dir.relative_to(project_dir)),
+        }
+        write_json(bundle_dir / "manifest.json", manifest)
+
+        if progress_callback:
+            progress_callback(100, "Bundle is ready")
+
+        return BundleResult(
+            title=title,
+            description=description,
+            title_variants=variants,
+            thumbnail_source_panel_id=thumb_panel.get("id"),
+            thumbnail_source_path=str(thumb_source_path),
+            thumbnail_path=str(thumbnail_path),
+            bundle_dir=str(bundle_dir),
+        )
+
+    # ── Best-panel selection ─────────────────────────────────────────────
+
+    def _select_thumbnail_panel(
+        self,
+        panels_json: list[dict[str, Any]],
+        script_lines: list[str],
+    ) -> dict[str, Any] | None:
+        kept = [p for p in panels_json if p.get("keep")]
+        if not kept:
+            return None
+        kept_sorted = sorted(
+            kept,
+            key=lambda p: (int(p.get("page", 0)), int(p.get("panel", 0))),
+        )
+
+        # Build "kept-index → narration text" lookup using script_lines order.
+        narration_by_id: dict[str, str] = {}
+        for i, panel in enumerate(kept_sorted):
+            narr = (panel.get("narration") or "").strip()
+            if not narr and i < len(script_lines):
+                narr = (script_lines[i] or "").strip()
+            narration_by_id[str(panel.get("id"))] = narr
+
+        total = len(kept_sorted)
+        scores: list[tuple[float, dict[str, Any]]] = []
+        skip_first = max(1, int(total * 0.08))
+
+        for idx, panel in enumerate(kept_sorted):
+            if idx < skip_first:
+                continue
+            score = 0.0
+
+            # Keyword affinity
+            narr = narration_by_id.get(str(panel.get("id")), "").lower()
+            for keyword in _THUMBNAIL_KEYWORDS:
+                if keyword in narr:
+                    score += 4.0
+                    break
+
+            # Larger area = more thumbnail surface
+            try:
+                w = float(panel.get("width") or 0)
+                h = float(panel.get("height") or 0)
+                area_ratio = (w * h) / 4_000_000.0  # normalize to ~1 for big panels
+                score += min(area_ratio * 2.0, 3.0)
+            except (TypeError, ValueError):
+                pass
+
+            # Bias toward 60–80% through the chapter (climax region)
+            t = idx / max(1, total - 1)
+            climax_score = max(0.0, 1.0 - abs(t - 0.72) * 3.0)
+            score += climax_score * 2.0
+
+            # Slight penalty for very short narration (often beat/transition)
+            if narr and len(narr.split()) >= 12:
+                score += 1.0
+
+            scores.append((score, panel))
+
+        if not scores:
+            # Fallback: middle-ish kept panel
+            return kept_sorted[len(kept_sorted) // 2]
+
+        scores.sort(key=lambda s: s[0], reverse=True)
+        return scores[0][1]
+
+    def _copy_thumbnail_source(
+        self,
+        project_dir: Path,
+        panel: dict[str, Any],
+        bundle_dir: Path,
+    ) -> Path:
+        order = int(panel.get("order", 0))
+        panel_path = project_dir / "panels" / f"panel_{order:03d}.png"
+        if not panel_path.exists():
+            for ext in ("jpg", "jpeg", "webp"):
+                alt = project_dir / "panels" / f"panel_{order:03d}.{ext}"
+                if alt.exists():
+                    panel_path = alt
+                    break
+        if not panel_path.exists():
+            raise FileNotFoundError(
+                f"Could not find panel image at {panel_path} for thumbnail."
+            )
+        dest = bundle_dir / "thumbnail_source.png"
+        # Re-save as PNG with the panel's pristine pixels.
+        with Image.open(panel_path) as im:
+            im.convert("RGB").save(dest, "PNG", optimize=True)
+        return dest
+
+    def _panel_narration(
+        self,
+        panel: dict[str, Any],
+        script_lines: list[str],
+        panels_json: list[dict[str, Any]],
+    ) -> str:
+        kept = sorted(
+            [p for p in panels_json if p.get("keep")],
+            key=lambda p: (int(p.get("page", 0)), int(p.get("panel", 0))),
+        )
+        for i, p in enumerate(kept):
+            if p.get("id") == panel.get("id"):
+                if (panel.get("narration") or "").strip():
+                    return str(panel["narration"]).strip()
+                if i < len(script_lines):
+                    return (script_lines[i] or "").strip()
+        return (panel.get("narration") or "").strip()
+
+    # ── Title + description generation ───────────────────────────────────
+
+    def _generate_text_metadata(
+        self,
+        *,
+        project_name: str,
+        chapter_title: str | None,
+        manga_title: str | None,
+        script_lines: list[str],
+        thumb_panel_narration: str,
+    ) -> tuple[str, list[str], str]:
+        # Stitch the first N narrations together for context (most chapters'
+        # essential setup is in the opening 30-40% of panels).
+        clean = [line.strip() for line in script_lines if line and line.strip()]
+        opener = " ".join(clean[: min(40, len(clean))])
+        closer = " ".join(clean[-min(20, len(clean)):])
+
+        if self._model is not None:
+            try:
+                title, variants, description = self._llm_metadata(
+                    project_name=project_name,
+                    chapter_title=chapter_title,
+                    manga_title=manga_title,
+                    opener=opener,
+                    closer=closer,
+                    thumb_narration=thumb_panel_narration,
+                )
+                return title, variants, description
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("YouTubeBundleService LLM metadata failed: %s", exc)
+
+        # Heuristic fallback — always usable even without an API key.
+        return self._fallback_metadata(
+            project_name=project_name,
+            chapter_title=chapter_title,
+            manga_title=manga_title,
+            opener=opener,
+        )
+
+    def _llm_metadata(
+        self,
+        *,
+        project_name: str,
+        chapter_title: str | None,
+        manga_title: str | None,
+        opener: str,
+        closer: str,
+        thumb_narration: str,
+    ) -> tuple[str, list[str], str]:
+        series = manga_title or project_name or "this chapter"
+        chapter = chapter_title or "this chapter"
+        prompt = f"""You are writing YouTube metadata for a manga / manhwa / comic recap video.
+
+Series: {series}
+Chapter focus: {chapter}
+Thumbnail panel narration: "{thumb_narration}"
+
+Opening of the recap script:
+{opener[:1500]}
+
+Closing of the recap script:
+{closer[:600]}
+
+Produce a JSON object with these exact keys:
+{{
+  "title": "the single best title, 50-70 chars, hooky, NOT clickbait-cringe, ALL-CAPS forbidden, no spoilers in the title",
+  "variants": ["three alternative titles, same constraints"],
+  "description": "1) a 1-line hook, 2) a 2-3 line synopsis without spoilers, 3) bullet points of key moments, 4) a single CTA line asking viewers to subscribe for more chapter recaps, 5) hashtags (#manga #manhwa #recap + 2-3 series-specific) — total under 4000 characters, markdown is fine"
+}}
+
+Return ONLY the JSON. No prose before or after."""
+        # Disable Gemini 2.5 "thinking" budget so the whole token allowance
+        # goes to the visible answer — otherwise the JSON gets truncated
+        # mid-string and parsing fails.
+        gen_kwargs: dict[str, Any] = {
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "max_output_tokens": 4096,
+        }
+        try:
+            from google.generativeai.types import ThinkingConfig  # type: ignore
+            gen_kwargs["thinking_config"] = ThinkingConfig(thinking_budget=0)
+        except Exception:
+            pass
+
+        response = self._model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(**gen_kwargs),
+        )
+        text = getattr(response, "text", "") or ""
+        text = text.strip()
+        # Strip code fences if present.
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z]*", "", text).strip()
+            text = re.sub(r"```$", "", text).strip()
+        # Try to extract the JSON object even if the model surrounded it
+        # with prose.
+        if not text.startswith("{"):
+            m = re.search(r"\{[\s\S]*\}", text)
+            if m:
+                text = m.group(0)
+        data = json.loads(text)
+        title = str(data.get("title") or "").strip()
+        variants = [str(v).strip() for v in (data.get("variants") or []) if str(v).strip()]
+        description = str(data.get("description") or "").strip()
+        if not title:
+            raise ValueError("LLM returned empty title")
+        return title, variants[:3], description
+
+    def _fallback_metadata(
+        self,
+        *,
+        project_name: str,
+        chapter_title: str | None,
+        manga_title: str | None,
+        opener: str,
+    ) -> tuple[str, list[str], str]:
+        series = (manga_title or project_name or "").strip()
+        chapter = (chapter_title or "").strip()
+        base = series or "Manga"
+        chapter_suffix = f" — {chapter}" if chapter else ""
+
+        title = f"{base}{chapter_suffix} — Recap"[:TITLE_CHAR_BUDGET]
+        variants = [
+            f"{base}{chapter_suffix} — Quick Recap",
+            f"Everything that happened in {base}{chapter_suffix}",
+            f"{base} explained{chapter_suffix}",
+        ]
+        # Take the first 2 sentences of the opener as a synopsis.
+        synopsis = ""
+        if opener:
+            sentences = re.split(r"(?<=[.!?])\s+", opener)
+            synopsis = " ".join(sentences[:3])[:600]
+
+        description = textwrap.dedent(f"""
+        # {title}
+
+        {synopsis or 'A recap of the latest chapter, panel by panel.'}
+
+        ## What happens
+        - Big visual moments lifted straight from the panels
+        - Key dialogue beats and character turns
+        - Where the story leaves us by chapter's end
+
+        Subscribe for chapter-by-chapter recaps as soon as they drop.
+
+        #manga #manhwa #recap #anime #panelia
+        """).strip()
+        return title, variants, description
+
+    # ── Thumbnail composition ────────────────────────────────────────────
+
+    def _compose_thumbnail(
+        self,
+        *,
+        base_image: Path,
+        title: str,
+        output_path: Path,
+    ) -> Path:
+        with Image.open(base_image) as src:
+            src = src.convert("RGB")
+
+            # Fit-cover into the YouTube thumbnail aspect ratio.
+            canvas = self._fit_cover(src, THUMBNAIL_SIZE)
+
+            # Mild enhancement so the panel pops on YouTube's small previews.
+            canvas = ImageEnhance.Contrast(canvas).enhance(1.08)
+            canvas = ImageEnhance.Color(canvas).enhance(1.18)
+
+            # Cinematic vignette
+            canvas = self._apply_vignette(canvas)
+
+            # Mint corner glow accent — visual brand cue.
+            self._apply_corner_glow(canvas, color=(127, 255, 212, 180))
+
+            # Title overlay
+            short_title = self._shorten_for_overlay(title)
+            self._draw_thumbnail_text(canvas, short_title)
+
+            canvas.save(output_path, "PNG", optimize=True)
+        return output_path
+
+    @staticmethod
+    def _fit_cover(image: Image.Image, target: tuple[int, int]) -> Image.Image:
+        target_w, target_h = target
+        src_w, src_h = image.size
+        scale = max(target_w / src_w, target_h / src_h) * 1.05  # slight zoom-in
+        new_w = math.ceil(src_w * scale)
+        new_h = math.ceil(src_h * scale)
+        resized = image.resize((new_w, new_h), Image.LANCZOS)
+        left = (new_w - target_w) // 2
+        top = (new_h - target_h) // 2
+        return resized.crop((left, top, left + target_w, top + target_h))
+
+    @staticmethod
+    def _apply_vignette(image: Image.Image) -> Image.Image:
+        w, h = image.size
+        mask = Image.new("L", (w, h), 0)
+        draw = ImageDraw.Draw(mask)
+        # Radial-ish vignette via two ellipses + blur.
+        draw.ellipse(
+            (int(w * 0.08), int(h * 0.08), int(w * 0.92), int(h * 0.92)),
+            fill=255,
+        )
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=120))
+        black = Image.new("RGB", (w, h), (0, 0, 0))
+        return Image.composite(image, black, mask)
+
+    @staticmethod
+    def _apply_corner_glow(image: Image.Image, *, color: tuple[int, int, int, int]) -> None:
+        w, h = image.size
+        glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glow)
+        gd.ellipse(
+            (-int(w * 0.2), int(h * 0.55), int(w * 0.55), int(h * 1.25)),
+            fill=color,
+        )
+        glow = glow.filter(ImageFilter.GaussianBlur(radius=140))
+        image.paste(
+            Image.alpha_composite(image.convert("RGBA"), glow).convert("RGB"),
+            (0, 0),
+        )
+
+    @staticmethod
+    def _shorten_for_overlay(title: str) -> str:
+        words = re.findall(r"\S+", title)
+        if len(words) <= 4:
+            return " ".join(words).upper()
+        # Pick the most informative 4 words (skip articles/conjunctions).
+        skip = {"the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with"}
+        meaningful = [w for w in words if w.lower() not in skip]
+        chosen = meaningful[:4] if len(meaningful) >= 2 else words[:4]
+        return " ".join(chosen).upper()
+
+    def _draw_thumbnail_text(self, image: Image.Image, text: str) -> None:
+        w, h = image.size
+        # Try to load a strong display font; fall back to default if needed.
+        font = self._load_font(int(h * 0.13))
+        accent_font = self._load_font(int(h * 0.13))
+
+        draw = ImageDraw.Draw(image)
+        words = text.split()
+        # Wrap into max 2 lines for readability.
+        if len(words) > 2 and font.size * len(text) > w * 0.6:
+            mid = len(words) // 2
+            lines = [" ".join(words[:mid]), " ".join(words[mid:])]
+        else:
+            lines = [text]
+
+        # Highlight the longest single word in accent color.
+        highlight_word = max(words, key=len) if words else ""
+
+        # Anchor at bottom-left with margins.
+        margin_x = int(w * 0.05)
+        margin_y = int(h * 0.07)
+        line_height = int(font.size * 1.08)
+        total_h = line_height * len(lines)
+        y = h - margin_y - total_h
+
+        for line in lines:
+            x = margin_x
+            for word in line.split():
+                color = (127, 255, 212) if word == highlight_word else (255, 255, 255)
+                self._draw_stroked_word(
+                    draw, word + " ", (x, y),
+                    font=font if word != highlight_word else accent_font,
+                    fill=color,
+                )
+                # advance x — use textbbox for accurate measurement
+                bbox = draw.textbbox((0, 0), word + " ", font=font)
+                x += bbox[2] - bbox[0]
+            y += line_height
+
+    @staticmethod
+    def _draw_stroked_word(
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        xy: tuple[int, int],
+        *,
+        font: ImageFont.ImageFont,
+        fill: tuple[int, int, int],
+    ) -> None:
+        # Heavy black stroke so the word sticks to the panel no matter the
+        # background colors underneath. YouTube thumbnails live or die by
+        # legibility at 320px wide on a phone.
+        stroke = max(3, getattr(font, "size", 56) // 18)
+        draw.text(
+            xy,
+            text,
+            font=font,
+            fill=fill,
+            stroke_width=stroke,
+            stroke_fill=(0, 0, 0),
+        )
+
+    @staticmethod
+    def _load_font(size: int) -> ImageFont.ImageFont:
+        candidates = [
+            "/System/Library/Fonts/Supplemental/Impact.ttf",
+            "/System/Library/Fonts/HelveticaNeue.ttc",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        ]
+        for path in candidates:
+            try:
+                if Path(path).exists():
+                    return ImageFont.truetype(path, size)
+            except Exception:
+                continue
+        return ImageFont.load_default()

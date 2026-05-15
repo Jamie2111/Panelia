@@ -44,6 +44,7 @@ const STAGE_LABELS: Record<PipelineStage, string> = {
   script_generation: "script",
   narration_generation: "audio",
   video_rendering: "video",
+  youtube_bundle: "publish bundle",
 };
 
 /**
@@ -61,6 +62,7 @@ const STAGE_RUNNING_VERBS: Record<PipelineStage, string> = {
   script_generation: "writing your script",
   narration_generation: "recording the narration",
   video_rendering: "rendering your video",
+  youtube_bundle: "writing your title, description, and thumbnail",
 };
 
 /** Verb used after the stage completes. Past tense, single line. */
@@ -75,7 +77,34 @@ const STAGE_DONE_VERBS: Record<PipelineStage, string> = {
   script_generation: "Your script is ready.",
   narration_generation: "Your narration is ready.",
   video_rendering: "Your video is ready.",
+  youtube_bundle: "Your YouTube bundle is ready to publish.",
 };
+
+/**
+ * Stages that the vision pipeline doesn't run — they're auto-completed
+ * by the backend with a "skipped" message. Hide them from the canonical
+ * pipeline display so the user never has to think about them.
+ */
+export const LEGACY_STAGES_HIDDEN_IN_VISION: ReadonlySet<PipelineStage> = new Set([
+  "character_review",
+  "character_portrait",
+  "panel_vision_extraction",
+  "panel_vision_quality",
+]);
+
+/**
+ * The canonical visible-stage order for a vision-mode project.
+ * Use this when rendering the pipeline header so the layout always
+ * matches the actual six-step flow.
+ */
+export const VISION_STAGE_ORDER: readonly PipelineStage[] = [
+  "ingestion",
+  "panel_detection",
+  "script_generation",
+  "narration_generation",
+  "video_rendering",
+  "youtube_bundle",
+] as const;
 
 /** Short, friendly label for the stage chip. */
 export function shortStageLabel(stage: PipelineStage): string {
@@ -208,6 +237,7 @@ export function pickFocusStage(
     "script_generation",
     "narration_generation",
     "video_rendering",
+    "youtube_bundle",
   ];
   const priority: Record<StageStatus, number> = {
     running: 0,

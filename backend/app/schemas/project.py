@@ -47,13 +47,21 @@ class PipelineStage(str, Enum):
     INGESTION = "ingestion"
     PANEL_DETECTION = "panel_detection"
     PANEL_REVIEW = "panel_review"
+    # ── Vision-pipeline path — these four are legacy ─────────────────────
+    # They run only when script_pipeline_version="legacy"/"vNext". In
+    # "vision" mode they're auto-completed by auto_run.py so the UI can
+    # collapse them.
     CHARACTER_REVIEW = "character_review"
     CHARACTER_PORTRAIT = "character_portrait"
     PANEL_VISION_EXTRACTION = "panel_vision_extraction"
     PANEL_VISION_QUALITY = "panel_vision_quality"
+    # ── Universal path ───────────────────────────────────────────────────
     SCRIPT_GENERATION = "script_generation"
     NARRATION_GENERATION = "narration_generation"
     VIDEO_RENDERING = "video_rendering"
+    # YouTube publish bundle: title, description, viral thumbnail — runs
+    # last so the user can drag-and-drop the result into YouTube Studio.
+    YOUTUBE_BUNDLE = "youtube_bundle"
 
 
 class OutputFormat(str, Enum):
@@ -192,7 +200,10 @@ class NarrationMode(str, Enum):
 
 
 class PipelineConfig(BaseModel):
-    auto_run_end_to_end: bool = False
+    # Default new projects to end-to-end auto-run so the user can paste a
+    # URL and walk away with a ready-to-publish bundle. Existing projects
+    # keep whatever value is already saved.
+    auto_run_end_to_end: bool = True
     narration_mode: NarrationMode = NarrationMode.PANEL
     # Default for new projects: the vision-grounded narration pipeline.
     # Existing projects keep whatever value is already saved in metadata.

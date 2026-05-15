@@ -25,21 +25,16 @@
 import * as React from "react";
 import type { PipelineStage, StageState, StageStatus } from "@/lib/types";
 import {
+  LEGACY_STAGES_HIDDEN_IN_VISION,
   pickFocusStage,
   shortStageLabel,
   toPipelineDisplay,
+  VISION_STAGE_ORDER,
 } from "@/lib/pipeline-messages";
 import type { CostBreakdown } from "@/lib/cost-estimate";
 import { formatUsd } from "@/lib/cost-estimate";
 
-const DEFAULT_ORDER: PipelineStage[] = [
-  "ingestion",
-  "panel_detection",
-  "panel_vision_extraction",
-  "script_generation",
-  "narration_generation",
-  "video_rendering",
-];
+const DEFAULT_ORDER: PipelineStage[] = [...VISION_STAGE_ORDER];
 
 const TONE_TO_PILL_CLASS: Record<string, string> = {
   ok: "p-pill p-pill-ok",

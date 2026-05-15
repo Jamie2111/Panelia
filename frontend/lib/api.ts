@@ -54,6 +54,7 @@ function normalizeProjectSummary<T extends ProjectSummary | ProjectDetail>(proje
       ...normalized,
       panels: asArray<ProjectDetail["panels"][number]>((normalized as ProjectDetail).panels),
       script_lines: asArray<string>((normalized as ProjectDetail).script_lines),
+      script_display_metadata: asRecord((normalized as ProjectDetail).script_display_metadata) as ProjectDetail["script_display_metadata"],
       story_segments: asArray<StorySegment>((normalized as ProjectDetail).story_segments),
       audio_files: asArray<ProjectDetail["audio_files"][number]>((normalized as ProjectDetail).audio_files),
       videos: asArray<ProjectDetail["videos"][number]>((normalized as ProjectDetail).videos),
@@ -132,7 +133,29 @@ export const api = {
   listProjects: () => request<ProjectSummary[]>("/projects").then((projects) => asArray<ProjectSummary>(projects).map(normalizeProjectSummary)),
   getProjectSummary: (projectId: string) => request<ProjectSummary>(`/projects/${projectId}/summary`).then(normalizeProjectSummary),
   getProject: (projectId: string) => request<ProjectDetail>(`/projects/${projectId}`).then(normalizeProjectSummary),
+  renameProject: (projectId: string, name: string) =>
+    request<ProjectDetail>(`/projects/${projectId}/name`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name })
+    }).then(normalizeProjectSummary),
   downloadLatestVideoUrl: (projectId: string) => `${API_BASE}/projects/${projectId}/video/latest-download`,
+  getYouTubeBundle: (projectId: string) =>
+    request<{
+      project_id: string;
+      title: string | null;
+      title_variants: string[];
+      description: string | null;
+      thumbnail_url: string | null;
+      thumbnail_source_url: string | null;
+      thumbnail_source_panel_id: string | null;
+      bundle_dir: string | null;
+    }>(`/projects/${projectId}/youtube-bundle`).catch((err) => {
+      // Bundle hasn't been generated yet → return null so the UI can show
+      // a "preparing" placeholder instead of a hard error.
+      if (err instanceof Error && /404/.test(err.message)) return null;
+      throw err;
+    }),
   uploadVideoThumbnail: async (projectId: string, file: File) => {
     const form = new FormData();
     form.append("file", file);
@@ -151,7 +174,7 @@ export const api = {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ panels: panels.map(normalizePanelForSave) })
-    }).then(() => request<ProjectDetail>(`/projects/${projectId}`)),
+    }),
   updateScript: (
     projectId: string,
     script_lines: string[],
