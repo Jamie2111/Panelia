@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { Suspense, useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { LoaderCircle, Plus, RefreshCw } from "lucide-react";
 
 import { AppShell } from "@/components/project/app-shell";
@@ -11,10 +11,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
+import { formatProgressPercent } from "@/lib/progress";
 import { DetectorTrainingStatus, ProjectSummary } from "@/lib/types";
 import { useAdaptivePolling } from "@/lib/use-adaptive-polling";
 
 function DashboardContent() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -111,6 +113,40 @@ function DashboardContent() {
     }
   }
 
+  async function handleDuplicateProject(project: ProjectSummary) {
+    try {
+      setActionProjectId(project.id);
+      const duplicated = await api.duplicateProject(project.id, {
+        name: `${project.name} Copy`,
+        copy_all_videos: false
+      });
+      setError(null);
+      router.push(`/projects/${duplicated.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to duplicate the project.");
+      await load({ background: true });
+    } finally {
+      setActionProjectId(null);
+    }
+  }
+
+  async function handleRenameProject(project: ProjectSummary, name: string) {
+    try {
+      setActionProjectId(project.id);
+      const renamed = await api.renameProject(project.id, name);
+      setProjects((current) =>
+        current.map((item) => (item.id === project.id ? { ...item, name: renamed.name, updated_at: renamed.updated_at } : item))
+      );
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to rename the project.");
+      await load({ background: true });
+      throw err;
+    } finally {
+      setActionProjectId(null);
+    }
+  }
+
   async function handleTrainDetectorToggle() {
     if (!trainingStatus) return;
     try {
@@ -156,30 +192,34 @@ function DashboardContent() {
   return (
     <AppShell
       title="Studio"
-      description="Import chapters, detect panels, generate narration, and render recap videos."
+      description="Import chapters, detect panels, generate narration, render recap videos."
     >
+      {/* Top action row */}
       <div className="flex flex-wrap items-center gap-3">
         <Link href="/projects/new">
           <Button>
             <Plus className="h-4 w-4" />
-            New Project
+            New project
           </Button>
         </Link>
-        <div className="flex items-center gap-4 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-sm">
-          <span className="text-mutedForeground">{projects.length} projects</span>
-          <span className="h-4 w-px bg-white/10" />
-          <span className={runningJobs > 0 ? "text-accent" : "text-mutedForeground"}>{runningJobs} running</span>
-          <span className="h-4 w-px bg-white/10" />
-          <span className="text-mutedForeground">{completedVideos} videos</span>
+        <div className="p-pill !py-2 flex items-center gap-4">
+          <span>{projects.length} projects</span>
+          <span className="h-3 w-px bg-white/[0.10]" />
+          <span className={runningJobs > 0 ? "text-accent" : "text-mutedForeground"}>
+            {runningJobs} running
+          </span>
+          <span className="h-3 w-px bg-white/[0.10]" />
+          <span>{completedVideos} rendered</span>
         </div>
       </div>
 
-      <div className="mt-6 flex items-center justify-between gap-3">
+      {/* Section heading */}
+      <div className="mt-8 flex items-end justify-between gap-3">
         <div>
-          <h2 className="font-display text-2xl">Projects</h2>
-          <p className="text-sm text-mutedForeground">
-            Live queue progress refreshes automatically, with faster updates while work is active.
-            {refreshing ? " Updating now..." : ""}
+          <h2 className="font-display text-xl md:text-2xl tracking-tightish">Projects</h2>
+          <p className="mt-1 text-sm text-mutedForeground">
+            Live status refreshes automatically — faster while work is active.
+            {refreshing ? " Updating now…" : ""}
           </p>
         </div>
         <Button variant="ghost" onClick={() => load()} disabled={loading || refreshing}>
@@ -188,21 +228,22 @@ function DashboardContent() {
         </Button>
       </div>
 
-      <div className="mt-3 flex gap-1">
+      {/* Filter pills */}
+      <div className="mt-3 flex flex-wrap gap-1">
         {([
           { key: "all", label: "All" },
           { key: "active", label: "Active" },
-          { key: "completed", label: "Completed" },
-          { key: "review", label: "Needs Review" }
+          { key: "completed", label: "Rendered" },
+          { key: "review", label: "Needs review" }
         ] as const).map((f) => (
           <button
             key={f.key}
             type="button"
             onClick={() => setFilter(f.key)}
-            className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+            className={`rounded-full px-3 py-1.5 text-xs font-medium transition-all duration-fast ease-liquid ${
               filter === f.key
-                ? "bg-accent/15 text-accent"
-                : "text-mutedForeground hover:bg-white/10 hover:text-white"
+                ? "bg-accent/[0.12] text-accent shadow-[inset_0_0_0_1px_rgb(var(--p-accent)/0.25)]"
+                : "text-mutedForeground hover:bg-white/[0.06] hover:text-foreground"
             }`}
           >
             {f.label}
@@ -211,15 +252,17 @@ function DashboardContent() {
       </div>
 
       {batchCreated > 1 ? (
-        <div className="mt-4 rounded-[24px] border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-50">
-          Created {batchCreated} projects from your URL list. They will appear below and continue through the pipeline automatically.
-        </div>
+        <Card padded="md" className="mt-4 p-edge-ok">
+          <p className="text-sm">
+            Created {batchCreated} projects from your URL list. They&apos;ll continue through the pipeline automatically.
+          </p>
+        </Card>
       ) : null}
 
       {trainingStatus ? (
-        <Card className="mt-4 border-white/10 bg-white/[0.04]">
+        <Card padded="md" className="mt-4">
           <div className="flex flex-wrap items-start justify-between gap-4">
-            <div className="space-y-2">
+            <div className="min-w-0 space-y-2">
               <CardTitle>
                 {trainingStatus.ready_to_train
                   ? "New training data available"
@@ -229,24 +272,24 @@ function DashboardContent() {
               </CardTitle>
               <CardDescription>
                 {trainingStatus.message ||
-                  "Panelia saves corrected panel boxes and OCR overrides so we can improve the detector without retraining blindly after every project."}
+                  "Panelia saves corrected panel boxes and OCR overrides so the detector keeps improving."}
               </CardDescription>
               <p className="text-xs text-mutedForeground">
-                Panel corrections: {trainingStatus.new_panel_annotations} new / {trainingStatus.panel_annotations_total} total
+                Panels corrected: <span className="text-foreground tabular-nums">{trainingStatus.new_panel_annotations}</span> new of {trainingStatus.panel_annotations_total} total
                 {" · "}
-                OCR corrections: {trainingStatus.new_ocr_annotations} new / {trainingStatus.ocr_annotations_total} total
+                OCR corrected: <span className="text-foreground tabular-nums">{trainingStatus.new_ocr_annotations}</span> new of {trainingStatus.ocr_annotations_total} total
               </p>
               {trainingStatus.is_training ? (
                 <div className="space-y-2 pt-1">
-                  <div className="flex items-center justify-between gap-3 text-xs uppercase tracking-[0.18em] text-mutedForeground">
+                  <div className="flex items-center justify-between gap-3 text-[10px] uppercase tracking-track text-mutedForeground">
                     <span>
                       Epoch {trainingStatus.current_epoch}/{trainingStatus.total_epochs || "?"}
                     </span>
-                    <span>{Math.round(trainingStatus.progress_percent || 0)}%</span>
+                    <span className="tabular-nums">{formatProgressPercent(trainingStatus.progress_percent)}</span>
                   </div>
-                  <Progress value={trainingStatus.progress_percent || 0} />
+                  <Progress value={trainingStatus.progress_percent || 0} shimmer />
                   {trainingStatus.train_loss != null || trainingStatus.val_loss != null ? (
-                    <p className="text-xs text-mutedForeground">
+                    <p className="text-xs text-mutedForeground font-mono">
                       {trainingStatus.train_loss != null ? `train ${trainingStatus.train_loss.toFixed(4)}` : null}
                       {trainingStatus.train_loss != null && trainingStatus.val_loss != null ? " · " : null}
                       {trainingStatus.val_loss != null ? `val ${trainingStatus.val_loss.toFixed(4)}` : null}
@@ -259,7 +302,7 @@ function DashboardContent() {
               {trainingStatus.is_training ? (
                 <Button variant="secondary" onClick={handleTrainDetectorToggle} disabled={trainingBusy}>
                   <LoaderCircle className={`h-4 w-4 ${trainingBusy ? "animate-spin" : ""}`} />
-                  {trainingBusy ? "Cancelling..." : "Cancel training"}
+                  {trainingBusy ? "Cancelling…" : "Cancel training"}
                 </Button>
               ) : trainingStatus.ready_to_train ? (
                 <Button onClick={handleTrainDetectorToggle} disabled={trainingBusy}>
@@ -267,7 +310,7 @@ function DashboardContent() {
                   Train detector now
                 </Button>
               ) : (
-                <span className="text-xs text-mutedForeground">
+                <span className="text-xs text-mutedForeground text-right max-w-[16rem]">
                   {trainingStatus.remaining_annotations_until_ready > 0
                     ? `${trainingStatus.remaining_annotations_until_ready} more corrected page${trainingStatus.remaining_annotations_until_ready === 1 ? "" : "s"} until the next recommended training run`
                     : "Keep correcting panels to build more training signal"}
@@ -279,12 +322,14 @@ function DashboardContent() {
       ) : null}
 
       {loading ? (
-        <div className="mt-6 flex items-center gap-3 rounded-[28px] border border-white/10 bg-white/5 p-6 text-sm text-mutedForeground">
+        <Card padded="lg" className="mt-6 flex items-center gap-3">
           <LoaderCircle className="h-4 w-4 animate-spin text-accent" />
-          Loading your studio projects...
-        </div>
+          <span className="text-sm text-mutedForeground">Loading your studio projects…</span>
+        </Card>
       ) : error ? (
-        <div className="mt-6 rounded-[28px] border border-red-500/25 bg-red-500/10 p-6 text-sm text-red-200">{error}</div>
+        <Card padded="lg" className="mt-6 p-edge-fail">
+          <p className="text-sm text-fail">{error}</p>
+        </Card>
       ) : filteredProjects.length ? (
         <div className="mt-6 grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
           {filteredProjects.map((project) => (
@@ -293,16 +338,24 @@ function DashboardContent() {
               project={project}
               onCancelProject={handleCancelProject}
               onDeleteProject={handleDeleteProject}
+              onDuplicateProject={handleDuplicateProject}
+              onRenameProject={handleRenameProject}
               actionBusy={actionProjectId === project.id}
             />
           ))}
         </div>
       ) : (
-        <Card className="mt-6">
+        <Card padded="lg" className="mt-6">
           <CardTitle>No projects yet</CardTitle>
           <CardDescription className="mt-2">
-            Create your first project to import manga pages, detect panels, and start building your recap workflow.
+            Create your first project to import pages, detect panels, and start building your recap.
           </CardDescription>
+          <Link href="/projects/new" className="inline-block mt-4">
+            <Button>
+              <Plus className="h-4 w-4" />
+              New project
+            </Button>
+          </Link>
         </Card>
       )}
     </AppShell>
@@ -315,12 +368,12 @@ export default function DashboardPage() {
       fallback={
         <AppShell
           title="Studio"
-          description="Import chapters, detect panels, generate narration, and render recap videos."
+          description="Import chapters, detect panels, generate narration, render recap videos."
         >
-          <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 p-6 text-sm text-mutedForeground">
+          <Card padded="md" className="flex items-center gap-3">
             <LoaderCircle className="h-4 w-4 animate-spin text-accent" />
-            Loading your studio projects...
-          </div>
+            <span className="text-sm text-mutedForeground">Loading your studio projects…</span>
+          </Card>
         </AppShell>
       }
     >

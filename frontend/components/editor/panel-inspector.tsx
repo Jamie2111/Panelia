@@ -47,7 +47,7 @@ export function PanelInspector({
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-3">
       {/* Header */}
-      <div className="rounded-[22px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.06),rgba(255,255,255,0.02))] p-4">
+      <div className="rounded-2xl border border-white/[0.08] bg-[linear-gradient(180deg,rgba(255,255,255,0.06),rgba(255,255,255,0.02))] p-4">
       <div className="flex items-center justify-between">
         <div>
           <p className="text-sm font-medium text-white">
@@ -58,18 +58,18 @@ export function PanelInspector({
         <button
           type="button"
           onClick={() => onToggleKeep(panel.id)}
-          className="flex items-center gap-1.5 rounded-full border border-white/10 px-3 py-1 text-xs transition hover:bg-white/10"
+          className="flex items-center gap-1.5 rounded-full border border-white/[0.08] px-3 py-1 text-xs transition hover:bg-white/[0.08]"
         >
           {panel.keep ? <Eye className="h-3 w-3 text-accent" /> : <EyeOff className="h-3 w-3 text-red-400" />}
           <span className={panel.keep ? "text-accent" : "text-red-300"}>{stateLabel}</span>
         </button>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-mutedForeground">
-        <div className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2">
+        <div className="rounded-2xl border border-white/[0.08] bg-black/20 px-3 py-2">
           <p className="uppercase tracking-[0.18em]">Order</p>
           <p className="mt-1 text-sm text-white">#{panel.order}</p>
         </div>
-        <div className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2">
+        <div className="rounded-2xl border border-white/[0.08] bg-black/20 px-3 py-2">
           <p className="uppercase tracking-[0.18em]">Text mode</p>
           <p className="mt-1 text-sm text-white">{panel.manual_ocr_text ? "Manual" : "Auto"}</p>
         </div>
@@ -78,7 +78,7 @@ export function PanelInspector({
 
       {/* Review flags */}
       {panel.review_flags.length > 0 && (
-        <div className="rounded-[22px] border border-amber-400/20 bg-amber-400/5 px-4 py-3">
+        <div className="rounded-2xl border border-amber-400/20 bg-amber-400/5 px-4 py-3">
           <p className="text-[10px] uppercase tracking-wider text-amber-300">Review flags</p>
           <p className="mt-1 text-xs text-amber-200">
             {panel.review_flags.map(formatReviewFlag).join(", ")}
@@ -87,7 +87,7 @@ export function PanelInspector({
       )}
 
       {/* Quick actions */}
-      <div className="grid grid-cols-2 gap-1.5 rounded-[22px] border border-white/10 bg-white/[0.03] p-3">
+      <div className="grid grid-cols-2 gap-1.5 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-3">
         <Button variant="secondary" size="sm" onClick={() => onMoveOrder(panel.id, "up")} className="h-8 text-xs">
           <ArrowUp className="mr-1 h-3 w-3" /> Up
         </Button>
@@ -115,7 +115,7 @@ export function PanelInspector({
       </div>
 
       {/* Duration */}
-      <label className="space-y-1.5 rounded-[22px] border border-white/10 bg-white/[0.03] p-3">
+      <label className="space-y-1.5 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-3">
         <span className="text-xs text-mutedForeground">Duration (sec)</span>
         <Input
           type="number"
@@ -127,7 +127,7 @@ export function PanelInspector({
       </label>
 
       {/* Text mode */}
-      <div className="rounded-[22px] border border-white/10 bg-white/[0.03] p-4">
+      <div className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4">
         <div className="flex items-center justify-between">
           <p className="flex items-center gap-2 text-xs font-medium text-white">
             <MessageSquareText className="h-3.5 w-3.5 text-accent" />
@@ -138,7 +138,7 @@ export function PanelInspector({
           </span>
         </div>
         {!(panel.ocr_text ?? "").trim() ? (
-          <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 px-3 py-2 text-[11px] text-mutedForeground">
+          <div className="mt-3 rounded-2xl border border-white/[0.08] bg-black/20 px-3 py-2 text-[11px] text-mutedForeground">
             <div className="flex items-center gap-2 text-white/90">
               <Sparkles className="h-3.5 w-3.5 text-brand-amber" />
               No extracted dialogue saved yet
@@ -160,7 +160,7 @@ export function PanelInspector({
       </div>
 
       {/* Zoom hint */}
-      <div className="rounded-[22px] border border-white/10 bg-white/[0.03] p-3">
+      <div className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-3">
         <p className="text-xs text-mutedForeground">Zoom hint</p>
         <p className="mt-1 text-sm text-white">{panel.zoom_hint ?? "focus-center"}</p>
       </div>

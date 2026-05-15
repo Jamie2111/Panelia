@@ -233,14 +233,16 @@ export default function CreateProjectPage() {
 
   return (
     <AppShell
-      title="Create a manga video project"
-      description="Bring in a MangaDex or comix.to chapter, a ZIP, a PDF, or raw page images. Pick a language, narrator, and soundtrack with previews before you kick off a motion-comic render."
+      title="Create a new project"
+      description="Pull in a MangaDex or comix.to chapter, a ZIP, a PDF, or raw page images. Pick a narrator and soundtrack with live previews — then we run the rest."
     >
       <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
         <div className="space-y-6">
-          <Card>
+          <Card padded="md">
             <CardTitle>Source</CardTitle>
-            <CardDescription className="mt-2">Choose how this project should ingest the chapter or page assets.</CardDescription>
+            <CardDescription className="mt-2">
+              Choose how this project should ingest its pages.
+            </CardDescription>
             <div className="mt-6 grid gap-3 md:grid-cols-2">
               {sourceOptions.map((option) => (
                 <button
@@ -251,15 +253,19 @@ export default function CreateProjectPage() {
                     setFiles([]);
                     setSourceUrlInput("");
                     if (!name.trim()) {
-                      setName(option.value === "url" ? "New manga recap" : `New ${option.label.toLowerCase()} import`);
+                      setName(option.value === "url" ? "New recap" : `New ${option.label.toLowerCase()} import`);
                     }
                   }}
-                  className={`rounded-[24px] border p-4 text-left transition ${
-                    sourceType === option.value ? "border-accent bg-accent/10" : "border-white/10 bg-white/5 hover:bg-white/7"
+                  className={`rounded-2xl border p-4 text-left transition-all duration-fast ease-liquid ${
+                    sourceType === option.value
+                      ? "border-accent/40 bg-accent/[0.10] shadow-[0_0_24px_-12px_rgb(var(--p-accent)/0.6)]"
+                      : "border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/[0.14]"
                   }`}
                 >
-                  <p className="font-medium text-white">{option.label}</p>
-                  <p className="mt-2 text-sm text-mutedForeground">{option.description}</p>
+                  <p className="font-medium text-foreground">{option.label}</p>
+                  <p className="mt-2 text-sm text-mutedForeground leading-relaxed">
+                    {option.description}
+                  </p>
                 </button>
               ))}
             </div>
@@ -295,7 +301,7 @@ export default function CreateProjectPage() {
                     <label className="space-y-2">
                       <span className="text-sm text-mutedForeground">Source language</span>
                       <select
-                        className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm"
+                        className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast"
                         value={sourceLanguage}
                         onChange={(event) => setSourceLanguage(event.target.value)}
                       >
@@ -309,7 +315,7 @@ export default function CreateProjectPage() {
                     <label className="space-y-2">
                       <span className="text-sm text-mutedForeground">Duplicate handling</span>
                       <select
-                        className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm"
+                        className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast"
                         value={duplicateMode}
                         onChange={(event) => setDuplicateMode(event.target.value as DuplicateHandlingMode)}
                       >
@@ -329,12 +335,14 @@ export default function CreateProjectPage() {
                 <div
                   onDragOver={(event) => event.preventDefault()}
                   onDrop={handleDrop}
-                  className="rounded-[28px] border border-dashed border-white/15 bg-white/4 p-8 text-center"
+                  className="rounded-2xl border border-dashed border-white/[0.14] bg-white/[0.03] p-10 text-center transition-colors duration-fast hover:bg-white/[0.05]"
                 >
                   <UploadCloud className="mx-auto h-10 w-10 text-accent" />
-                  <p className="mt-4 font-medium text-white">Drag and drop pages here</p>
-                  <p className="mt-2 text-sm text-mutedForeground">ZIP, PDF, JPG, JPEG, PNG, WEBP, or an entire folder selection.</p>
-                  <label className="mt-6 inline-flex cursor-pointer items-center rounded-full bg-accent px-4 py-2 text-sm font-medium text-accent-foreground">
+                  <p className="mt-4 font-medium text-foreground">Drag and drop pages here</p>
+                  <p className="mt-2 text-sm text-mutedForeground">
+                    ZIP · PDF · JPG · PNG · WEBP — or an entire folder.
+                  </p>
+                  <label className="mt-6 inline-flex cursor-pointer items-center gap-2 rounded-full bg-accent px-4 py-2 text-sm font-medium text-accent-foreground shadow-[0_0_24px_-6px_rgb(var(--p-accent)/0.6)] transition-transform duration-fast hover:-translate-y-px">
                     Choose files
                     <input
                       type="file"
@@ -344,7 +352,11 @@ export default function CreateProjectPage() {
                       {...(sourceType === "folder" ? ({ webkitdirectory: "true", directory: "true" } as Record<string, string>) : {})}
                     />
                   </label>
-                  {files.length ? <p className="mt-4 text-sm text-mutedForeground">{files.length} file(s) selected</p> : null}
+                  {files.length ? (
+                    <p className="mt-4 text-sm text-mutedForeground">
+                      {files.length} file{files.length === 1 ? "" : "s"} selected
+                    </p>
+                  ) : null}
                 </div>
               )}
             </div>
@@ -356,7 +368,7 @@ export default function CreateProjectPage() {
             <div className="mt-6 grid gap-4 md:grid-cols-2">
               <label className="space-y-2">
                 <span className="text-sm text-mutedForeground">Narration language</span>
-                <select className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm" value={langCode} onChange={(event) => setLangCode(event.target.value)} disabled={loadingOptions}>
+                <select className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast" value={langCode} onChange={(event) => setLangCode(event.target.value)} disabled={loadingOptions}>
                   {languageOptions.map((option) => (
                     <option key={option.code} value={option.code}>
                       {option.label}
@@ -370,26 +382,26 @@ export default function CreateProjectPage() {
               </label>
               <label className="space-y-2">
                 <span className="text-sm text-mutedForeground">Resolution</span>
-                <select className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm" value={resolution} onChange={(event) => setResolution(event.target.value)}>
+                <select className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast" value={resolution} onChange={(event) => setResolution(event.target.value)}>
                   <option value="1920x1080">1920 × 1080</option>
                   <option value="1280x720">1280 × 720</option>
                 </select>
               </label>
               <label className="space-y-2">
                 <span className="text-sm text-mutedForeground">Orientation</span>
-                <select className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm" value={orientation} onChange={(event) => setOrientation(event.target.value)}>
+                <select className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast" value={orientation} onChange={(event) => setOrientation(event.target.value)}>
                   <option value="landscape">Landscape</option>
                   <option value="vertical">Vertical</option>
                 </select>
               </label>
               <label className="space-y-2">
                 <span className="text-sm text-mutedForeground">Output format</span>
-                <select className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm" value={outputFormat} onChange={(event) => setOutputFormat(event.target.value)}>
+                <select className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast" value={outputFormat} onChange={(event) => setOutputFormat(event.target.value)}>
                   <option value="mp4">MP4</option>
                   <option value="mov">MOV</option>
                 </select>
               </label>
-              <div className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4 md:col-span-2">
+              <div className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4 md:col-span-2">
                 <p className="text-sm text-mutedForeground">Final canvas</p>
                 <p className="mt-2 text-sm font-semibold text-white">
                   {targetDimensions.width} × {targetDimensions.height} • {orientation === "vertical" ? "Vertical" : "Landscape"}
@@ -397,7 +409,7 @@ export default function CreateProjectPage() {
               </div>
             </div>
 
-            <div className="mt-6 rounded-[24px] border border-white/10 bg-white/5 p-4">
+            <div className="mt-6 rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4">
               <div className="space-y-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
@@ -408,7 +420,7 @@ export default function CreateProjectPage() {
                 </div>
                 <label className="block space-y-2">
                   <span className="text-sm text-mutedForeground">Voice</span>
-                  <select className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm" value={voice} onChange={(event) => setVoice(event.target.value)} disabled={loadingOptions}>
+                  <select className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast" value={voice} onChange={(event) => setVoice(event.target.value)} disabled={loadingOptions}>
                     {voiceOptions.map((option) => (
                       <option key={option.id} value={option.id}>
                         {option.label}
@@ -443,13 +455,13 @@ export default function CreateProjectPage() {
             <CardTitle>Music bed</CardTitle>
             <CardDescription className="mt-2">Preview the soundtrack before you commit to a final render.</CardDescription>
             <div className="mt-6 space-y-4">
-              <label className="flex items-center justify-between rounded-[22px] border border-white/10 bg-white/5 px-4 py-3">
+              <label className="flex items-center justify-between rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 py-3">
                 <span className="text-sm text-white">Enable music</span>
                 <input type="checkbox" checked={musicEnabled} onChange={(event) => setMusicEnabled(event.target.checked)} className="h-4 w-4 accent-cyan-400" />
               </label>
               <label className="space-y-2">
                 <span className="text-sm text-mutedForeground">Track preset</span>
-                <select className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm" value={musicTrack} onChange={(event) => setMusicTrack(event.target.value)} disabled={loadingOptions}>
+                <select className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast" value={musicTrack} onChange={(event) => setMusicTrack(event.target.value)} disabled={loadingOptions}>
                   <option value="">No track</option>
                   {musicOptions.map((track) => (
                     <option key={`${track.source ?? "builtin"}-${track.file}`} value={track.name}>
@@ -458,11 +470,11 @@ export default function CreateProjectPage() {
                   ))}
                 </select>
               </label>
-              <div className="rounded-[24px] border border-dashed border-white/15 bg-white/4 p-4">
+              <div className="rounded-2xl border border-dashed border-white/[0.14] bg-white/4 p-4">
                 <p className="text-sm font-medium text-white">Add your own MP3</p>
                 <p className="mt-1 text-sm text-mutedForeground">Upload a soundtrack once and it becomes available everywhere in the app.</p>
                 <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-                  <label className="inline-flex cursor-pointer items-center rounded-full bg-white/8 px-4 py-2 text-sm text-white transition hover:bg-white/12">
+                  <label className="inline-flex cursor-pointer items-center rounded-full bg-white/8 px-4 py-2 text-sm text-white transition hover:bg-white/[0.10]">
                     Choose MP3
                     <input type="file" accept=".mp3,audio/mpeg" className="hidden" onChange={(event) => setMusicUploadFile(event.target.files?.[0] ?? null)} />
                   </label>
@@ -477,7 +489,7 @@ export default function CreateProjectPage() {
                 <span className="text-sm text-mutedForeground">Music volume</span>
                 <Input type="number" min="0" max="1" step="0.05" value={musicVolume} onChange={(event) => setMusicVolume(Number(event.target.value))} />
               </label>
-              <div className="rounded-[24px] border border-white/10 bg-white/5 p-4">
+              <div className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4">
                 <p className="text-sm font-medium text-white">{selectedTrack?.name ?? "Soundtrack preview"}</p>
                 <p className="mt-1 text-sm text-mutedForeground">
                   {selectedTrack?.available

@@ -31,8 +31,8 @@ export function PanelThumbnail({
   const aspect = panel.width / Math.max(panel.height, 1);
   const scaledWidth = (naturalWidth / Math.max(panel.width, 1)) * 100;
   const scaledHeight = (naturalHeight / Math.max(panel.height, 1)) * 100;
-  const offsetX = (panel.x / Math.max(panel.width, 1)) * 100;
-  const offsetY = (panel.y / Math.max(panel.height, 1)) * 100;
+  const offsetX = (panel.x / Math.max(naturalWidth, 1)) * 100;
+  const offsetY = (panel.y / Math.max(naturalHeight, 1)) * 100;
   const frameStyle = contain
     ? {
         aspectRatio: aspect,

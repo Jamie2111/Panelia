@@ -116,7 +116,7 @@ export default function CharacterPortraitsPage() {
           <LoaderCircle className="h-4 w-4 animate-spin" /> Loading portraits...
         </div>
       ) : error ? (
-        <Card className="border-red-500/30 bg-red-500/10 p-6 text-sm text-red-100">{error}</Card>
+        <Card className="p-edge-fail">{error}</Card>
       ) : (
         <div className="space-y-5">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -184,7 +184,7 @@ export default function CharacterPortraitsPage() {
                       <select
                         value={character.role || "supporting"}
                         onChange={(event) => updateCharacter(character.stable_id, { role: event.target.value })}
-                        className="h-9 w-full rounded-md border border-white/10 bg-black/20 px-3 text-sm text-foreground outline-none focus:border-accent"
+                        className="h-9 w-full rounded-md border border-white/[0.08] bg-black/20 px-3 text-sm text-foreground outline-none focus:border-accent"
                       >
                         <option value="protagonist">protagonist</option>
                         <option value="main">main</option>
@@ -200,7 +200,7 @@ export default function CharacterPortraitsPage() {
                     onChange={(event) => updateCharacter(character.stable_id, { visual_description: event.target.value })}
                     placeholder="Visual description"
                     rows={4}
-                    className="mt-3 w-full resize-y rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm text-foreground outline-none focus:border-accent"
+                    className="mt-3 w-full resize-y rounded-md border border-white/[0.08] bg-black/20 px-3 py-2 text-sm text-foreground outline-none focus:border-accent"
                   />
                   <Input
                     value={(character.aliases ?? []).join(", ")}

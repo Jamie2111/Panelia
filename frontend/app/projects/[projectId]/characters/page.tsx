@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import { getStageProgressMeta } from "@/lib/progress";
+import { formatProgressPercent, getStageProgressMeta } from "@/lib/progress";
 import { CharacterReviewIdentity, CharacterReviewState, JobRecord, ProjectDetail } from "@/lib/types";
 import { useAdaptivePolling } from "@/lib/use-adaptive-polling";
 import { buildMediaUrl, formatRelativeDate } from "@/lib/utils";
@@ -277,7 +277,7 @@ export default function CharacterReviewPage() {
   if (loading) {
     return (
       <AppShell title="Characters" description="Loading the chapter cast and saved character review." projectId={projectId}>
-        <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 p-6 text-sm text-mutedForeground">
+        <div className="flex items-center gap-3 rounded-xl border border-white/[0.08] bg-white/[0.04] p-6 text-sm text-mutedForeground">
           <LoaderCircle className="h-4 w-4 animate-spin text-accent" />
           Loading character review...
         </div>
@@ -399,7 +399,7 @@ export default function CharacterReviewPage() {
             <div className="mt-4 space-y-2">
               <div className="flex items-center justify-between gap-3 text-[10px] uppercase tracking-[0.18em] text-mutedForeground">
                 <span>{progressMeta.stateLabel ?? "Running"}</span>
-                <span className="tabular-nums">{progressMeta.progress}%</span>
+                <span className="tabular-nums">{formatProgressPercent(progressMeta.progress)}</span>
               </div>
               <Progress value={progressMeta.progress} />
             </div>
@@ -407,9 +407,9 @@ export default function CharacterReviewPage() {
         ) : null}
 
         {reviewError ? (
-          <Card className="border border-red-500/30 bg-red-500/10">
+          <Card className="border border-fail/[0.25] bg-fail/[0.08]">
             <CardTitle className="text-base">Couldn&apos;t load the saved review</CardTitle>
-            <CardDescription className="mt-1 text-red-100">{reviewError}</CardDescription>
+            <CardDescription className="mt-1 text-fail">{reviewError}</CardDescription>
           </Card>
         ) : null}
 
@@ -446,7 +446,7 @@ export default function CharacterReviewPage() {
                   placeholder="Leave blank if the protagonist is still unknown"
                 />
               </div>
-              <div className="rounded-[24px] border border-white/8 bg-white/[0.03] p-4">
+              <div className="rounded-2xl border border-white/[0.06] bg-white/[0.03] p-4">
                 <p className="text-xs uppercase tracking-[0.18em] text-mutedForeground">Remembered names</p>
                 {review.memory_names.length ? (
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -478,7 +478,7 @@ export default function CharacterReviewPage() {
                 <select
                   value={statusFilter}
                   onChange={(event) => setStatusFilter(event.target.value as "all" | "suggested" | "confirmed" | "unknown")}
-                  className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm text-white outline-none focus:ring-2 focus:ring-accent/50"
+                  className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast"
                 >
                   <option value="all">All groups</option>
                   <option value="suggested">Suggested only</option>
@@ -492,7 +492,7 @@ export default function CharacterReviewPage() {
                   value={mergeTargetId}
                   onChange={(event) => setMergeTargetId(event.target.value)}
                   disabled={selectedCount < 2}
-                  className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm text-white outline-none focus:ring-2 focus:ring-accent/50 disabled:opacity-50"
+                  className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast disabled:opacity-50"
                 >
                   <option value="">{selectedCount < 2 ? "Select at least 2 groups" : "Choose target group"}</option>
                   {selectedIds.map((reviewId) => {
@@ -555,7 +555,7 @@ export default function CharacterReviewPage() {
                 {identity.sample_images.length ? (
                   <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                     {identity.sample_images.map((sample) => (
-                      <div key={sample.sample_id} className="overflow-hidden rounded-2xl border border-white/10 bg-white/5">
+                      <div key={sample.sample_id} className="overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.04]">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={buildMediaUrl(sample.image_url ?? null, review.updated_at)}
@@ -587,7 +587,7 @@ export default function CharacterReviewPage() {
                     <select
                       value={identity.status}
                       onChange={(event) => updateIdentity(identity.review_id, { status: event.target.value as CharacterReviewIdentity["status"] })}
-                      className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm text-white outline-none focus:ring-2 focus:ring-accent/50"
+                      className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast"
                     >
                       <option value="suggested">Suggested</option>
                       <option value="confirmed">Confirmed</option>
@@ -673,7 +673,7 @@ export default function CharacterReviewPage() {
         {dirty ? (
           <Card className="border border-amber-400/25 bg-amber-400/10">
             <CardTitle className="text-base">Unsaved character changes</CardTitle>
-            <CardDescription className="mt-1 text-amber-100">
+            <CardDescription className="mt-1 text-warn">
               Save the character review so script generation can reuse the latest confirmed names and merges.
             </CardDescription>
           </Card>

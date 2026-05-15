@@ -12,7 +12,7 @@ import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import { getStageProgressMeta } from "@/lib/progress";
+import { formatProgressPercent, getStageProgressMeta } from "@/lib/progress";
 import { CatalogOptions, PanelRewriteMode, PipelineStage, ProjectDetail } from "@/lib/types";
 import { useAdaptivePolling } from "@/lib/use-adaptive-polling";
 import { buildMediaUrl } from "@/lib/utils";
@@ -196,7 +196,12 @@ function buildStorySegmentItems(project: ProjectDetail): StorySegmentItem[] {
   const panelsById = new Map(project.panels.map((panel) => [panel.id, panel]));
   return (project.story_segments ?? []).map((segment) => {
     const representativePanelId = segment.representative_panel_id ?? segment.panel_ids[0] ?? null;
-    const orderedPanelIds = [...segment.panel_ids];
+    // Sort panel_ids by their global order so previews are always chronological
+    const orderedPanelIds = [...segment.panel_ids].sort((a, b) => {
+      const pa = panelsById.get(a);
+      const pb = panelsById.get(b);
+      return (pa?.order ?? 0) - (pb?.order ?? 0);
+    });
     const distributedPanelIds = orderedPanelIds.length <= 3
       ? orderedPanelIds
       : [orderedPanelIds[0], orderedPanelIds[Math.floor(orderedPanelIds.length / 2)], orderedPanelIds[orderedPanelIds.length - 1]];
@@ -378,6 +383,7 @@ export default function NarrationPage() {
   const scriptStageStatus = project?.stage_states.script_generation.status;
   const audioStageStatus = project?.stage_states.narration_generation.status;
   const videoStageStatus = project?.stage_states.video_rendering.status;
+  const scriptDisplayMetadata = project?.script_display_metadata;
   const activeJobs = project?.active_jobs ?? [];
   const activeStageJobs = (stage: PipelineStage) =>
     activeJobs.filter((job) => job.stage === stage && (job.status === "queued" || job.status === "running"));
@@ -437,7 +443,7 @@ export default function NarrationPage() {
                 ? videoProgressMeta
                 : null;
   const activeProgressMessage = activeProgressStage
-    ? `${PROGRESS_LABELS[activeProgressStage] ?? "Pipeline"} • ${activeProgressMeta?.progress ?? 0}%`
+    ? `${PROGRESS_LABELS[activeProgressStage] ?? "Pipeline"} • ${formatProgressPercent(activeProgressMeta?.progress ?? 0)}`
     : null;
 
   useAdaptivePolling(() => loadProject(false), {
@@ -870,23 +876,31 @@ export default function NarrationPage() {
       projectId={projectId}
     >
       {error ? (
-        <Card className="mb-6 border-red-500/20 bg-red-500/10">
-          <CardDescription className="text-red-200">{error}</CardDescription>
+        <Card className="mb-6 p-edge-fail">
+          <CardDescription className="text-fail">{error}</CardDescription>
         </Card>
       ) : null}
       {project?.stage_states.script_generation.message?.toLowerCase().includes("rate-limited") ? (
-        <Card className="mb-6 border-amber-500/20 bg-amber-500/10">
-          <CardDescription className="text-amber-100">{project.stage_states.script_generation.message}</CardDescription>
+        <Card className="mb-6 p-edge-warn">
+          <CardDescription className="text-warn">{project.stage_states.script_generation.message}</CardDescription>
+        </Card>
+      ) : null}
+      {scriptDisplayMetadata?.is_displaying_stale_script ? (
+        <Card className="mb-6 p-edge-warn">
+          <CardTitle className="text-sm text-warn">Previous script shown while the new run is in progress</CardTitle>
+          <CardDescription className="mt-1 text-warn/80">
+            Latest job: {scriptDisplayMetadata.latest_job_id ?? "unknown"} ({scriptDisplayMetadata.latest_job_status ?? "unknown"}). Displayed script: {scriptDisplayMetadata.displayed_script_created_at ?? "unknown time"}.
+          </CardDescription>
         </Card>
       ) : null}
       {audioStageStatus === "failed" && project?.stage_states.narration_generation.message ? (
-        <Card className="mb-6 border-red-500/20 bg-red-500/10">
-          <CardDescription className="text-red-200">{project.stage_states.narration_generation.message}</CardDescription>
+        <Card className="mb-6 p-edge-fail">
+          <CardDescription className="text-fail">{project.stage_states.narration_generation.message}</CardDescription>
         </Card>
       ) : null}
       {videoStageStatus === "failed" && project?.stage_states.video_rendering.message ? (
-        <Card className="mb-6 border-red-500/20 bg-red-500/10">
-          <CardDescription className="text-red-200">{project.stage_states.video_rendering.message}</CardDescription>
+        <Card className="mb-6 p-edge-fail">
+          <CardDescription className="text-fail">{project.stage_states.video_rendering.message}</CardDescription>
         </Card>
       ) : null}
 
@@ -998,7 +1012,7 @@ export default function NarrationPage() {
             <div className="mt-6 grid gap-4 md:grid-cols-2">
               <label className="space-y-2">
                 <span className="text-sm text-mutedForeground">Language</span>
-                <select className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm" value={langCode} onChange={(event) => setLangCode(event.target.value)}>
+                <select className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast" value={langCode} onChange={(event) => setLangCode(event.target.value)}>
                   {(catalog?.languages ?? []).map((option) => (
                     <option key={option.code} value={option.code}>
                       {option.label}
@@ -1015,7 +1029,7 @@ export default function NarrationPage() {
                 <Input type="number" min="0" max="1" step="0.05" value={musicVolume} onChange={(event) => setMusicVolume(Number(event.target.value))} />
               </label>
             </div>
-            <div className="mt-4 rounded-[24px] border border-white/10 bg-white/5 p-4">
+            <div className="mt-4 rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4">
               <div className="space-y-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
@@ -1026,7 +1040,7 @@ export default function NarrationPage() {
                 </div>
                 <label className="block space-y-2">
                   <span className="text-sm text-mutedForeground">Voice</span>
-                  <select className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm" value={voice} onChange={(event) => setVoice(event.target.value)}>
+                  <select className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast" value={voice} onChange={(event) => setVoice(event.target.value)}>
                     {voiceOptions.map((option) => (
                       <option key={option.id} value={option.id}>
                         {option.label}
@@ -1038,13 +1052,13 @@ export default function NarrationPage() {
               {selectedLanguage ? <p className="mt-3 text-xs text-mutedForeground">{selectedLanguage.description}</p> : null}
             </div>
             <div className="mt-4 space-y-4">
-              <label className="flex items-center justify-between rounded-[22px] border border-white/10 bg-white/5 px-4 py-3">
+              <label className="flex items-center justify-between rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 py-3">
                 <span className="text-sm text-white">Enable music in final video</span>
                 <input type="checkbox" checked={musicEnabled} onChange={(event) => setMusicEnabled(event.target.checked)} className="h-4 w-4 accent-cyan-400" />
               </label>
               <label className="space-y-2">
                 <span className="text-sm text-mutedForeground">Track</span>
-                <select className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm" value={musicTrack} onChange={(event) => setMusicTrack(event.target.value)}>
+                <select className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast" value={musicTrack} onChange={(event) => setMusicTrack(event.target.value)}>
                   <option value="">No track</option>
                   {(catalog?.music_tracks ?? []).map((track) => (
                     <option key={`${track.source ?? "builtin"}-${track.file}`} value={track.name}>
@@ -1053,11 +1067,11 @@ export default function NarrationPage() {
                   ))}
                 </select>
               </label>
-              <div className="rounded-[24px] border border-dashed border-white/15 bg-white/4 p-4">
+              <div className="rounded-2xl border border-dashed border-white/[0.14] bg-white/4 p-4">
                 <p className="text-sm font-medium text-white">Import MP3 soundtrack</p>
                 <p className="mt-1 text-sm text-mutedForeground">Upload a custom music bed and use it immediately on this project.</p>
                 <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-                  <label className="inline-flex cursor-pointer items-center rounded-full bg-white/8 px-4 py-2 text-sm text-white transition hover:bg-white/12">
+                  <label className="inline-flex cursor-pointer items-center rounded-full bg-white/8 px-4 py-2 text-sm text-white transition hover:bg-white/[0.10]">
                     Choose MP3
                     <input type="file" accept=".mp3,audio/mpeg" className="hidden" onChange={(event) => setMusicUploadFile(event.target.files?.[0] ?? null)} />
                   </label>
@@ -1068,7 +1082,7 @@ export default function NarrationPage() {
                   Import MP3
                 </Button>
               </div>
-              <div className="rounded-[24px] border border-white/10 bg-white/5 p-4">
+              <div className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4">
                 <p className="text-sm font-medium text-white">{selectedTrack?.name ?? "Music preview"}</p>
                 <p className="mt-1 text-sm text-mutedForeground">
                   {selectedTrack?.available
@@ -1114,7 +1128,7 @@ export default function NarrationPage() {
                 {`${keptPanelCount}/${usingStorySegments ? segmentItems.length : lineItems.length} ${usingStorySegments ? "segments" : "panels"} kept`}
               </span>
               {blankKeptLineCount > 0 ? (
-                <span className="rounded-full bg-amber-500/15 px-2.5 py-1 text-[11px] font-medium text-amber-100">
+                <span className="rounded-full bg-warn/[0.10] px-2.5 py-1 text-[11px] font-medium text-warn">
                   {blankKeptLineCount} without script
                 </span>
               ) : null}
@@ -1126,8 +1140,8 @@ export default function NarrationPage() {
                 {segmentItems.map((item, index) => (
                   <div
                     key={item.id}
-                    className={`overflow-hidden rounded-[24px] border p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition ${
-                      item.keep ? "border-white/10 bg-white/[0.06]" : "border-white/8 bg-white/[0.03] opacity-70"
+                    className={`overflow-hidden rounded-2xl border p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition ${
+                      item.keep ? "border-white/[0.08] bg-white/[0.06]" : "border-white/[0.06] bg-white/[0.03] opacity-70"
                     }`}
                   >
                     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1158,7 +1172,7 @@ export default function NarrationPage() {
                         <p className="mb-3 text-[11px] uppercase tracking-[0.18em] text-mutedForeground">Panel preview</p>
                         <div className="grid gap-3 sm:grid-cols-3">
                         {item.previewPanels.map((preview, previewIndex) => (
-                          <div key={`${item.id}-${preview.panelId}-${previewIndex}`} className="overflow-hidden rounded-[18px] border border-white/10 bg-black/25">
+                          <div key={`${item.id}-${preview.panelId}-${previewIndex}`} className="overflow-hidden rounded-2xl border border-white/[0.08] bg-black/25">
                             {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img
                               src={buildMediaUrl(preview.previewUrl)}
@@ -1174,7 +1188,7 @@ export default function NarrationPage() {
                                 );
                               }}
                             />
-                            <p className="border-t border-white/10 px-3 py-2 text-[11px] text-mutedForeground">
+                            <p className="border-t border-white/[0.08] px-3 py-2 text-[11px] text-mutedForeground">
                               Page {preview.page}{preview.panelNumber ? ` • Panel ${preview.panelNumber}` : ""}
                             </p>
                           </div>
@@ -1183,7 +1197,7 @@ export default function NarrationPage() {
                       </div>
                     ) : null}
                     <Textarea
-                      className="mt-4 h-[190px] overflow-y-auto resize-none rounded-[20px] bg-white/[0.04]"
+                      className="mt-4 h-[190px] overflow-y-auto resize-none rounded-2xl bg-white/[0.04]"
                       value={item.value}
                       placeholder={item.visualOnly ? "This segment is currently visual-only. Type here to add spoken narration." : "Write the narration for this story segment."}
                       onChange={(event) => updateSegmentValue(index, event.target.value)}
@@ -1221,11 +1235,11 @@ export default function NarrationPage() {
                   return (
                     <div
                       key={item.panelId}
-                      className={`w-[min(24rem,calc(100vw-6rem))] max-w-full overflow-hidden rounded-[24px] border p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition ${
-                        item.keep ? "border-white/10 bg-white/[0.06]" : "border-white/8 bg-white/[0.03] opacity-70"
+                      className={`w-[min(24rem,calc(100vw-6rem))] max-w-full overflow-hidden rounded-2xl border p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition ${
+                        item.keep ? "border-white/[0.08] bg-white/[0.06]" : "border-white/[0.06] bg-white/[0.03] opacity-70"
                       }`}
                     >
-                      <div className="overflow-hidden rounded-[18px] border border-white/10 bg-black/25">
+                      <div className="overflow-hidden rounded-2xl border border-white/[0.08] bg-black/25">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={buildMediaUrl(item.previewUrl)}
@@ -1254,7 +1268,7 @@ export default function NarrationPage() {
                           {item.lineSource ? <Badge className="bg-white/10 text-white">{sourceLabel(item.lineSource)}</Badge> : null}
                           {item.locked ? <Badge className="bg-white/10 text-white">Locked</Badge> : null}
                           {factualPanel ? <Badge className="bg-white/10 text-white">Fact-heavy</Badge> : null}
-                          {possibleMismatch ? <Badge className="bg-amber-500/20 text-amber-100">Possible mismatch</Badge> : null}
+                          {possibleMismatch ? <Badge className="bg-warn/[0.10] text-warn">Possible mismatch</Badge> : null}
                         </div>
                       </div>
                       <div className="mt-4 flex flex-wrap gap-2">
@@ -1279,7 +1293,7 @@ export default function NarrationPage() {
                         </Button>
                       </div>
                       <Textarea
-                        className="mt-4 h-[190px] overflow-y-auto resize-none rounded-[20px] bg-white/[0.04]"
+                        className="mt-4 h-[190px] overflow-y-auto resize-none rounded-2xl bg-white/[0.04]"
                         value={item.value}
                         placeholder={
                           waitingForDialogue
@@ -1291,18 +1305,18 @@ export default function NarrationPage() {
                         onChange={(event) => updateLineValue(index, event.target.value)}
                       />
                       {possibleMismatch ? (
-                        <p className="mt-3 text-xs text-amber-100">
+                        <p className="mt-3 text-xs text-warn">
                           This line may be dropping important factual details from the extracted text. Try <span className="font-semibold">Keep facts</span>.
                         </p>
                       ) : null}
                       {item.visualCaption ? (
-                        <div className="mt-4 max-h-[9rem] overflow-y-auto rounded-[18px] border border-white/10 bg-black/20 p-3">
+                        <div className="mt-4 max-h-[9rem] overflow-y-auto rounded-2xl border border-white/[0.08] bg-black/20 p-3">
                           <p className="text-[11px] uppercase tracking-[0.18em] text-mutedForeground">Visual caption</p>
                           <p className="mt-2 text-sm text-mutedForeground">{item.visualCaption}</p>
                         </div>
                       ) : null}
                       {item.extractedText ? (
-                        <div className="mt-4 max-h-[9rem] overflow-y-auto rounded-[18px] border border-white/10 bg-black/20 p-3">
+                        <div className="mt-4 max-h-[9rem] overflow-y-auto rounded-2xl border border-white/[0.08] bg-black/20 p-3">
                           <p className="text-[11px] uppercase tracking-[0.18em] text-mutedForeground">Extracted text</p>
                           <p className="mt-2 text-sm text-mutedForeground">{item.extractedText}</p>
                         </div>

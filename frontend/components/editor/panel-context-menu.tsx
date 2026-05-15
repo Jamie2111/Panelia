@@ -68,7 +68,7 @@ export function PanelContextMenu({
   return (
     <div
       ref={menuRef}
-      className="fixed z-50 min-w-[160px] rounded-lg border border-white/10 bg-zinc-900 py-1 shadow-xl"
+      className="fixed z-50 min-w-[160px] rounded-lg border border-white/[0.08] bg-zinc-900 py-1 shadow-xl"
       style={{ left: x, top: y }}
     >
       {items.map((item) => {
@@ -78,7 +78,7 @@ export function PanelContextMenu({
             key={item.label}
             type="button"
             onClick={item.action}
-            className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition hover:bg-white/10 ${
+            className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition hover:bg-white/[0.08] ${
               "danger" in item ? "text-red-300 hover:text-red-200" : "text-white"
             }`}
           >

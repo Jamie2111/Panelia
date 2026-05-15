@@ -66,12 +66,12 @@ export default function ExportsPage() {
 
   return (
     <AppShell
-      title="Exports library"
-      description="Review the latest rendered output across projects, jump back into narration or panel editing, and keep the finishing pass focused on the projects that already have exports."
+      title="Exports"
+      description="Your latest rendered videos, one click away from the next edit pass."
     >
       {error ? (
-        <Card className="mb-6 border-red-500/20 bg-red-500/10">
-          <CardDescription className="text-red-200">{error}</CardDescription>
+        <Card className="mb-6 p-edge-fail">
+          <CardDescription className="text-fail">{error}</CardDescription>
         </Card>
       ) : null}
       {exports.length ? (

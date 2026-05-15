@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, ChevronUp } from "lucide-react";
 
 import type { PanelBox } from "@/lib/types";
@@ -11,6 +12,7 @@ interface PageStatusPopoverProps {
   pageCount: number;
   panels: PanelBox[];
   flaggedPanelIds: Set<string>;
+  anchorRect: DOMRect | null;
   onJumpToPage: (page: number) => void;
   onClose: () => void;
 }
@@ -19,11 +21,17 @@ export function PageStatusPopover({
   pageCount,
   panels,
   flaggedPanelIds,
+  anchorRect,
   onJumpToPage,
   onClose
 }: PageStatusPopoverProps) {
   const [sortKey, setSortKey] = useState<SortKey>("page");
   const [sortAsc, setSortAsc] = useState(true);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const rows = useMemo(() => {
     const map = new Map<number, { page: number; panels: number; kept: number; flagged: number }>();
@@ -55,12 +63,23 @@ export function PageStatusPopover({
   }
 
   const SortIcon = sortAsc ? ChevronUp : ChevronDown;
+  const width = 360;
+  const viewportWidth = mounted ? window.innerWidth : width;
+  const viewportHeight = mounted ? window.innerHeight : 720;
+  const top = Math.min((anchorRect?.bottom ?? 88) + 8, viewportHeight - 120);
+  const left = Math.max(12, Math.min(anchorRect?.left ?? 360, viewportWidth - width - 12));
+  const maxHeight = Math.max(220, viewportHeight - top - 16);
 
-  return (
+  if (!mounted) return null;
+
+  return createPortal(
     <>
-      <div className="fixed inset-0 z-40" onClick={onClose} />
-      <div className="absolute left-0 top-full z-50 mt-2 w-72 rounded-xl border border-white/10 bg-zinc-900 shadow-xl">
-        <div className="max-h-[320px] overflow-y-auto p-1">
+      <div className="fixed inset-0 z-[9998]" onClick={onClose} />
+      <div
+        className="fixed z-[9999] rounded-xl border border-white/[0.08] bg-zinc-900 shadow-2xl shadow-black/60"
+        style={{ left, top, width }}
+      >
+        <div className="overflow-y-auto p-2" style={{ maxHeight }}>
           <table className="w-full text-xs">
             <thead>
               <tr className="text-mutedForeground">
@@ -82,12 +101,12 @@ export function PageStatusPopover({
               {rows.map((row) => (
                 <tr
                   key={row.page}
-                  className="cursor-pointer rounded transition hover:bg-white/10"
+                  className="cursor-pointer rounded transition hover:bg-white/[0.08]"
                   onClick={() => { onJumpToPage(row.page); onClose(); }}
                 >
                   <td className="rounded-l px-2 py-1 font-mono text-white">{row.page}</td>
                   <td className="px-2 py-1 text-mutedForeground">{row.panels}</td>
-                  <td className="px-2 py-1 text-emerald-300">{row.kept}</td>
+                  <td className="px-2 py-1 text-ok">{row.kept}</td>
                   <td className="rounded-r px-2 py-1">
                     {row.flagged > 0 ? (
                       <span className="text-amber-300">{row.flagged}</span>
@@ -101,6 +120,7 @@ export function PageStatusPopover({
           </table>
         </div>
       </div>
-    </>
+    </>,
+    document.body
   );
 }

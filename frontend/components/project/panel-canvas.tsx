@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, X } from "lucide-react";
 
 import { buildMediaUrl, cn } from "@/lib/utils";
 import { PanelBox } from "@/lib/types";
@@ -24,7 +23,7 @@ export function PanelCanvas({
   onDrawComplete,
   onNaturalSizeChange,
   onPanelContextMenu,
-  onDetectedTextChange
+  onToggleKeep
 }: {
   imageUrl?: string | null;
   panels: PanelBox[];
@@ -37,19 +36,17 @@ export function PanelCanvas({
   onDrawComplete?: () => void;
   onNaturalSizeChange?: (size: { width: number; height: number }) => void;
   onPanelContextMenu?: (panelId: string, x: number, y: number) => void;
-  onDetectedTextChange?: (panelId: string, value: string) => void;
+  onToggleKeep: (panelId: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
-  const overlayRef = useRef<HTMLDivElement>(null);
   const lockedScrollRef = useRef<{ left: number; top: number } | null>(null);
   const [naturalSize, setNaturalSize] = useState({ width: 1, height: 1 });
   const [viewportSize, setViewportSize] = useState({ width: 1, height: 1 });
   const [renderSize, setRenderSize] = useState({ width: 1, height: 1 });
   const [dragState, setDragState] = useState<DragState>(null);
-  const [ocrOverlay, setOcrOverlay] = useState<{ panelId: string; value: string } | null>(null);
   const [zoom, setZoom] = useState(1);
   const interacting = Boolean(dragState);
 
@@ -227,39 +224,6 @@ export function PanelCanvas({
     };
   }, [dragState, onAddPanel, onDrawComplete, onMove, onResize, scale.x, scale.y]);
 
-  useEffect(() => {
-    if (!ocrOverlay) return;
-    function handlePointerDown(event: MouseEvent) {
-      if (overlayRef.current && overlayRef.current.contains(event.target as Node)) return;
-      setOcrOverlay(null);
-    }
-    function handleEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setOcrOverlay(null);
-      }
-    }
-    window.addEventListener("mousedown", handlePointerDown);
-    window.addEventListener("keydown", handleEscape);
-    return () => {
-      window.removeEventListener("mousedown", handlePointerDown);
-      window.removeEventListener("keydown", handleEscape);
-    };
-  }, [ocrOverlay]);
-
-  useEffect(() => {
-    if (!ocrOverlay) return;
-    const exists = panels.some((panel) => panel.id === ocrOverlay.panelId);
-    if (!exists) {
-      setOcrOverlay(null);
-    }
-  }, [ocrOverlay, panels]);
-
-  function commitOcrOverlay() {
-    if (!ocrOverlay || !onDetectedTextChange) return;
-    onDetectedTextChange(ocrOverlay.panelId, ocrOverlay.value);
-    setOcrOverlay(null);
-  }
-
   function clampZoom(nextZoom: number) {
     return Math.min(4, Math.max(1, nextZoom));
   }
@@ -307,25 +271,25 @@ export function PanelCanvas({
       {imageUrl ? (
         <div className="flex h-full w-full flex-col overflow-hidden">
           <div className="mb-2 flex items-center justify-between px-1 text-[11px] text-mutedForeground">
-            <div className="rounded-full border border-white/10 bg-black/20 px-2.5 py-1">
+            <div className="rounded-full border border-white/[0.08] bg-black/20 px-2.5 py-1">
               Pinch on the trackpad or hold Ctrl/Cmd and scroll to zoom
             </div>
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                className="rounded-full border border-white/10 px-2.5 py-1 transition hover:bg-white/10 hover:text-white"
+                className="rounded-full border border-white/[0.08] px-2.5 py-1 transition hover:bg-white/[0.08] hover:text-white"
                 onClick={() => applyZoom(1)}
               >
                 Fit
               </button>
-              <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-1 text-white">
+              <span className="rounded-full border border-white/[0.08] bg-black/20 px-2.5 py-1 text-white">
                 {Math.round(zoom * 100)}%
               </span>
             </div>
           </div>
           <div
             ref={viewportRef}
-            className="flex-1 overflow-auto overscroll-contain rounded-[28px] border border-white/10 bg-black/20 shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
+            className="flex-1 overflow-auto overscroll-contain rounded-[28px] border border-white/[0.08] bg-black/20 shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
             onWheel={handleWheel}
             style={{ scrollbarGutter: "stable both-edges" }}
           >
@@ -333,7 +297,7 @@ export function PanelCanvas({
               <div
                 ref={frameRef}
                 className={cn(
-                  "relative overflow-visible rounded-[28px] border border-white/10 bg-black/30 shadow-[0_24px_80px_rgba(0,0,0,0.45)]",
+                  "relative overflow-visible rounded-[28px] border border-white/[0.08] bg-black/30 shadow-[0_24px_80px_rgba(0,0,0,0.45)]",
                   dragState && "cursor-grabbing"
                 )}
                 style={{
@@ -378,18 +342,16 @@ export function PanelCanvas({
                     const width = `${(panel.width / naturalSize.width) * 100}%`;
                     const height = `${(panel.height / naturalSize.height) * 100}%`;
                     const selected = selectedIds.includes(panel.id);
-                    const editing = ocrOverlay?.panelId === panel.id;
 
                     return (
                       <div
                         key={panel.id}
                         data-canvas-panel-id={panel.id}
                         className={cn(
-                          "pointer-events-auto absolute border-2 bg-accent/10 transition",
+                          "pointer-events-auto absolute border-2 bg-accent/10 shadow-[0_0_0_1px_rgba(0,0,0,0.85),0_0_0_3px_rgba(34,211,238,0.22)] transition",
                           drawMode && "pointer-events-none",
-                          panel.keep ? "border-accent" : "border-brand-rose/70 bg-brand-rose/10",
-                          selected && "shadow-[0_0_0_3px_rgba(34,211,238,0.25)]",
-                          editing && "z-20 shadow-[0_0_0_4px_rgba(250,204,21,0.35)]"
+                          panel.keep ? "border-accent" : "border-brand-rose/70 bg-brand-rose/10 shadow-[0_0_0_1px_rgba(0,0,0,0.85),0_0_0_3px_rgba(251,113,133,0.24)]",
+                          selected && "shadow-[0_0_0_1px_rgba(0,0,0,0.95),0_0_0_5px_rgba(34,211,238,0.36)]"
                         )}
                         style={{ left, top, width, height, touchAction: "none" }}
                         onContextMenu={(event) => {
@@ -401,8 +363,8 @@ export function PanelCanvas({
                         onDoubleClick={(event) => {
                           event.preventDefault();
                           event.stopPropagation();
-                          setOcrOverlay({ panelId: panel.id, value: panel.ocr_text ?? "" });
                           onSelect(panel.id, false);
+                          onToggleKeep(panel.id);
                         }}
                         onMouseDown={(event) => {
                           if (event.button !== 0) return;
@@ -420,7 +382,7 @@ export function PanelCanvas({
                           });
                         }}
                       >
-                        <div className="absolute left-1 top-1 rounded-md bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                        <div className="absolute left-1 top-1 min-w-9 rounded-md bg-black/85 px-2 py-0.5 text-center text-[10px] font-medium text-white shadow-sm">
                           {panel.order}
                         </div>
                         {(panel.ocr_text ?? "").trim() ? (
@@ -461,57 +423,6 @@ export function PanelCanvas({
                           />
                         ))}
 
-                        {editing ? (
-                          <div
-                            ref={overlayRef}
-                            className="absolute left-2 right-2 top-2 z-30 rounded-2xl border border-white/15 bg-zinc-950/95 p-3 shadow-2xl backdrop-blur"
-                            onMouseDown={(event) => {
-                              event.stopPropagation();
-                            }}
-                          >
-                            <p className="mb-2 text-[10px] uppercase tracking-[0.18em] text-mutedForeground">
-                              Inline OCR
-                            </p>
-                            <textarea
-                              autoFocus
-                              value={ocrOverlay.value}
-                              placeholder="Type extracted dialogue here"
-                              className="min-h-[88px] w-full resize-none rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white outline-none focus:border-accent"
-                              onChange={(event) =>
-                                setOcrOverlay((current) => (current ? { ...current, value: event.target.value } : current))
-                              }
-                              onKeyDown={(event) => {
-                                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                                  event.preventDefault();
-                                  commitOcrOverlay();
-                                }
-                              }}
-                            />
-                            <div className="mt-2 flex items-center justify-between gap-2">
-                              <p className="text-[10px] text-mutedForeground">
-                                Double-click any panel to edit text in place.
-                              </p>
-                              <div className="flex gap-2">
-                                <button
-                                  type="button"
-                                  className="inline-flex h-8 items-center gap-1 rounded-full border border-white/10 px-3 text-xs text-mutedForeground transition hover:bg-white/10 hover:text-white"
-                                  onClick={() => setOcrOverlay(null)}
-                                >
-                                  <X className="h-3.5 w-3.5" />
-                                  Cancel
-                                </button>
-                                <button
-                                  type="button"
-                                  className="inline-flex h-8 items-center gap-1 rounded-full bg-accent px-3 text-xs font-medium text-accent-foreground transition hover:opacity-90"
-                                  onClick={commitOcrOverlay}
-                                >
-                                  <Check className="h-3.5 w-3.5" />
-                                  Save text
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ) : null}
                       </div>
                     );
                   })}

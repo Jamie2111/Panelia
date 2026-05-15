@@ -5,8 +5,16 @@ import { Film, LayoutDashboard, PenSquare, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ProjectTabs } from "./project-tabs";
 
+/**
+ * AppShell — the persistent chrome around every page.
+ *
+ * Notion-style top bar (compact, sticky, blurred) + ambient orbs from
+ * globals.css drifting behind everything. The shell never carries content
+ * of its own — page content lives in `children`.
+ */
+
 const navigation = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/", label: "Studio", icon: LayoutDashboard },
   { href: "/projects/new", label: "Create", icon: Sparkles },
   { href: "/exports", label: "Exports", icon: Film }
 ] as const;
@@ -15,25 +23,28 @@ export function AppShell({
   title,
   description,
   projectId,
-  children
+  children,
+  contentClassName,
 }: {
   title: string;
-  description: string;
+  description?: string;
   projectId?: string;
   children: ReactNode;
+  contentClassName?: string;
 }) {
   return (
-    <div className="min-h-screen bg-background text-white">
-      <div className="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.08),_transparent_28%),radial-gradient(circle_at_bottom_right,_rgba(251,191,36,0.06),_transparent_28%)]" />
-
-      {/* Top bar */}
-      <header className="sticky top-0 z-30 border-b border-white/8 bg-background/80 backdrop-blur-xl">
-        <div className="mx-auto flex h-14 max-w-[1440px] items-center gap-6 px-4 lg:px-6">
-          <Link href="/" className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-accent-foreground">
-              <PenSquare className="h-3.5 w-3.5" />
+    <div className="min-h-screen text-foreground">
+      {/* Sticky top bar — heavy backdrop blur, hairline divider */}
+      <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-[rgb(var(--p-bg-base)/0.65)] backdrop-blur-liquid">
+        <div className="mx-auto flex h-14 max-w-[1680px] items-center gap-6 px-6 lg:px-10">
+          <Link
+            href="/"
+            className="flex items-center gap-2.5 transition-opacity duration-fast hover:opacity-90"
+          >
+            <div className="flex h-7 w-7 items-center justify-center rounded-[10px] bg-accent text-accent-foreground shadow-[0_0_18px_-3px_rgb(var(--p-accent)/0.7)]">
+              <PenSquare className="h-3.5 w-3.5" strokeWidth={2.4} />
             </div>
-            <span className="font-display text-[15px]">Panelia</span>
+            <span className="font-display text-[15px] tracking-tightish">Panelia</span>
           </Link>
 
           <nav className="hidden items-center gap-1 md:flex">
@@ -44,10 +55,12 @@ export function AppShell({
                   key={item.href}
                   href={item.href}
                   className={cn(
-                    "flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-mutedForeground transition hover:bg-white/8 hover:text-white"
+                    "flex items-center gap-2 rounded-full px-3 py-1.5 text-sm",
+                    "text-mutedForeground transition-colors duration-fast ease-liquid",
+                    "hover:bg-white/[0.06] hover:text-foreground"
                   )}
                 >
-                  <Icon className="h-3.5 w-3.5" />
+                  <Icon className="h-3.5 w-3.5" strokeWidth={2} />
                   {item.label}
                 </Link>
               );
@@ -56,20 +69,39 @@ export function AppShell({
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1440px] px-4 py-6 lg:px-6">
-        {/* Page header */}
-        <div className="mb-1">
-          <h1 className="font-display text-2xl tracking-tight">{title}</h1>
-          <p className="mt-1 max-w-3xl text-sm text-mutedForeground">{description}</p>
+      <main
+        className={cn(
+          "mx-auto max-w-[1680px] px-6 lg:px-10 py-8 lg:py-10",
+          contentClassName
+        )}
+      >
+        {/* Page heading — display weight, gradient text, generous margin */}
+        <div className="mb-2">
+          <h1
+            className="font-display text-3xl md:text-[40px] leading-tight tracking-tight"
+            style={{
+              backgroundImage:
+                "linear-gradient(180deg, rgb(var(--p-text)) 0%, rgb(var(--p-muted)) 110%)",
+              WebkitBackgroundClip: "text",
+              backgroundClip: "text",
+              color: "transparent",
+            }}
+          >
+            {title}
+          </h1>
+          {description && (
+            <p className="mt-2 max-w-2xl text-sm text-mutedForeground leading-relaxed">
+              {description}
+            </p>
+          )}
         </div>
 
-        {/* Project tabs */}
         {projectId && (
-          <div className="mb-6 mt-4">
+          <div className="mt-6 mb-7">
             <ProjectTabs projectId={projectId} />
           </div>
         )}
-        {!projectId && <div className="mb-6" />}
+        {!projectId && <div className="mb-7" />}
 
         {children}
       </main>

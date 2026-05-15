@@ -63,7 +63,7 @@ export default function CharacterDictionaryPage() {
           <LoaderCircle className="h-4 w-4 animate-spin" /> Loading dictionary...
         </div>
       ) : error ? (
-        <Card className="border-red-500/30 bg-red-500/10 p-6 text-sm text-red-100">{error}</Card>
+        <Card className="p-edge-fail">{error}</Card>
       ) : (
         <div className="space-y-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

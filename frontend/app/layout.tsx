@@ -1,12 +1,13 @@
 import type { Metadata } from "next";
-import type { CSSProperties, ReactNode } from "react";
+import type { ReactNode } from "react";
 import Script from "next/script";
 
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Panelia",
-  description: "Create narrated manga recap videos from supported URLs or uploaded pages."
+  description:
+    "Turn any manga, manhwa, webtoon, or comic chapter into a polished YouTube recap video.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
@@ -104,12 +105,6 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
       <body
         suppressHydrationWarning
         className="font-sans antialiased"
-        style={
-          {
-            "--font-sora": "\"Avenir Next\", \"Segoe UI\", sans-serif",
-            "--font-dm-sans": "\"SF Pro Display\", \"Avenir Next\", \"Segoe UI\", sans-serif"
-          } as CSSProperties
-        }
       >
         {children}
       </body>

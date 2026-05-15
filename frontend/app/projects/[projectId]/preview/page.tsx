@@ -8,7 +8,7 @@ import { AppShell } from "@/components/project/app-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import { getStageProgressMeta } from "@/lib/progress";
+import { formatProgressPercent, getStageProgressMeta } from "@/lib/progress";
 import { PanelLayout, ProjectDetail } from "@/lib/types";
 import { useAdaptivePolling } from "@/lib/use-adaptive-polling";
 import { buildMediaUrl, formatRelativeDate } from "@/lib/utils";
@@ -119,7 +119,7 @@ export default function PreviewPage() {
   const videoProgressMeta = project ? getStageProgressMeta(project, "video_rendering") : null;
   const renderInFlight = videoStage?.status === "running" || activeStageJobs("video_rendering").length > 0;
   const audioInFlight = audioStage?.status === "running" || activeStageJobs("narration_generation").length > 0;
-  const renderProgress = videoProgressMeta?.progress ?? Math.max(0, Math.min(100, Math.round(videoStage?.progress ?? 0)));
+  const renderProgress = videoProgressMeta?.progress ?? Math.ceil(Math.max(0, Math.min(100, Number(videoStage?.progress ?? 0))));
   const targetDimensions = resolvedDimensions(resolution, orientation);
   const videoSettingsDirty = Boolean(
     project &&
@@ -336,7 +336,7 @@ export default function PreviewPage() {
   if (!project) {
     return (
       <AppShell title="Loading preview" description="Fetching generated exports and audio assets." projectId={projectId}>
-        <div className="flex items-center gap-3 rounded-[28px] border border-white/10 bg-white/5 p-6 text-sm text-mutedForeground">
+        <div className="flex items-center gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.04] p-6 text-sm text-mutedForeground">
           <LoaderCircle className="h-4 w-4 animate-spin text-accent" />
           Loading preview workspace...
         </div>
@@ -351,13 +351,13 @@ export default function PreviewPage() {
       projectId={projectId}
     >
       {error ? (
-        <Card className="mb-6 border-red-500/20 bg-red-500/10">
-          <CardDescription className="text-red-200">{error}</CardDescription>
+        <Card className="mb-6 border-fail/[0.25] bg-fail/[0.08]">
+          <CardDescription className="text-fail">{error}</CardDescription>
         </Card>
       ) : null}
       {videoStage?.status === "failed" ? (
-        <Card className="mb-6 border-red-500/20 bg-red-500/10">
-          <CardDescription className="text-red-200">
+        <Card className="mb-6 border-fail/[0.25] bg-fail/[0.08]">
+          <CardDescription className="text-fail">
             The latest render failed, so the preview below is still showing the last completed export.
             {videoStage.message ? ` ${videoStage.message}` : ""}
           </CardDescription>
@@ -367,7 +367,7 @@ export default function PreviewPage() {
         <Card>
           <CardTitle className="text-base">Latest export</CardTitle>
           <CardDescription className="mt-1">Your newest render appears when the video stage finishes.</CardDescription>
-          <div className="mt-6 overflow-hidden rounded-[28px] border border-white/10 bg-black/30">
+          <div className="mt-6 overflow-hidden rounded-2xl border border-white/[0.08] bg-black/30">
             {renderInFlight ? (
               <div
                 className="flex w-full flex-col items-center justify-center gap-5 px-6 text-sm text-mutedForeground"
@@ -376,7 +376,7 @@ export default function PreviewPage() {
                 <LoaderCircle className="h-6 w-6 animate-spin text-accent" />
                 <div className="space-y-2 text-center">
                   <p className="text-base font-medium text-white">{videoStage?.message || "Rendering your latest export..."}</p>
-                  <p>{renderProgress}% complete</p>
+                  <p>{formatProgressPercent(renderProgress)} complete</p>
                   {latestVideo ? <p className="text-xs text-mutedForeground">Your last completed export will stay available until this new render finishes.</p> : null}
                 </div>
                 <div className="h-2 w-full max-w-md overflow-hidden rounded-full bg-white/10">
@@ -429,7 +429,7 @@ export default function PreviewPage() {
             {latestVideo ? (
               <a
                 href={latestVideoDownloadUrl}
-                className="inline-flex items-center gap-2 rounded-full border border-white/10 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-white/5"
+                className="inline-flex items-center gap-2 rounded-full border border-white/[0.08] px-5 py-2.5 text-sm font-medium text-white transition hover:bg-white/5"
               >
                 <Download className="h-4 w-4" />
                 Download latest video
@@ -445,33 +445,33 @@ export default function PreviewPage() {
             <div className="mt-6 grid gap-4 md:grid-cols-2">
               <label className="space-y-2">
                 <span className="text-sm text-mutedForeground">Resolution</span>
-                <select className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm" value={resolution} onChange={(event) => setResolution(event.target.value)}>
+                <select className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast" value={resolution} onChange={(event) => setResolution(event.target.value)}>
                   <option value="1920x1080">1920 x 1080</option>
                   <option value="1280x720">1280 x 720</option>
                 </select>
               </label>
               <label className="space-y-2">
                 <span className="text-sm text-mutedForeground">Orientation</span>
-                <select className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm" value={orientation} onChange={(event) => setOrientation(event.target.value as "landscape" | "vertical")}>
+                <select className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast" value={orientation} onChange={(event) => setOrientation(event.target.value as "landscape" | "vertical")}>
                   <option value="landscape">Landscape</option>
                   <option value="vertical">Vertical</option>
                 </select>
               </label>
               <label className="space-y-2">
                 <span className="text-sm text-mutedForeground">Panel layout</span>
-                <select className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm" value={panelLayout} onChange={(event) => setPanelLayout(event.target.value as PanelLayout)}>
+                <select className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast" value={panelLayout} onChange={(event) => setPanelLayout(event.target.value as PanelLayout)}>
                   <option value="card">Centered card with blur</option>
                   <option value="fullscreen">Fullscreen panel</option>
                 </select>
               </label>
               <label className="space-y-2">
                 <span className="text-sm text-mutedForeground">Output format</span>
-                <select className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm" value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as "mp4" | "mov")}>
+                <select className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast" value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as "mp4" | "mov")}>
                   <option value="mp4">MP4</option>
                   <option value="mov">MOV</option>
                 </select>
               </label>
-              <div className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4 md:col-span-2">
+              <div className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4 md:col-span-2">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="space-y-1">
                     <p className="text-sm font-medium text-white">YouTube thumbnail lead-in</p>
@@ -498,7 +498,7 @@ export default function PreviewPage() {
                   </div>
                 </div>
                 <div className="mt-4 grid gap-4 md:grid-cols-[180px_1fr]">
-                  <div className="overflow-hidden rounded-[20px] border border-white/10 bg-black/30">
+                  <div className="overflow-hidden rounded-2xl border border-white/[0.08] bg-black/30">
                     {project.video_thumbnail_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={videoThumbnailSrc} alt="Video thumbnail" className="aspect-[9/16] h-full w-full object-cover" />
@@ -509,7 +509,7 @@ export default function PreviewPage() {
                     )}
                   </div>
                   <div className="space-y-4">
-                    <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white">
+                    <label className="flex items-center gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-sm text-white">
                       <input
                         type="checkbox"
                         className="h-4 w-4 rounded border-white/20 bg-white/5"
@@ -527,13 +527,13 @@ export default function PreviewPage() {
                         step={0.1}
                         value={introThumbnailSeconds}
                         onChange={(event) => setIntroThumbnailSeconds(Math.max(0.5, Math.min(4, Number(event.target.value) || 1.5)))}
-                        className="h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm"
+                        className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast"
                       />
                     </label>
                   </div>
                 </div>
               </div>
-              <div className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4 md:col-span-2">
+              <div className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4 md:col-span-2">
                 <p className="text-sm text-mutedForeground">Final canvas</p>
                 <p className="mt-2 text-sm font-semibold text-white">
                   {targetDimensions.width} × {targetDimensions.height} • {orientation === "vertical" ? "Vertical" : "Landscape"}
@@ -558,7 +558,7 @@ export default function PreviewPage() {
                   const queuedIndex = selectedPaths.indexOf(video.path);
                   const queued = queuedIndex >= 0;
                   return (
-                    <div key={video.path} className="rounded-[22px] border border-white/10 bg-white/5 p-4">
+                    <div key={video.path} className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4">
                       <div className="flex items-center justify-between gap-3">
                       <div className="flex flex-1 items-center justify-between gap-3">
                         <div className="min-w-0">
@@ -617,7 +617,7 @@ export default function PreviewPage() {
             <div className="mt-6 space-y-3">
               {queuedVideos.length ? (
                 queuedVideos.map((video, index) => (
-                  <div key={video!.path} className="flex items-center justify-between gap-3 rounded-[22px] border border-white/10 bg-white/5 p-4">
+                  <div key={video!.path} className="flex items-center justify-between gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4">
                     <div>
                       <p className="text-sm font-medium text-white">
                         {index + 1}. {video!.name}
@@ -644,7 +644,7 @@ export default function PreviewPage() {
               )}
             </div>
             <input
-              className="mt-6 h-11 w-full rounded-2xl border border-border bg-white/5 px-4 text-sm"
+              className="mt-6 h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-foreground focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/30 transition-colors duration-fast"
               value={outputName}
               onChange={(event) => setOutputName(event.target.value)}
               placeholder="merged-cut"

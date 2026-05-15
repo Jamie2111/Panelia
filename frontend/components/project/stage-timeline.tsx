@@ -1,10 +1,10 @@
 import { CheckCircle2, Clock3, LoaderCircle, Sparkles, XCircle } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
+import { Badge, type BadgeTone } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { getStageProgressMeta } from "@/lib/progress";
-import { stageLabel } from "@/lib/utils";
-import { ProjectSummary } from "@/lib/types";
+import { toPipelineDisplay, shortStageLabel } from "@/lib/pipeline-messages";
+import type { ProjectSummary, StageStatus } from "@/lib/types";
 
 const order = [
   "ingestion",
@@ -19,61 +19,86 @@ const order = [
   "video_rendering"
 ] as const;
 
-function statusIcon(status: string) {
-  if (status === "completed") return <CheckCircle2 className="h-4 w-4 text-accent" />;
-  if (status === "running") return <LoaderCircle className="h-4 w-4 animate-spin text-brand-cyan" />;
-  if (status === "failed" || status === "cancelled") return <XCircle className="h-4 w-4 text-brand-rose" />;
-  if (status === "needs_review") return <Sparkles className="h-4 w-4 text-brand-amber" />;
-  return <Clock3 className="h-4 w-4 text-mutedForeground" />;
+function statusIcon(status: StageStatus) {
+  const cls = "h-4 w-4";
+  if (status === "completed") return <CheckCircle2 className={`${cls} text-ok`} />;
+  if (status === "running") return <LoaderCircle className={`${cls} animate-spin text-accent`} />;
+  if (status === "failed" || status === "cancelled") return <XCircle className={`${cls} text-fail`} />;
+  if (status === "needs_review") return <Sparkles className={`${cls} text-warn`} />;
+  return <Clock3 className={`${cls} text-mutedForeground`} />;
 }
 
+function toneFor(status: StageStatus): BadgeTone {
+  if (status === "completed") return "ok";
+  if (status === "running") return "accent";
+  if (status === "failed" || status === "cancelled") return "fail";
+  if (status === "needs_review") return "warn";
+  if (status === "ready") return "info";
+  return "neutral";
+}
+
+/**
+ * StageTimeline — vertical, glanceable pipeline state.
+ *
+ * Replaces the percent + cryptic message layout with:
+ *   • Status icon (color-coded)
+ *   • Stage label
+ *   • One sentence from `toPipelineDisplay()` instead of raw API message
+ *   • Progress bar only when actively running (no fake 100% bars)
+ *   • Tone-aware Badge
+ */
 export function StageTimeline({ project }: { project: ProjectSummary }) {
   return (
     <div className="space-y-2">
       {order.map((stage) => {
         const state = project.stage_states[stage];
+        if (!state) return null;
+        const status = state.status as StageStatus;
         const progressMeta = getStageProgressMeta(project, stage);
-        const isActive = state.status === "running" || state.status === "needs_review";
-        const isCompleted = state.status === "completed";
-        const isFailed = state.status === "failed" || state.status === "cancelled";
+        const display = toPipelineDisplay(state);
+
+        const isActive = status === "running" || status === "needs_review";
+        const containerClass =
+          isActive
+            ? "p-glass p-edge-info p-4"
+            : status === "completed"
+            ? "p-glass p-edge-ok p-4 opacity-90"
+            : status === "failed" || status === "cancelled"
+            ? "p-glass p-edge-fail p-4"
+            : "p-glass p-4 opacity-80";
 
         return (
-          <div
-            key={stage}
-            className={`rounded-2xl border p-4 transition-all ${
-              isActive
-                ? "border-accent/30 bg-accent/5"
-                : "border-white/8 bg-white/[0.03]"
-            }`}
-          >
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex min-w-0 items-center gap-3">
-                <div className={`rounded-full p-1.5 ${isActive ? "bg-accent/10" : "bg-white/5"}`}>
-                  {statusIcon(state.status)}
+          <div key={stage} className={`${containerClass} transition-all duration-mid ease-liquid`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex min-w-0 items-start gap-3">
+                <div
+                  className={`rounded-full p-1.5 ${
+                    isActive ? "bg-accent/10" : "bg-white/[0.05]"
+                  }`}
+                >
+                  {statusIcon(status)}
                 </div>
                 <div className="min-w-0">
-                  <p className={`text-sm font-medium ${isActive ? "text-accent" : "text-white"}`}>{stageLabel(stage)}</p>
-                  {(isActive || isFailed) && state.message ? (
-                    <p className="mt-0.5 break-words text-xs text-mutedForeground">{state.message}</p>
-                  ) : null}
+                  <p
+                    className={`text-sm font-medium ${
+                      isActive ? "text-foreground" : "text-foreground"
+                    }`}
+                  >
+                    {shortStageLabel(stage)}
+                  </p>
+                  <p className="mt-0.5 text-xs text-mutedForeground leading-relaxed">
+                    {display.sentence}
+                  </p>
                 </div>
               </div>
-              <Badge>{state.status.replace("_", " ")}</Badge>
+              <Badge tone={toneFor(status)} dot={isActive} pulse={isActive}>
+                {status === "needs_review" ? "review" : status}
+              </Badge>
             </div>
 
-            {isActive ? (
-              <div className="mt-3">
-                <div className="mb-1.5 flex items-center justify-between gap-3 text-[10px] uppercase tracking-[0.18em] text-mutedForeground">
-                  <span>{progressMeta.stateLabel ?? "Running"}</span>
-                  <span className="tabular-nums">{progressMeta.progress}%</span>
-                </div>
-                <Progress value={progressMeta.progress} />
-              </div>
-            ) : isCompleted ? (
-              <div className="mt-2">
-                <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/8">
-                  <div className="h-full rounded-full bg-accent/50" style={{ width: "100%" }} />
-                </div>
+            {status === "running" ? (
+              <div className="mt-3 pl-9">
+                <Progress value={progressMeta.progress} shimmer />
               </div>
             ) : null}
           </div>

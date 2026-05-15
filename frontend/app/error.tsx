@@ -34,7 +34,7 @@ export default function Error({
           </Button>
         </div>
         {error?.message ? (
-          <p className="mt-4 rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          <p className="mt-4 rounded-2xl border border-fail/[0.25] bg-fail/[0.08] px-4 py-3 text-sm text-fail">
             {error.message}
           </p>
         ) : null}
