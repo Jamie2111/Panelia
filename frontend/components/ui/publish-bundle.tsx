@@ -42,6 +42,14 @@ export interface PublishBundle {
   thumbnail_source_panel_id: string | null;
   thumbnail_variants?: PublishBundleThumbnailVariant[];
   chosen_thumbnail_index?: number;
+  // Shorts cover thumbnails (vertical 1080x1920). Same shape as the
+  // main thumbnail set; they're rendered in a separate carousel.
+  short_thumbnail_url?: string | null;
+  short_thumbnail_variants?: PublishBundleThumbnailVariant[];
+  short_chosen_thumbnail_index?: number;
+  short_video_url?: string | null;
+  short_title?: string | null;
+  short_description?: string | null;
   bundle_dir: string | null;
 }
 
@@ -422,6 +430,204 @@ export function PublishBundleCard({
           ) : null}
         </div>
       </div>
+
+      {/* ── Shorts cover thumbnails (separate carousel) ─────────────── */}
+      <ShortsThumbnailSection
+        bundle={bundle}
+        mediaPrefix={mediaPrefix}
+        thumbCacheKey={thumbCacheKey}
+        onBumpCache={() => setThumbCacheKey(Date.now())}
+        setSavingField={setSavingField}
+        setSaveError={setSaveError}
+      />
     </Card>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// ShortsThumbnailSection
+// Separate component because Shorts thumbnails have their own carousel,
+// active selection, and editable overlay text. Mirrors the main-thumbnail
+// flow but lives in its own state so editing one doesn't disturb the
+// other.
+// ────────────────────────────────────────────────────────────────────
+
+function ShortsThumbnailSection({
+  bundle,
+  mediaPrefix,
+  thumbCacheKey,
+  onBumpCache,
+  setSavingField,
+  setSaveError,
+}: {
+  bundle: PublishBundle;
+  mediaPrefix?: string;
+  thumbCacheKey: number;
+  onBumpCache: () => void;
+  setSavingField: React.Dispatch<React.SetStateAction<string | null>>;
+  setSaveError: React.Dispatch<React.SetStateAction<string | null>>;
+}) {
+  const variants = bundle.short_thumbnail_variants ?? [];
+  const [shortChosen, setShortChosen] = React.useState<number>(bundle.short_chosen_thumbnail_index ?? 0);
+  const [shortOverlayDraft, setShortOverlayDraft] = React.useState<string>("");
+
+  const activeVariant = variants[shortChosen];
+
+  React.useEffect(() => {
+    setShortChosen(bundle.short_chosen_thumbnail_index ?? 0);
+  }, [bundle.short_chosen_thumbnail_index]);
+
+  React.useEffect(() => {
+    setShortOverlayDraft(activeVariant?.overlay_text ?? "");
+  }, [activeVariant?.index, activeVariant?.overlay_text]);
+
+  // Debounced regen for the active Shorts variant's overlay text.
+  React.useEffect(() => {
+    if (!activeVariant) return;
+    const current = activeVariant.overlay_text ?? "";
+    if (shortOverlayDraft === current) return;
+    const handle = window.setTimeout(async () => {
+      setSavingField("Shorts thumbnail text");
+      setSaveError(null);
+      try {
+        await api.regenerateThumbnailText(bundle.project_id, {
+          variant_index: activeVariant.index,
+          overlay_text: shortOverlayDraft,
+          group: "short",
+        });
+        onBumpCache();
+      } catch (err) {
+        setSaveError(err instanceof Error ? err.message : "Regenerate failed");
+      } finally {
+        setSavingField(null);
+      }
+    }, 800);
+    return () => window.clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shortOverlayDraft]);
+
+  async function pickShort(idx: number) {
+    setShortChosen(idx);
+    setSavingField("Shorts thumbnail");
+    setSaveError(null);
+    try {
+      await api.updateYouTubeBundle(bundle.project_id, { short_chosen_thumbnail_index: idx });
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Save failed");
+    } finally {
+      setSavingField(null);
+    }
+  }
+
+  if (variants.length === 0) {
+    return null;
+  }
+
+  const activeUrl = (() => {
+    const base = withMediaPrefix(activeVariant?.url ?? null, mediaPrefix);
+    return base && thumbCacheKey ? `${base}?t=${thumbCacheKey}` : base;
+  })();
+
+  return (
+    <div className="mt-6 border-t border-white/[0.06] pt-5">
+      <div className="flex items-baseline justify-between">
+        <p className="text-sm font-medium text-foreground">YouTube Shorts cover</p>
+        <p className="text-[10px] uppercase tracking-track text-mutedForeground">
+          1080 x 1920
+        </p>
+      </div>
+      <div className="mt-3 grid gap-4 lg:grid-cols-[200px_minmax(0,1fr)]">
+        <div>
+          {activeUrl ? (
+            <a
+              href={activeUrl}
+              download={`short_thumbnail_v${shortChosen}.png`}
+              draggable
+              className="block aspect-[9/16] w-full overflow-hidden rounded-2xl border border-white/[0.10] bg-black/30 transition-transform duration-fast hover:-translate-y-0.5 hover:border-accent/40 hover:shadow-[0_0_32px_-8px_rgb(var(--p-accent)/0.55)]"
+              title="Drag onto YouTube Shorts cover picker"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={activeUrl}
+                alt="Shorts cover thumbnail"
+                className="h-full w-full object-cover"
+                loading="lazy"
+                draggable
+              />
+            </a>
+          ) : (
+            <div className="aspect-[9/16] w-full rounded-2xl border border-white/[0.08] bg-white/[0.04]" />
+          )}
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="text-[10px] uppercase tracking-track text-mutedForeground">
+              Shorts thumbnail text
+            </label>
+            <input
+              type="text"
+              value={shortOverlayDraft}
+              onChange={(e) => setShortOverlayDraft(e.target.value)}
+              maxLength={60}
+              placeholder="Big text. Leave blank to remove."
+              className="mt-1 w-full rounded-2xl border border-white/[0.10] bg-white/[0.04] px-3 py-2 text-sm font-medium text-foreground outline-none transition-colors focus:border-accent/60 focus:bg-white/[0.06]"
+            />
+            <p className="mt-1 text-[10px] text-mutedForeground">
+              {shortOverlayDraft.length} / 60. Edits the active Shorts variant.
+            </p>
+          </div>
+
+          {variants.length > 1 ? (
+            <div>
+              <p className="text-[10px] uppercase tracking-track text-mutedForeground">
+                Shorts variants ({variants.length})
+              </p>
+              <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+                {variants.map((variant) => {
+                  const base = withMediaPrefix(variant.url, mediaPrefix);
+                  const vUrl = base && thumbCacheKey ? `${base}?t=${thumbCacheKey}` : base;
+                  const active = variant.index === shortChosen;
+                  return (
+                    <button
+                      key={variant.index}
+                      type="button"
+                      onClick={() => pickShort(variant.index)}
+                      title={variant.style_label}
+                      className={`relative shrink-0 overflow-hidden rounded-xl border transition-all duration-fast ${
+                        active
+                          ? "border-accent shadow-[0_0_24px_-4px_rgb(var(--p-accent)/0.6)] ring-1 ring-accent/40"
+                          : "border-white/[0.10] opacity-70 hover:opacity-100 hover:border-accent/50"
+                      }`}
+                      style={{ width: 64, aspectRatio: "9 / 16" }}
+                    >
+                      {vUrl ? (
+                        /* eslint-disable-next-line @next/next/no-img-element */
+                        <img src={vUrl} alt={variant.style_label} className="h-full w-full object-cover" loading="lazy" />
+                      ) : (
+                        <div className="h-full w-full bg-white/[0.04]" />
+                      )}
+                      <span
+                        className={`absolute bottom-0 left-0 right-0 truncate px-1 py-0.5 text-[8px] font-medium ${
+                          active ? "bg-accent text-accent-foreground" : "bg-black/65 text-white/85"
+                        }`}
+                      >
+                        {variant.style_label}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          {bundle.short_video_url ? (
+            <p className="text-[10px] text-mutedForeground">
+              Drag the cover to YouTube Studio when uploading your Short. The Shorts video itself lives at <code className="rounded bg-white/[0.04] px-1">/video/short.mp4</code> in your project folder.
+            </p>
+          ) : null}
+        </div>
+      </div>
+    </div>
   );
 }

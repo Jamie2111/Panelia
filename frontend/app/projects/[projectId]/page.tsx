@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import type { Route } from "next";
 import { useParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { Check, Edit3, LoaderCircle, RefreshCw, X } from "lucide-react";
@@ -215,9 +217,28 @@ export default function ProjectOverviewPage() {
           cost={estimateProjectCost(project as any)}
         />
 
-        {/* Publish bundle - appears once youtube_bundle stage completes */}
-        {project.stage_states.youtube_bundle?.status === "completed" || bundle ? (
-          <PublishBundleCard bundle={bundle} />
+        {/* The Publish Studio (title / description / thumbnail editor)
+            now lives on the Preview tab so it sits next to the actual
+            rendered video. The overview keeps a compact hint that the
+            bundle is ready and links across. */}
+        {project.stage_states.youtube_bundle?.status === "completed" ? (
+          <Card>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <CardTitle className="text-base">Your YouTube bundle is ready</CardTitle>
+                <CardDescription className="mt-1">
+                  Edit the title, description, and thumbnails in the Preview tab
+                  alongside the final video.
+                </CardDescription>
+              </div>
+              <Link
+                href={`/projects/${projectId}/preview` as Route}
+                className="inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.04] px-4 py-2 text-sm font-medium text-foreground transition hover:bg-white/[0.08]"
+              >
+                Open publish studio
+              </Link>
+            </div>
+          </Card>
         ) : null}
 
         <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">

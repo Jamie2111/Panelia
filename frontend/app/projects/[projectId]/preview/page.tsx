@@ -8,6 +8,7 @@ import { AppShell } from "@/components/project/app-shell";
 import { buildProjectViews } from "@/lib/project-views";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
+import { PublishBundleCard, type PublishBundle } from "@/components/ui/publish-bundle";
 import { api } from "@/lib/api";
 import { formatProgressPercent, getStageProgressMeta } from "@/lib/progress";
 import { PanelLayout, ProjectDetail } from "@/lib/types";
@@ -50,6 +51,7 @@ export default function PreviewPage() {
   const router = useRouter();
   const projectId = Array.isArray(params.projectId) ? params.projectId[0] : params.projectId;
   const [project, setProject] = useState<ProjectDetail | null>(null);
+  const [bundle, setBundle] = useState<PublishBundle | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [outputName, setOutputName] = useState("merged-cut");
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
@@ -88,6 +90,16 @@ export default function PreviewPage() {
         setIntroThumbnailSeconds(Number(nextProject.video_config.intro_thumbnail_seconds ?? 1.5));
         setOutputFormat(nextProject.video_config.output_format);
         initializedSettings.current = true;
+      }
+      // Fetch publish bundle in parallel. The publish studio sits on
+      // this page now, alongside the rendered video, so editing the
+      // title/description/thumbnails happens next to what's being
+      // shipped.
+      try {
+        const fetchedBundle = await api.getYouTubeBundle(projectId);
+        if (fetchedBundle) setBundle(fetchedBundle as PublishBundle);
+      } catch {
+        /* non-fatal - bundle hasn't been generated yet */
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load the preview workspace.");
@@ -366,6 +378,7 @@ export default function PreviewPage() {
           </CardDescription>
         </Card>
       ) : null}
+      {bundle ? <PublishBundleCard bundle={bundle} className="mb-6" /> : null}
       <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
         <Card>
           <CardTitle className="text-base">Latest export</CardTitle>

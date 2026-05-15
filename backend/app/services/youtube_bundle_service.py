@@ -308,11 +308,23 @@ class YouTubeBundleService:
                     voice_config=voice_config,
                     project_name=project_name,
                 )
+                # Register final_publish.mp4 in the video manifest so the
+                # preview page picks it up as the "latest video". Without
+                # this, the manifest only knows about final_music.mp4
+                # (the pre-finishing output) and the user sees the
+                # version without the cold-open / title-card / outro.
+                if publish_video_path is not None and publish_video_path.exists():
+                    self._register_publish_video(
+                        project_dir=project_dir,
+                        publish_path=publish_video_path,
+                        video_config=video_config,
+                    )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Finishing render failed: %s", exc)
 
         # ── Shorts auto-cut ───────────────────────────────────────────
         short_meta: dict[str, Any] | None = None
+        short_thumbnail_variants: list[dict[str, str]] = []
         if audio_manifest is not None and voice_config is not None:
             try:
                 from app.services.shorts_service import ShortsService
@@ -330,6 +342,41 @@ class YouTubeBundleService:
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Shorts render failed: %s", exc)
+
+            # ── 5 Shorts cover thumbnail variants (vertical 1080x1920) ──
+            # Same scoring + spread rules as the main thumbnail, but
+            # rendered at vertical aspect. The user can swap which one
+            # they upload as the Shorts cover image.
+            try:
+                if progress_callback:
+                    progress_callback(88, "Painting Shorts cover variants")
+                short_variants_dir = bundle_dir / "short_variants"
+                short_variants_dir.mkdir(parents=True, exist_ok=True)
+                short_top = self._select_top_thumbnail_panels(panels_json, script_lines, n=5)
+                short_variant_labels = ["Top pick", "Climax shot", "Character beat", "Stakes shot", "Quiet beat"]
+                for s_idx, s_panel in enumerate(short_top):
+                    try:
+                        s_source = self._copy_thumbnail_source(
+                            project_dir, s_panel, short_variants_dir, suffix=f"_v{s_idx}",
+                        )
+                        s_path = self._compose_thumbnail(
+                            base_image=s_source,
+                            title=title,
+                            output_path=short_variants_dir / f"variant_{s_idx}.png",
+                            preset=preset,
+                            target_size=(1080, 1920),
+                        )
+                        short_thumbnail_variants.append({
+                            "style_id": f"sv{s_idx}",
+                            "style_label": short_variant_labels[s_idx] if s_idx < len(short_variant_labels) else f"Variant {s_idx + 1}",
+                            "path": str(s_path.relative_to(project_dir)),
+                            "source_panel_id": str(s_panel.get("id") or ""),
+                            "overlay_text": self._shorten_for_overlay(title),
+                        })
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Short thumbnail variant %d failed: %s", s_idx, exc)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Shorts thumbnail generation failed: %s", exc)
 
         # Persist text + manifest
         (bundle_dir / "title.txt").write_text(title.strip() + "\n", encoding="utf-8")
@@ -358,6 +405,12 @@ class YouTubeBundleService:
                 if publish_video_path else None
             ),
             "short": short_meta,
+            "short_thumbnail_variants": short_thumbnail_variants,
+            "short_chosen_thumbnail_index": 0 if short_thumbnail_variants else None,
+            "short_thumbnail_path": (
+                short_thumbnail_variants[0]["path"]
+                if short_thumbnail_variants else None
+            ),
             "channel_preset": preset.to_dict(),
         }
         write_json(bundle_dir / "manifest.json", manifest)
@@ -374,6 +427,60 @@ class YouTubeBundleService:
             thumbnail_path=str(thumbnail_path),
             bundle_dir=str(bundle_dir),
         )
+
+    def _register_publish_video(
+        self,
+        *,
+        project_dir: Path,
+        publish_path: Path,
+        video_config: Any,
+    ) -> None:
+        """Add final_publish.mp4 to the project's video manifest.
+
+        The manifest is what `list_videos` (and the preview page's
+        "latest video" picker) reads, so we need to update it with the
+        finishing-rendered file or the preview will keep showing the
+        pre-cold-open version.
+        """
+        from datetime import datetime
+
+        video_dir = publish_path.parent
+        manifest_path = video_dir / "manifest.json"
+        try:
+            existing = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+        except Exception:  # noqa: BLE001
+            existing = {}
+        if not isinstance(existing, dict):
+            existing = {}
+
+        # Probe duration so the preview header can label it correctly.
+        duration_seconds: float | None = None
+        try:
+            import subprocess
+            result = subprocess.run(
+                [
+                    self.settings.ffprobe_binary if hasattr(self.settings, "ffprobe_binary") else "ffprobe",
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    str(publish_path),
+                ],
+                capture_output=True, text=True, check=False, timeout=10,
+            )
+            if result.returncode == 0:
+                duration_seconds = round(float((result.stdout or "0").strip()), 2)
+        except Exception:  # noqa: BLE001
+            pass
+
+        existing[publish_path.name] = {
+            "width": int(getattr(video_config, "width", 1920) or 1920),
+            "height": int(getattr(video_config, "height", 1080) or 1080),
+            "output_format": publish_path.suffix.lstrip(".") or "mp4",
+            "created_at": datetime.utcnow().isoformat(),
+            "duration_seconds": duration_seconds,
+            "kind": "publish",  # Marker so list_videos can prioritize this one.
+        }
+        manifest_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
 
     def _inject_chapter_timestamps(
         self,
@@ -880,17 +987,30 @@ Return ONLY the JSON. No prose before or after, no markdown fences."""
         variant_index: int,
         overlay_text: str,
         title_for_fallback: str = "",
+        group: str = "main",
     ) -> dict[str, Any]:
         """Rerender just one thumbnail variant with a new overlay text.
+
+        `group` selects which set of variants to operate on:
+          - "main"  : long-form YouTube thumbnails (1280x720)
+          - "short" : vertical Shorts cover thumbnails (1080x1920)
 
         Reads the existing bundle manifest, locates the variant's source
         thumbnail PNG (a copy of the original panel image, before any
         styling), reruns `_compose_thumbnail` on it with the new text,
-        and writes the result back to the same `variants/variant_N.png`
-        path so URLs stay stable. Returns the updated variant dict so
-        the caller can echo it to the client.
+        and writes the result back to the same path so URLs stay stable.
+        Returns the updated variant dict so the caller can echo it to
+        the client.
         """
         from app.services.channel_preset_service import ChannelPresetService
+
+        if group not in {"main", "short"}:
+            raise ValueError(f"Unknown thumbnail group: {group!r}")
+        manifest_key = "thumbnail_variants" if group == "main" else "short_thumbnail_variants"
+        chosen_key = "chosen_thumbnail_index" if group == "main" else "short_chosen_thumbnail_index"
+        canonical_key = "thumbnail_path" if group == "main" else "short_thumbnail_path"
+        variants_subdir = "variants" if group == "main" else "short_variants"
+        target_size = THUMBNAIL_SIZE if group == "main" else (1080, 1920)
 
         bundle_dir = project_dir / "youtube_bundle"
         manifest_path = bundle_dir / "manifest.json"
@@ -898,25 +1018,22 @@ Return ONLY the JSON. No prose before or after, no markdown fences."""
             raise FileNotFoundError("No bundle manifest. Generate the bundle first.")
 
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        variants = manifest.get("thumbnail_variants") or []
+        variants = manifest.get(manifest_key) or []
         if not (0 <= variant_index < len(variants)):
             raise IndexError(f"variant_index {variant_index} is out of range (have {len(variants)} variants)")
 
         entry = dict(variants[variant_index]) if isinstance(variants[variant_index], dict) else {}
         rel_thumb = entry.get("path") or ""
         thumb_path = project_dir / rel_thumb
-        # The source image we composite onto lives next to the variants
-        # dir as thumbnail_source_v{idx}.png (written by _copy_thumbnail_source
-        # with the suffix arg). Falls back to the global thumbnail_source.
         source_candidates = [
-            bundle_dir / "variants" / f"thumbnail_source_v{variant_index}.png",
+            bundle_dir / variants_subdir / f"thumbnail_source_v{variant_index}.png",
             bundle_dir / f"thumbnail_source_v{variant_index}.png",
             bundle_dir / "thumbnail_source.png",
         ]
         source_path = next((p for p in source_candidates if p.exists()), None)
         if source_path is None:
             raise FileNotFoundError(
-                f"No source image found for variant {variant_index}. "
+                f"No source image found for {group} variant {variant_index}. "
                 f"Re-run the bundle stage to regenerate sources.",
             )
 
@@ -928,17 +1045,16 @@ Return ONLY the JSON. No prose before or after, no markdown fences."""
             output_path=thumb_path,
             preset=preset,
             overlay_text=overlay_text,
+            target_size=target_size,
         )
 
         # Update manifest with the new overlay text so it round-trips.
         entry["overlay_text"] = overlay_text
         variants[variant_index] = entry
-        manifest["thumbnail_variants"] = variants
-        # If this is the chosen variant, keep the canonical thumbnail
-        # in sync so the drag-to-Studio download reflects the edit.
-        chosen_idx = int(manifest.get("chosen_thumbnail_index") or 0)
+        manifest[manifest_key] = variants
+        chosen_idx = int(manifest.get(chosen_key) or 0)
         if chosen_idx == variant_index:
-            manifest["thumbnail_path"] = rel_thumb
+            manifest[canonical_key] = rel_thumb
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return entry
 
@@ -952,6 +1068,7 @@ Return ONLY the JSON. No prose before or after, no markdown fences."""
         output_path: Path,
         preset: Any = None,
         overlay_text: str | None = None,
+        target_size: tuple[int, int] | None = None,
     ) -> Path:
         """Render the final thumbnail with channel-preset branding.
 
@@ -960,6 +1077,10 @@ Return ONLY the JSON. No prose before or after, no markdown fences."""
         chopping it to fit. If a non-None string is passed (even empty),
         it overrides the derived value: the empty string suppresses the
         overlay entirely, anything else is used verbatim.
+
+        `target_size` overrides the canvas dimensions. Defaults to the
+        landscape YouTube thumbnail spec (1280x720). Pass (1080, 1920)
+        to produce a vertical Shorts cover, etc.
 
         Preset is optional so legacy callers without a preset still work.
         """
@@ -972,12 +1093,13 @@ Return ONLY the JSON. No prose before or after, no markdown fences."""
 
         accent_rgb = self._hex_to_rgb(preset.accent_color, fallback=(127, 255, 212))
         watermark_text = (preset.watermark_text or "").strip() if preset.watermark_enabled else ""
+        canvas_size = target_size or THUMBNAIL_SIZE
 
         with Image.open(base_image) as src:
             src = src.convert("RGB")
 
-            # Fit-cover into the YouTube thumbnail aspect ratio.
-            canvas = self._fit_cover(src, THUMBNAIL_SIZE)
+            # Fit-cover into the chosen thumbnail aspect ratio.
+            canvas = self._fit_cover(src, canvas_size)
 
             # Mild enhancement so the panel pops on YouTube's small previews.
             canvas = ImageEnhance.Contrast(canvas).enhance(1.08)

@@ -823,6 +823,8 @@ class YouTubeBundleThumbnailTextPayload(BaseModel):
     """Patch payload for `POST /{project_id}/youtube-bundle/thumbnail`."""
     variant_index: int = Field(ge=0)
     overlay_text: str = Field(default="", max_length=80)
+    # "main" = landscape YouTube thumbnail, "short" = vertical Shorts cover.
+    group: str = Field(default="main")
 
 
 @router.post("/{project_id}/youtube-bundle/thumbnail")
@@ -836,6 +838,9 @@ def regenerate_youtube_bundle_thumbnail(
     types into the field for the active variant, we debounce and call
     this endpoint to repaint that one variant's PNG in place. The URL
     stays stable, only the file changes.
+
+    `group` selects "main" (landscape YouTube) vs "short" (vertical
+    Shorts cover) variant set.
     """
     from app.services.youtube_bundle_service import YouTubeBundleService
 
@@ -848,10 +853,13 @@ def regenerate_youtube_bundle_thumbnail(
             project_dir=project_dir,
             variant_index=payload.variant_index,
             overlay_text=payload.overlay_text,
+            group=payload.group,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except IndexError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Thumbnail regenerate failed: {exc}")
@@ -870,6 +878,7 @@ class YouTubeBundleEditPayload(BaseModel):
     title: str | None = Field(default=None, max_length=120)
     description: str | None = Field(default=None, max_length=5500)
     chosen_thumbnail_index: int | None = Field(default=None, ge=0)
+    short_chosen_thumbnail_index: int | None = Field(default=None, ge=0)
 
 
 @router.put("/{project_id}/youtube-bundle")
@@ -925,11 +934,25 @@ def update_youtube_bundle(project_id: str, payload: YouTubeBundleEditPayload):
             )
         chosen = variants[payload.chosen_thumbnail_index]
         manifest["chosen_thumbnail_index"] = payload.chosen_thumbnail_index
-        # The canonical thumbnail_path always points at the active choice
-        # so the existing download flow ("Drag the thumbnail to YouTube
-        # Studio") keeps working without further plumbing.
         if isinstance(chosen, dict) and chosen.get("path"):
             manifest["thumbnail_path"] = chosen["path"]
+
+    if payload.short_chosen_thumbnail_index is not None:
+        s_variants = manifest.get("short_thumbnail_variants") or []
+        if not s_variants:
+            raise HTTPException(
+                status_code=400,
+                detail="No Shorts thumbnail variants for this bundle.",
+            )
+        if payload.short_chosen_thumbnail_index >= len(s_variants):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Shorts thumbnail index out of range (have {len(s_variants)} variants).",
+            )
+        s_chosen = s_variants[payload.short_chosen_thumbnail_index]
+        manifest["short_chosen_thumbnail_index"] = payload.short_chosen_thumbnail_index
+        if isinstance(s_chosen, dict) and s_chosen.get("path"):
+            manifest["short_thumbnail_path"] = s_chosen["path"]
 
     manifest_path.write_text(_json.dumps(manifest, indent=2), encoding="utf-8")
     return get_youtube_bundle(project_id)
@@ -969,17 +992,22 @@ def get_youtube_bundle(project_id: str):
             return None
         return f"/media/projects/{project_id}/{url_path}"
 
-    raw_variants = manifest.get("thumbnail_variants") or []
-    thumbnail_variants = [
-        {
-            "index": idx,
-            "style_id": (v.get("style_id") if isinstance(v, dict) else None) or f"v{idx + 1}",
-            "style_label": (v.get("style_label") if isinstance(v, dict) else None) or f"Variant {idx + 1}",
-            "url": _media(v.get("path") if isinstance(v, dict) else v),
-            "overlay_text": (v.get("overlay_text") if isinstance(v, dict) else "") or "",
-        }
-        for idx, v in enumerate(raw_variants)
-    ]
+    def _variants(raw: list[Any]) -> list[dict[str, Any]]:
+        return [
+            {
+                "index": idx,
+                "style_id": (v.get("style_id") if isinstance(v, dict) else None) or f"v{idx + 1}",
+                "style_label": (v.get("style_label") if isinstance(v, dict) else None) or f"Variant {idx + 1}",
+                "url": _media(v.get("path") if isinstance(v, dict) else v),
+                "overlay_text": (v.get("overlay_text") if isinstance(v, dict) else "") or "",
+            }
+            for idx, v in enumerate(raw)
+        ]
+
+    thumbnail_variants = _variants(manifest.get("thumbnail_variants") or [])
+    short_thumbnail_variants = _variants(manifest.get("short_thumbnail_variants") or [])
+    short_meta = manifest.get("short") or None
+    short_video_url = _media(short_meta.get("short_video")) if isinstance(short_meta, dict) else None
 
     return {
         "project_id": project_id,
@@ -991,6 +1019,12 @@ def get_youtube_bundle(project_id: str):
         "thumbnail_source_panel_id": manifest.get("thumbnail_source_panel_id"),
         "thumbnail_variants": thumbnail_variants,
         "chosen_thumbnail_index": manifest.get("chosen_thumbnail_index", 0),
+        "short_thumbnail_url": _media(manifest.get("short_thumbnail_path")),
+        "short_thumbnail_variants": short_thumbnail_variants,
+        "short_chosen_thumbnail_index": manifest.get("short_chosen_thumbnail_index", 0),
+        "short_video_url": short_video_url,
+        "short_title": (short_meta or {}).get("short_title") if isinstance(short_meta, dict) else None,
+        "short_description": (short_meta or {}).get("short_description") if isinstance(short_meta, dict) else None,
         "bundle_dir": manifest.get("bundle_dir"),
     }
 

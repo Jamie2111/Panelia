@@ -104,6 +104,33 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export type YouTubeBundleVariant = {
+  index: number;
+  style_id: string;
+  style_label: string;
+  url: string | null;
+  overlay_text?: string;
+};
+
+export type YouTubeBundleResponse = {
+  project_id: string;
+  title: string | null;
+  title_variants: string[];
+  description: string | null;
+  thumbnail_url: string | null;
+  thumbnail_source_url: string | null;
+  thumbnail_source_panel_id: string | null;
+  thumbnail_variants?: YouTubeBundleVariant[];
+  chosen_thumbnail_index?: number;
+  short_thumbnail_url?: string | null;
+  short_thumbnail_variants?: YouTubeBundleVariant[];
+  short_chosen_thumbnail_index?: number;
+  short_video_url?: string | null;
+  short_title?: string | null;
+  short_description?: string | null;
+  bundle_dir: string | null;
+};
+
 export const api = {
   getCatalogOptions: () => request<CatalogOptions>("/catalog/options").then(normalizeCatalogOptions),
   getPanelDetectorTrainingStatus: () => request<DetectorTrainingStatus>("/training/panel-detector"),
@@ -149,24 +176,7 @@ export const api = {
       body: JSON.stringify(patch),
     }),
   getYouTubeBundle: (projectId: string) =>
-    request<{
-      project_id: string;
-      title: string | null;
-      title_variants: string[];
-      description: string | null;
-      thumbnail_url: string | null;
-      thumbnail_source_url: string | null;
-      thumbnail_source_panel_id: string | null;
-      thumbnail_variants?: Array<{
-        index: number;
-        style_id: string;
-        style_label: string;
-        url: string | null;
-        overlay_text?: string;
-      }>;
-      chosen_thumbnail_index?: number;
-      bundle_dir: string | null;
-    }>(`/projects/${projectId}/youtube-bundle`).catch((err) => {
+    request<YouTubeBundleResponse>(`/projects/${projectId}/youtube-bundle`).catch((err) => {
       // Bundle hasn't been generated yet → return null so the UI can show
       // a "preparing" placeholder instead of a hard error.
       if (err instanceof Error && /404/.test(err.message)) return null;
@@ -174,52 +184,23 @@ export const api = {
     }),
   updateYouTubeBundle: (
     projectId: string,
-    patch: { title?: string; description?: string; chosen_thumbnail_index?: number },
-  ) =>
-    request<{
-      project_id: string;
-      title: string | null;
-      title_variants: string[];
-      description: string | null;
-      thumbnail_url: string | null;
-      thumbnail_source_url: string | null;
-      thumbnail_source_panel_id: string | null;
-      thumbnail_variants?: Array<{
-        index: number;
-        style_id: string;
-        style_label: string;
-        url: string | null;
-        overlay_text?: string;
-      }>;
+    patch: {
+      title?: string;
+      description?: string;
       chosen_thumbnail_index?: number;
-      bundle_dir: string | null;
-    }>(`/projects/${projectId}/youtube-bundle`, {
+      short_chosen_thumbnail_index?: number;
+    },
+  ) =>
+    request<YouTubeBundleResponse>(`/projects/${projectId}/youtube-bundle`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
     }),
   regenerateThumbnailText: (
     projectId: string,
-    payload: { variant_index: number; overlay_text: string },
+    payload: { variant_index: number; overlay_text: string; group?: "main" | "short" },
   ) =>
-    request<{
-      project_id: string;
-      title: string | null;
-      title_variants: string[];
-      description: string | null;
-      thumbnail_url: string | null;
-      thumbnail_source_url: string | null;
-      thumbnail_source_panel_id: string | null;
-      thumbnail_variants?: Array<{
-        index: number;
-        style_id: string;
-        style_label: string;
-        url: string | null;
-        overlay_text?: string;
-      }>;
-      chosen_thumbnail_index?: number;
-      bundle_dir: string | null;
-    }>(`/projects/${projectId}/youtube-bundle/thumbnail`, {
+    request<YouTubeBundleResponse>(`/projects/${projectId}/youtube-bundle/thumbnail`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
