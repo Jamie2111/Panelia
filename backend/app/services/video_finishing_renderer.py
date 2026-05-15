@@ -258,17 +258,26 @@ class VideoFinishingRenderer:
         font_path = _pick_font()
         font_clause = f":fontfile={font_path}" if font_path else ""
 
-        # Build a slow-zoom Ken Burns from the still panel + drawtext
-        # overlay of the teaser text near the bottom.
-        teaser = _drawtext_escape(plan.teaser_text.upper())
+        # PIL-render the teaser text overlay as a transparent PNG, then
+        # composite it onto the zoompan'd panel via ffmpeg's `overlay`
+        # filter. This avoids ffmpeg's `drawtext` (which requires
+        # libfreetype, not enabled in Homebrew's default ffmpeg build).
         width = video_config.width
         height = video_config.height
-        # Zoom from 1.0 → 1.08 over the hold duration. zoompan needs an
-        # explicit framerate so we use 30fps.
         fps = 30
         total_frames = int(hold * fps)
-        # Subtitle drawn at 78% height with rounded box.
-        # Box color: black 60% alpha. Text: accent for emphasis lines.
+
+        overlay_png = work_dir / "cold_open_text.png"
+        self._render_text_overlay_png(
+            text=plan.teaser_text.upper(),
+            size=(width, height),
+            output_path=overlay_png,
+            anchor="bottom_center",
+            text_color=(255, 255, 255),
+            box_color=(0, 0, 0, 115),
+            font_size=int(height * 0.07),
+        )
+
         cold_video = work_dir / "cold_open.mp4"
         ffmpeg = self.settings.ffmpeg_binary
         command = [
@@ -276,18 +285,16 @@ class VideoFinishingRenderer:
             "-y",
             "-loop", "1",
             "-i", str(panel_image),
+            "-i", str(overlay_png),
             "-i", str(teaser_wav),
             "-filter_complex",
             (
                 f"[0:v]scale={width * 1.1:.0f}:{height * 1.1:.0f}:force_original_aspect_ratio=increase,"
                 f"crop={width}:{height},setsar=1,"
                 f"zoompan=z='min(zoom+0.0008,1.08)':d={total_frames}:s={width}x{height}:fps={fps},"
-                f"eq=brightness=-0.08,"
-                f"drawtext=text='{teaser}'{font_clause}:fontsize={int(height * 0.07)}"
-                f":fontcolor=white:borderw={max(2, int(height * 0.005))}:bordercolor=black@0.85"
-                f":box=1:boxcolor=black@0.45:boxborderw=24"
-                f":x=(w-text_w)/2:y=h*0.78[vout];"
-                f"[1:a]apad,atrim=0:{hold}[aout]"
+                f"eq=brightness=-0.08[bg];"
+                f"[bg][1:v]overlay=0:0:format=auto[vout];"
+                f"[2:a]apad,atrim=0:{hold}[aout]"
             ),
             "-map", "[vout]",
             "-map", "[aout]",
@@ -298,10 +305,95 @@ class VideoFinishingRenderer:
             "-c:a", "aac",
             "-b:a", "192k",
             "-shortest",
+            "-movflags", "+faststart",
             str(cold_video),
         ]
         self._run_ffmpeg(command)
         return cold_video if cold_video.exists() else None
+
+    @staticmethod
+    def _render_text_overlay_png(
+        *,
+        text: str,
+        size: tuple[int, int],
+        output_path: Path,
+        anchor: str = "bottom_center",
+        text_color: tuple[int, int, int] = (255, 255, 255),
+        box_color: tuple[int, int, int, int] | None = (0, 0, 0, 115),
+        font_size: int = 56,
+    ) -> Path:
+        """Render text into an RGBA PNG sized to the video canvas.
+
+        ffmpeg's overlay filter is always available; we use it to
+        composite this PNG onto the cold-open or title-card video.
+        Eliminates the need for ffmpeg drawtext (libfreetype).
+        """
+        from PIL import Image, ImageDraw, ImageFont
+        import textwrap as _tw
+
+        width, height = size
+        font_path = _pick_font()
+        try:
+            font = ImageFont.truetype(font_path, font_size) if font_path else ImageFont.load_default()
+        except Exception:
+            font = ImageFont.load_default()
+
+        canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(canvas)
+
+        # Word-wrap so long teasers don't overflow.
+        approx_chars = max(1, int(width * 0.85 / max(font_size * 0.45, 1)))
+        wrapped = _tw.fill(text, width=approx_chars)
+        lines = wrapped.split("\n")
+
+        # Measure
+        line_heights: list[int] = []
+        line_widths: list[int] = []
+        for line in lines:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            line_widths.append(bbox[2] - bbox[0])
+            line_heights.append(bbox[3] - bbox[1])
+        text_h_total = sum(line_heights) + (len(lines) - 1) * int(font_size * 0.18)
+        text_w_max = max(line_widths) if line_widths else 0
+
+        # Anchor
+        if anchor == "bottom_center":
+            base_x = (width - text_w_max) // 2
+            base_y = int(height * 0.78) - text_h_total // 2
+        elif anchor == "center":
+            base_x = (width - text_w_max) // 2
+            base_y = (height - text_h_total) // 2
+        else:
+            base_x = 0
+            base_y = 0
+
+        # Box behind the text for legibility.
+        if box_color is not None:
+            pad_x = int(font_size * 0.6)
+            pad_y = int(font_size * 0.35)
+            box_x0 = max(0, base_x - pad_x)
+            box_y0 = max(0, base_y - pad_y)
+            box_x1 = min(width, base_x + text_w_max + pad_x)
+            box_y1 = min(height, base_y + text_h_total + pad_y)
+            draw.rectangle((box_x0, box_y0, box_x1, box_y1), fill=box_color)
+
+        # Draw text with a thin black stroke for legibility.
+        cursor_y = base_y
+        for line, lw, lh in zip(lines, line_widths, line_heights):
+            line_x = (width - lw) // 2  # center each line
+            stroke_w = max(2, int(font_size * 0.05))
+            draw.text(
+                (line_x, cursor_y),
+                line,
+                fill=text_color,
+                font=font,
+                stroke_width=stroke_w,
+                stroke_fill=(0, 0, 0, 220),
+            )
+            cursor_y += lh + int(font_size * 0.18)
+
+        canvas.save(output_path, "PNG", optimize=True)
+        return output_path
 
     # ── Title card render ────────────────────────────────────────────────
 
@@ -395,46 +487,82 @@ class VideoFinishingRenderer:
         project_name: str,
     ) -> Path | None:
         """A short branded slide: project name + channel name underneath,
-        accent underline."""
+        accent underline.
+
+        PIL-rendered for the same libfreetype reason as the outro and
+        cold-open: ffmpeg's drawtext is not available on every install,
+        but PIL is a hard dependency and works everywhere.
+        """
+        from PIL import Image, ImageDraw, ImageFont
+
         width = video_config.width
         height = video_config.height
         duration = max(0.5, float(preset.title_card_duration_seconds))
-        accent_hex = _hex_to_ffmpeg(preset.accent_color)
+        accent_rgb = self._hex_to_rgb_tuple(preset.accent_color, fallback=(127, 255, 212))
         font_path = _pick_font()
-        font_clause = f":fontfile={font_path}" if font_path else ""
-
-        # Build a flat dark backdrop with the project title centered and
-        # the channel name in smaller text below.
-        title_text = _drawtext_escape(project_name.strip() or "Panelia")
-        channel_text = _drawtext_escape(preset.channel_name.strip())
 
         title_size = int(height * 0.085)
         channel_size = int(height * 0.04)
-        # Accent underline as a thin colored box rendered via drawbox.
-        underline_y = "h/2 + " + str(int(title_size * 0.85))
+
+        def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+            try:
+                return ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default()
+            except Exception:
+                return ImageFont.load_default()
+
+        # PIL-render the full title card.
+        card_png = work_dir / "title_card.png"
+        canvas = Image.new("RGB", (width, height), (10, 10, 15))
+        draw = ImageDraw.Draw(canvas)
+
+        title_text = (project_name or "Panelia").strip()
+        channel_text = preset.channel_name.strip()
+
+        title_font = _font(title_size)
+        channel_font = _font(channel_size)
+        title_bbox = draw.textbbox((0, 0), title_text, font=title_font)
+        title_w = title_bbox[2] - title_bbox[0]
+        title_h = title_bbox[3] - title_bbox[1]
+        channel_bbox = draw.textbbox((0, 0), channel_text, font=channel_font)
+        channel_w = channel_bbox[2] - channel_bbox[0]
+
+        title_x = (width - title_w) // 2
+        title_y = (height - title_h) // 2 - int(title_size * 0.3)
+        draw.text((title_x, title_y), title_text, fill=(255, 255, 255), font=title_font)
+
+        # Accent underline
+        underline_w = int(width * 0.18)
+        underline_h = max(3, int(height * 0.006))
+        underline_x = (width - underline_w) // 2
+        underline_y = height // 2 + int(title_size * 0.85)
+        draw.rectangle(
+            (underline_x, underline_y, underline_x + underline_w, underline_y + underline_h),
+            fill=accent_rgb,
+        )
+
+        channel_x = (width - channel_w) // 2
+        channel_y = height // 2 + int(title_size * 1.0)
+        draw.text((channel_x, channel_y), channel_text, fill=accent_rgb, font=channel_font)
+        canvas.save(card_png, "PNG", optimize=True)
+
         title_clip = work_dir / "title_card.mp4"
         ffmpeg = self.settings.ffmpeg_binary
         command = [
             ffmpeg,
             "-y",
-            "-f", "lavfi",
-            "-i", f"color=c=0x0a0a0f:size={width}x{height}:duration={duration}:rate=30",
+            "-loop", "1",
+            "-framerate", "30",
+            "-t", str(duration),
+            "-i", str(card_png),
             "-f", "lavfi",
             "-i", f"anullsrc=channel_layout=stereo:sample_rate=48000:duration={duration}",
-            "-vf",
-            (
-                f"drawtext=text='{title_text}'{font_clause}:fontsize={title_size}"
-                f":fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2-{int(title_size * 0.3)},"
-                f"drawbox=x=(w-{int(width * 0.18)})/2:y={underline_y}:w={int(width * 0.18)}:h={max(3, int(height * 0.006))}:color=0x{accent_hex}:t=fill,"
-                f"drawtext=text='{channel_text}'{font_clause}:fontsize={channel_size}"
-                f":fontcolor=0x{accent_hex}:x=(w-text_w)/2:y=h/2+{int(title_size * 1.0)}"
-            ),
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
             "-r", "30",
             "-c:a", "aac",
             "-b:a", "192k",
             "-shortest",
+            "-movflags", "+faststart",
             str(title_clip),
         ]
         self._run_ffmpeg(command)
@@ -451,57 +579,81 @@ class VideoFinishingRenderer:
     ) -> Path | None:
         """A subscribe-CTA card. Sized for YouTube's end-screen overlay,
         so the actual rendered text occupies the LEFT side only - the
-        right side stays empty for end-screen placement."""
+        right side stays empty for end-screen placement.
+
+        Implementation note: we render the text overlay with PIL into a
+        single PNG and have ffmpeg loop it into a silent MP4. ffmpeg's
+        own `drawtext` filter is only available when ffmpeg was built
+        with libfreetype - which the Homebrew formula no longer enables
+        by default - so this implementation works regardless of build.
+        """
+        from PIL import Image, ImageDraw, ImageFont
+
         width = video_config.width
         height = video_config.height
         duration = max(2.0, float(preset.outro_duration_seconds))
-        accent_hex = _hex_to_ffmpeg(preset.accent_color)
+        accent_rgb = self._hex_to_rgb_tuple(preset.accent_color, fallback=(127, 255, 212))
         font_path = _pick_font()
-        font_clause = f":fontfile={font_path}" if font_path else ""
-
-        channel_text = _drawtext_escape(preset.channel_name.strip().upper())
-        message_text = _drawtext_escape(preset.outro_message.strip())
-        tagline_text = _drawtext_escape(preset.tagline.strip())
 
         title_size = int(height * 0.07)
         body_size = int(height * 0.038)
         tagline_size = int(height * 0.028)
 
-        # Position everything in the left ~45% so YouTube's right-side
-        # end-screen suggestions don't collide with our text.
+        def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+            try:
+                return ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default()
+            except Exception:
+                return ImageFont.load_default()
+
+        card_png = work_dir / "outro_card.png"
+        canvas = Image.new("RGB", (width, height), (10, 10, 15))
+        draw = ImageDraw.Draw(canvas)
+
+        # Accent stripe on the left edge.
+        stripe_w = max(8, int(width * 0.012))
+        draw.rectangle((0, 0, stripe_w, height), fill=accent_rgb)
+
+        text_x = int(width * 0.06)
+        draw.text((text_x, int(height * 0.32)), preset.channel_name.strip().upper(), fill=(255, 255, 255), font=_font(title_size))
+        draw.text((text_x, int(height * 0.48)), preset.outro_message.strip(), fill=accent_rgb, font=_font(body_size))
+        draw.text((text_x, int(height * 0.58)), preset.tagline.strip(), fill=(161, 161, 170), font=_font(tagline_size))
+
+        canvas.save(card_png, "PNG", optimize=True)
+
         outro_clip = work_dir / "outro_card.mp4"
         ffmpeg = self.settings.ffmpeg_binary
         command = [
             ffmpeg,
             "-y",
-            "-f", "lavfi",
-            "-i", f"color=c=0x0a0a0f:size={width}x{height}:duration={duration}:rate=30",
+            "-loop", "1",
+            "-framerate", "30",
+            "-t", str(duration),
+            "-i", str(card_png),
             "-f", "lavfi",
             "-i", f"anullsrc=channel_layout=stereo:sample_rate=48000:duration={duration}",
-            "-vf",
-            (
-                # Subtle accent gradient strip on the left edge
-                f"drawbox=x=0:y=0:w={int(width * 0.012)}:h=ih:color=0x{accent_hex}:t=fill,"
-                # Channel name (uppercase, big)
-                f"drawtext=text='{channel_text}'{font_clause}:fontsize={title_size}"
-                f":fontcolor=white:x={int(width * 0.06)}:y=h*0.32,"
-                # Message (subscribe CTA)
-                f"drawtext=text='{message_text}'{font_clause}:fontsize={body_size}"
-                f":fontcolor=0x{accent_hex}:x={int(width * 0.06)}:y=h*0.48,"
-                # Tagline (small grey)
-                f"drawtext=text='{tagline_text}'{font_clause}:fontsize={tagline_size}"
-                f":fontcolor=0xa1a1aa:x={int(width * 0.06)}:y=h*0.58"
-            ),
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
             "-r", "30",
             "-c:a", "aac",
             "-b:a", "192k",
             "-shortest",
+            "-movflags", "+faststart",
             str(outro_clip),
         ]
         self._run_ffmpeg(command)
         return outro_clip if outro_clip.exists() else None
+
+    @staticmethod
+    def _hex_to_rgb_tuple(hex_color: str, *, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
+        s = (hex_color or "").strip().lstrip("#")
+        if len(s) == 8:
+            s = s[:6]
+        if len(s) != 6:
+            return fallback
+        try:
+            return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+        except ValueError:
+            return fallback
 
     # ── Concat ───────────────────────────────────────────────────────────
 

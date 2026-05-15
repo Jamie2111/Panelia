@@ -142,8 +142,11 @@ class ShortsService:
         narration_dir = project_dir / "audio"
         clip_wavs: list[Path] = []
         for idx, clip in enumerate(plan.clips):
-            src = narration_dir / f"panel_{kept_sorted.index({**{k: clip.__dict__.get(k.replace('_', '')) for k in []}}) + 1:03d}.wav"
-            # The above line is bogus - replace with a robust lookup by panel order:
+            # Find this clip's index in the kept-panel order so we can
+            # locate the matching narration audio on disk. The earlier
+            # version of this code had a dead "find empty-dict in list"
+            # expression above the lookup that threw before this branch
+            # could run; that bug is fixed here.
             kept_index = next(
                 (i for i, p in enumerate(kept_sorted) if p.get("id") == clip.panel_id),
                 None,
