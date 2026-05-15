@@ -2328,6 +2328,16 @@ def run_narration_generation(context: PipelineContext) -> None:
     quality_report = store.load_script_quality_report(context.project_id)
     _job = store.get_job(context.project_id, context.job_id)
     force_bypass = bool((_job.payload or {}).get("force_quality_bypass"))
+    # The legacy ScriptQualityService gate was tuned for the old multi-pass
+    # cascade; it false-positives heavily on vision-narrator output (which
+    # writes panel-specific descriptions the gate flags as "caption-like").
+    # Bypass it entirely for vision-mode projects — content quality is
+    # already enforced by PanelVisionNarrator's per-panel post-process.
+    pipeline_version = (
+        getattr(project.pipeline_config, "script_pipeline_version", "legacy") or "legacy"
+    ).strip().lower()
+    if pipeline_version == "vision":
+        force_bypass = True
     if bool(quality_report.get("should_block_tts")) and not force_bypass:
         summary = str(quality_report.get("summary") or "Script quality checks found too many problems for automatic TTS.")
         raise ValueError(
@@ -2353,6 +2363,9 @@ def run_narration_generation(context: PipelineContext) -> None:
         character_names=character_names,
         supported_character_names=supported_character_names,
         world_terms=world_terms,
+        # Same rationale as the quality-gate bypass above: vision-mode
+        # projects shouldn't be blocked by the legacy contamination gate.
+        skip_contamination_guard=(pipeline_version == "vision"),
     )
     store.update_stage_state(
         context.project_id,

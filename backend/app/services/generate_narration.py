@@ -37,6 +37,7 @@ def generate_narration(
     supported_character_names: list[str] | None = None,
     world_terms: list[str] | None = None,
     voice_sample_path: Path | None = None,
+    skip_contamination_guard: bool = False,
 ) -> dict[str, Any]:
     preprocessor = StoryPreprocessor()
     guard = NarrationContaminationGuard()
@@ -76,15 +77,30 @@ def generate_narration(
             "mastering_report": {},
         },
     )
-    if guard_result.report.get("quarantined_units") or guard_result.report.get("contamination_remaining"):
+    if (
+        guard_result.report.get("quarantined_units")
+        or guard_result.report.get("contamination_remaining")
+    ):
+        # Persist the report either way so it's inspectable post-hoc.
         write_json(
             output_dir.parent / "output" / "enhanced_narration.qc_report.json",
             guard_result.report,
         )
-        raise ValueError(
-            "Narration contamination QC blocked audio generation: "
-            f"{guard_result.report.get('quarantined_units', 0)} quarantined, "
-            f"{guard_result.report.get('contamination_remaining', 0)} remaining."
+        if not skip_contamination_guard:
+            raise ValueError(
+                "Narration contamination QC blocked audio generation: "
+                f"{guard_result.report.get('quarantined_units', 0)} quarantined, "
+                f"{guard_result.report.get('contamination_remaining', 0)} remaining."
+            )
+        # Bypass: log but proceed. Vision-mode projects have their own
+        # quality controls (PanelVisionNarrator post-process + content
+        # safety rating) so a single false positive here shouldn't block
+        # an entire video render.
+        logger.warning(
+            "Contamination guard reported %d quarantined / %d remaining; "
+            "skipping the gate because skip_contamination_guard=True.",
+            guard_result.report.get("quarantined_units", 0),
+            guard_result.report.get("contamination_remaining", 0),
         )
 
     if progress_callback:
