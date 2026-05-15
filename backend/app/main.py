@@ -7,8 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes.catalog import router as catalog_router
+from app.api.routes.channel import router as channel_router
 from app.api.routes.health import router as health_router
 from app.api.routes.projects import router as projects_router
+from app.api.routes.script_narrative_polish import router as polish_router
 from app.api.routes.training import router as training_router
 from app.core.config import get_settings
 
@@ -26,7 +28,9 @@ app.add_middleware(
 
 app.include_router(health_router)
 app.include_router(catalog_router)
+app.include_router(channel_router)
 app.include_router(projects_router)
+app.include_router(polish_router)
 app.include_router(training_router)
 
 app.mount("/assets", StaticFiles(directory=Path(__file__).resolve().parents[1] / "assets"), name="assets")

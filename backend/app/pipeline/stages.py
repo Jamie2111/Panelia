@@ -2426,6 +2426,28 @@ def run_youtube_bundle(context: PipelineContext) -> None:
 
     context.start("Generating your YouTube bundle")
 
+    # Pull the audio manifest so the bundle service can plan chapter
+    # markers from real per-panel durations.
+    audio_manifest_path = project_dir / "audio" / "manifest.json"
+    audio_manifest: dict | None = None
+    if audio_manifest_path.exists():
+        try:
+            audio_manifest = _json.loads(audio_manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            audio_manifest = None
+
+    # Locate the main rendered video so the finishing renderer can
+    # prepend the cold open and append the outro.
+    main_video_path = project_dir / "video" / "final.mp4"
+    if not main_video_path.exists():
+        # Fall back to whichever video the store last picked up.
+        videos = store.list_videos(context.project_id) or []
+        main_video_path = (
+            (project_dir / videos[-1].path)
+            if (videos and getattr(videos[-1], "path", None))
+            else main_video_path
+        )
+
     service = YouTubeBundleService()
     result = service.build(
         project_dir=project_dir,
@@ -2434,6 +2456,10 @@ def run_youtube_bundle(context: PipelineContext) -> None:
         manga_title=getattr(project.chapter_metadata, "manga_title", None),
         panels_json=panels_json,
         script_lines=script_lines,
+        audio_manifest=audio_manifest,
+        voice_config=project.voice_config,
+        video_config=project.video_config,
+        main_video_path=main_video_path if main_video_path.exists() else None,
         progress_callback=context.progress,
     )
 

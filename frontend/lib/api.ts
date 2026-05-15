@@ -1,4 +1,4 @@
-import { CatalogOptions, CharacterDictionaryResponse, CharacterPortraitsResponse, CharacterReviewState, DetectorTrainingStatus, DuplicateHandlingMode, JobRecord, MusicTrack, PanelRewriteMode, PanelRewriteResponse, PipelineStage, ProjectDetail, ProjectSummary, SourceType, StorySegment } from "@/lib/types";
+import { CatalogOptions, ChannelPreset, CharacterDictionaryResponse, CharacterPortraitsResponse, CharacterReviewState, DetectorTrainingStatus, DuplicateHandlingMode, JobRecord, MusicTrack, PanelRewriteMode, PanelRewriteResponse, PipelineStage, ProjectDetail, ProjectSummary, SourceType, StorySegment } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8010/api";
 
@@ -140,6 +140,14 @@ export const api = {
       body: JSON.stringify({ name })
     }).then(normalizeProjectSummary),
   downloadLatestVideoUrl: (projectId: string) => `${API_BASE}/projects/${projectId}/video/latest-download`,
+  getChannelPreset: () =>
+    request<ChannelPreset>("/channel/preset"),
+  updateChannelPreset: (patch: Partial<ChannelPreset>) =>
+    request<ChannelPreset>("/channel/preset", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
   getYouTubeBundle: (projectId: string) =>
     request<{
       project_id: string;

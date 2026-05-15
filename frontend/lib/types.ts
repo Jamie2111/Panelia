@@ -1,4 +1,20 @@
 export type SourceType = "mangadex_url" | "comix_to_url" | "zip" | "pdf" | "images" | "folder";
+
+export interface ChannelPreset {
+  channel_name: string;
+  tagline: string;
+  accent_color: string;
+  title_font: string;
+  watermark_enabled: boolean;
+  watermark_text: string;
+  outro_enabled: boolean;
+  outro_duration_seconds: number;
+  outro_message: string;
+  cold_open_enabled: boolean;
+  cold_open_duration_seconds: number;
+  title_card_enabled: boolean;
+  title_card_duration_seconds: number;
+}
 export type DuplicateHandlingMode = "auto_pick_best" | "prefer_official" | "prefer_fan" | "prefer_consistent_group";
 export type StageStatus = "pending" | "ready" | "running" | "completed" | "failed" | "cancelled" | "needs_review";
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";

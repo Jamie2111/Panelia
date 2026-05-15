@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { Film, LayoutDashboard, PenSquare, Sparkles } from "lucide-react";
+import { Film, LayoutDashboard, PenSquare, Settings, Sparkles } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { PageHeader, type PageHeaderViewLink } from "@/components/ui/page-header";
@@ -20,6 +20,7 @@ const navigation = [
   { href: "/", label: "Studio", icon: LayoutDashboard },
   { href: "/projects/new", label: "Create", icon: Sparkles },
   { href: "/exports", label: "Exports", icon: Film },
+  { href: "/settings/channel", label: "Channel", icon: Settings },
 ] as const;
 
 export function AppShell({

@@ -123,15 +123,30 @@ class YouTubeBundleService:
         manga_title: str | None,
         panels_json: list[dict[str, Any]],
         script_lines: list[str],
+        audio_manifest: dict[str, Any] | None = None,
+        voice_config: Any = None,
+        video_config: Any = None,
+        main_video_path: Path | None = None,
         progress_callback=None,
     ) -> BundleResult:
-        """Generate the full bundle. Returns paths + metadata."""
+        """Generate the full bundle. Returns paths + metadata.
+
+        New optional inputs power the YouTuber-grade additions:
+          • audio_manifest — used to compute chapter timestamps
+          • voice_config + video_config — used by the finishing renderer
+          • main_video_path — points at the rendered final.mp4 that we
+            prepend the cold-open / append the outro to.
+        Each is optional so legacy callers without finishing still work.
+        """
+        from app.services.channel_preset_service import ChannelPresetService
 
         bundle_dir = project_dir / "youtube_bundle"
         bundle_dir.mkdir(parents=True, exist_ok=True)
 
+        preset = ChannelPresetService(self.settings).load()
+
         if progress_callback:
-            progress_callback(10, "Selecting the best panel for your thumbnail")
+            progress_callback(8, "Selecting the best panel for your thumbnail")
         thumb_panel = self._select_thumbnail_panel(panels_json, script_lines)
         if thumb_panel is None:
             raise RuntimeError("No kept panels available to use as a thumbnail.")
@@ -141,7 +156,7 @@ class YouTubeBundleService:
         )
 
         if progress_callback:
-            progress_callback(30, "Drafting your title and description")
+            progress_callback(20, "Drafting your title and description")
         title, variants, description = self._generate_text_metadata(
             project_name=project_name,
             chapter_title=chapter_title,
@@ -150,13 +165,93 @@ class YouTubeBundleService:
             thumb_panel_narration=self._panel_narration(thumb_panel, script_lines, panels_json),
         )
 
+        # ── Cold open + chapter markers planning ──────────────────────
+        # Only attempt these if we have an audio manifest. The finishing
+        # planner needs per-panel durations to place chapter markers.
+        chapter_markers: list[Any] = []
+        cold_open_plan = None
+        offset_seconds = 0.0
+        if audio_manifest is not None:
+            try:
+                from app.services.video_finishing_service import (
+                    VideoFinishingService,
+                    format_chapter_markers_for_description,
+                )
+                if progress_callback:
+                    progress_callback(35, "Planning cold open + chapter markers")
+                finishing_plan = VideoFinishingService(self.settings).plan(
+                    panels_json=panels_json,
+                    script_lines=script_lines,
+                    audio_manifest=audio_manifest,
+                    preset=preset,
+                    project_dir=project_dir,
+                )
+                cold_open_plan = finishing_plan.cold_open
+                chapter_markers = finishing_plan.chapter_markers
+                if preset.cold_open_enabled and cold_open_plan is not None:
+                    offset_seconds += float(cold_open_plan.hold_seconds)
+                if preset.title_card_enabled:
+                    offset_seconds += float(preset.title_card_duration_seconds)
+                if chapter_markers:
+                    description = self._inject_chapter_timestamps(
+                        description, chapter_markers, offset_seconds,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Cold-open / chapter-marker planning failed: %s", exc)
+
         if progress_callback:
-            progress_callback(70, "Painting the viral thumbnail")
+            progress_callback(55, "Painting the viral thumbnail")
         thumbnail_path = self._compose_thumbnail(
             base_image=thumb_source_path,
             title=title,
             output_path=bundle_dir / "thumbnail.png",
+            preset=preset,
         )
+
+        # ── Finishing render: cold-open + outro stitched onto main video
+        publish_video_path: Path | None = None
+        if (
+            main_video_path is not None
+            and main_video_path.exists()
+            and voice_config is not None
+            and video_config is not None
+            and (preset.cold_open_enabled or preset.outro_enabled)
+        ):
+            try:
+                from app.services.video_finishing_renderer import VideoFinishingRenderer
+                if progress_callback:
+                    progress_callback(70, "Adding cold open + outro to the final video")
+                publish_video_path = VideoFinishingRenderer(self.settings).finalize(
+                    project_dir=project_dir,
+                    main_video_path=main_video_path,
+                    cold_open_plan=cold_open_plan,
+                    preset=preset,
+                    video_config=video_config,
+                    voice_config=voice_config,
+                    project_name=project_name,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Finishing render failed: %s", exc)
+
+        # ── Shorts auto-cut ───────────────────────────────────────────
+        short_meta: dict[str, Any] | None = None
+        if audio_manifest is not None and voice_config is not None:
+            try:
+                from app.services.shorts_service import ShortsService
+                if progress_callback:
+                    progress_callback(82, "Cutting a 60-second Shorts version")
+                short_meta = ShortsService(self.settings).build(
+                    project_dir=project_dir,
+                    panels_json=panels_json,
+                    script_lines=script_lines,
+                    audio_manifest=audio_manifest,
+                    voice_config=voice_config,
+                    manga_title=manga_title,
+                    chapter_title=chapter_title,
+                    preset=preset,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Shorts render failed: %s", exc)
 
         # Persist text + manifest
         (bundle_dir / "title.txt").write_text(title.strip() + "\n", encoding="utf-8")
@@ -166,7 +261,7 @@ class YouTubeBundleService:
         (bundle_dir / "description.md").write_text(description.strip() + "\n", encoding="utf-8")
 
         manifest = {
-            "version": "youtube_bundle_v1",
+            "version": "youtube_bundle_v2",
             "title": title,
             "title_variants": variants,
             "description": description,
@@ -174,6 +269,16 @@ class YouTubeBundleService:
             "thumbnail_source_path": str(thumb_source_path.relative_to(project_dir)),
             "thumbnail_path": str((bundle_dir / "thumbnail.png").relative_to(project_dir)),
             "bundle_dir": str(bundle_dir.relative_to(project_dir)),
+            "chapter_markers": [
+                {"timecode_seconds": m.timecode_seconds, "label": m.label}
+                for m in chapter_markers
+            ],
+            "publish_video_path": (
+                str(publish_video_path.relative_to(project_dir))
+                if publish_video_path else None
+            ),
+            "short": short_meta,
+            "channel_preset": preset.to_dict(),
         }
         write_json(bundle_dir / "manifest.json", manifest)
 
@@ -189,6 +294,35 @@ class YouTubeBundleService:
             thumbnail_path=str(thumbnail_path),
             bundle_dir=str(bundle_dir),
         )
+
+    def _inject_chapter_timestamps(
+        self,
+        description: str,
+        markers: list[Any],
+        offset_seconds: float,
+    ) -> str:
+        """Append the YouTube chapter-timestamps block to a description.
+
+        We slot it just after the first paragraph (the hook) and before
+        any bullet list / hashtag block — that's where every channel
+        with chapters puts theirs."""
+        from app.services.video_finishing_service import (
+            format_chapter_markers_for_description,
+        )
+        block = format_chapter_markers_for_description(
+            markers, cold_open_offset_seconds=offset_seconds,
+        )
+        if not block.strip():
+            return description
+        timestamps_section = "## Chapters\n" + block
+        lines = description.splitlines()
+        # Find the first blank line after the start; insert there.
+        for i, line in enumerate(lines):
+            if i > 2 and not line.strip():
+                lines.insert(i + 1, timestamps_section)
+                lines.insert(i + 2, "")
+                return "\n".join(lines)
+        return description.rstrip() + "\n\n" + timestamps_section + "\n"
 
     # ── Best-panel selection ─────────────────────────────────────────────
 
@@ -477,7 +611,20 @@ Return ONLY the JSON. No prose before or after."""
         base_image: Path,
         title: str,
         output_path: Path,
+        preset: Any = None,
     ) -> Path:
+        """Render the final thumbnail with channel-preset branding.
+        Preset is optional so legacy callers without a preset still work."""
+        from app.services.channel_preset_service import ChannelPreset, ChannelPresetService
+        if preset is None:
+            try:
+                preset = ChannelPresetService(self.settings).load()
+            except Exception:
+                preset = ChannelPreset()
+
+        accent_rgb = self._hex_to_rgb(preset.accent_color, fallback=(127, 255, 212))
+        watermark_text = (preset.watermark_text or "").strip() if preset.watermark_enabled else ""
+
         with Image.open(base_image) as src:
             src = src.convert("RGB")
 
@@ -491,15 +638,47 @@ Return ONLY the JSON. No prose before or after."""
             # Cinematic vignette
             canvas = self._apply_vignette(canvas)
 
-            # Mint corner glow accent — visual brand cue.
-            self._apply_corner_glow(canvas, color=(127, 255, 212, 180))
+            # Brand-accent corner glow — pulls from preset so every
+            # channel feels distinct at thumbnail glance.
+            self._apply_corner_glow(canvas, color=(*accent_rgb, 180))
 
-            # Title overlay
+            # Title overlay using preset accent for the highlight word.
             short_title = self._shorten_for_overlay(title)
-            self._draw_thumbnail_text(canvas, short_title)
+            self._draw_thumbnail_text(canvas, short_title, accent_rgb=accent_rgb)
+
+            # Channel watermark in bottom-right (small).
+            if watermark_text:
+                self._draw_watermark(canvas, watermark_text)
 
             canvas.save(output_path, "PNG", optimize=True)
         return output_path
+
+    @staticmethod
+    def _hex_to_rgb(hex_color: str, *, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
+        s = (hex_color or "").strip().lstrip("#")
+        if len(s) == 8:
+            s = s[:6]
+        if len(s) != 6:
+            return fallback
+        try:
+            return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+        except ValueError:
+            return fallback
+
+    def _draw_watermark(self, image: Image.Image, text: str) -> None:
+        w, h = image.size
+        font = self._load_font(max(18, int(h * 0.028)))
+        draw = ImageDraw.Draw(image)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        margin = int(h * 0.025)
+        x = w - tw - margin
+        y = h - th - margin
+        # subtle drop shadow + soft fill so the watermark sits without
+        # competing with the title text.
+        self._draw_stroked_word(
+            draw, text, (x, y), font=font, fill=(255, 255, 255),
+        )
 
     @staticmethod
     def _fit_cover(image: Image.Image, target: tuple[int, int]) -> Image.Image:
@@ -553,7 +732,13 @@ Return ONLY the JSON. No prose before or after."""
         chosen = meaningful[:4] if len(meaningful) >= 2 else words[:4]
         return " ".join(chosen).upper()
 
-    def _draw_thumbnail_text(self, image: Image.Image, text: str) -> None:
+    def _draw_thumbnail_text(
+        self,
+        image: Image.Image,
+        text: str,
+        *,
+        accent_rgb: tuple[int, int, int] = (127, 255, 212),
+    ) -> None:
         w, h = image.size
         # Try to load a strong display font; fall back to default if needed.
         font = self._load_font(int(h * 0.13))
@@ -568,7 +753,7 @@ Return ONLY the JSON. No prose before or after."""
         else:
             lines = [text]
 
-        # Highlight the longest single word in accent color.
+        # Highlight the longest single word in the preset's accent color.
         highlight_word = max(words, key=len) if words else ""
 
         # Anchor at bottom-left with margins.
@@ -581,7 +766,7 @@ Return ONLY the JSON. No prose before or after."""
         for line in lines:
             x = margin_x
             for word in line.split():
-                color = (127, 255, 212) if word == highlight_word else (255, 255, 255)
+                color = accent_rgb if word == highlight_word else (255, 255, 255)
                 self._draw_stroked_word(
                     draw, word + " ", (x, y),
                     font=font if word != highlight_word else accent_font,
