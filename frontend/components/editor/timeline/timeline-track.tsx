@@ -1,16 +1,16 @@
 "use client";
 
 /**
- * TimelineTrack — a single horizontal row.
+ * TimelineTrack - a single horizontal row.
  *
  * Two variants:
- *   • "video"  — renders TimelineClip children (panel thumbnails)
- *   • "audio"  — renders a single continuous strip with optional inline
+ *   • "video"  - renders TimelineClip children (panel thumbnails)
+ *   • "audio"  - renders a single continuous strip with optional inline
  *                waveform image, sized to total duration. (Real waveform
  *                rendering plugs in later; the placeholder strip is enough
  *                to teach the user "this is the narration track".)
  *
- * The track does NOT own clip selection or trim logic — that lives on the
+ * The track does NOT own clip selection or trim logic - that lives on the
  * child clips. The track's job is layout + click-on-empty to seek.
  */
 

@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
@@ -23,7 +24,7 @@ from app.utils.files import ensure_dir, read_json, write_json
 
 logger = logging.getLogger(__name__)
 
-_EVIDENCE_VERSION = "panel_evidence_v1"
+_EVIDENCE_VERSION = "panel_evidence_v2"
 
 
 @dataclass(slots=True)
@@ -111,7 +112,9 @@ class PanelEvidenceExtractor:
     ) -> list[dict[str, Any]]:
         output_path = project_dir / "output" / "panel_evidence.json"
         if output_path.exists() and not force_refresh:
-            return load_panel_evidence_records(project_dir)
+            payload = read_json(output_path, default={})
+            if isinstance(payload, dict) and payload.get("version") == _EVIDENCE_VERSION:
+                return load_panel_evidence_records(project_dir)
 
         kept_panels = [panel for panel in sorted(panels, key=lambda item: item.order) if panel.keep]
         if not kept_panels:
@@ -222,6 +225,12 @@ class PanelEvidenceExtractor:
                 candidates.extend(self._comic_candidates(image, language_hint))
             if allow_crop_ocr and not self._candidate_set_has_substantial_signal(candidates):
                 candidates.extend(self._opencv_region_candidates(image, language_hint))
+            if (
+                not allow_crop_ocr
+                and not self._candidate_set_has_substantial_signal(candidates)
+                and self._looks_like_sparse_text_panel(image)
+            ):
+                candidates.extend(self._full_panel_candidate(image, language_hint))
             if allow_crop_ocr and not candidates:
                 candidates.extend(self._full_panel_candidate(image, language_hint))
 
@@ -562,6 +571,62 @@ class PanelEvidenceExtractor:
         if len(tokens) >= 5:
             return True
         return len(candidates) >= 2 and sum(len(token) for token in tokens) >= 8
+
+    def _looks_like_sparse_text_panel(self, image: np.ndarray) -> bool:
+        """Cheaply identify mostly blank bubble/caption panels worth OCRing.
+
+        These panels can look visually empty to scene grouping, but their few
+        words often carry the actual plot beat. Keep this heuristic broad and
+        source-agnostic: it only decides whether to try one conservative
+        full-panel OCR pass.
+        """
+        if image.size == 0:
+            return False
+        height, width = image.shape[:2]
+        if height < 40 or width < 40:
+            return False
+
+        grayscale = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        near_white_ratio = float(np.mean(grayscale >= 238))
+        very_dark_ratio = float(np.mean(grayscale <= 88))
+        nonwhite_ratio = float(np.mean(grayscale <= 230))
+        # Burst/thought bubbles are often mostly black ink around a colored
+        # bubble, so they fail the usual "mostly white" test while still being
+        # text-first panels.
+        if (
+            height * width <= 250_000
+            and near_white_ratio >= 0.06
+            and very_dark_ratio >= 0.12
+            and nonwhite_ratio >= 0.55
+        ):
+            return True
+
+        if near_white_ratio < 0.42:
+            return False
+        if nonwhite_ratio < 0.012 or nonwhite_ratio > 0.48:
+            return False
+        if very_dark_ratio < 0.002:
+            return False
+
+        binary = cv2.threshold(grayscale, 170, 255, cv2.THRESH_BINARY_INV)[1]
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        crop_area = max(height * width, 1)
+        textish_components = 0
+        for contour in contours:
+            x, y, component_width, component_height = cv2.boundingRect(contour)
+            area = component_width * component_height
+            if area < max(6, crop_area * 0.00002):
+                continue
+            if area > crop_area * 0.18:
+                continue
+            if component_width > width * 0.92 or component_height > height * 0.92:
+                continue
+            aspect = component_width / max(component_height, 1)
+            if 0.08 <= aspect <= 18:
+                textish_components += 1
+            if textish_components >= 6:
+                return True
+        return textish_components >= 3 and near_white_ratio >= 0.62
 
     def _usable_english_evidence(self, english: str, original: str, language: str) -> bool:
         cleaned = clean_ocr_text(english)

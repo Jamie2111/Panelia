@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     panel_assoc_margin_x_ratio: float = 0.20
     panel_assoc_margin_top_ratio: float = 0.26
     panel_assoc_margin_bottom_ratio: float = 0.20
+    # Panel quality thresholds (prevent script generation if exceeded)
+    panel_quality_score_manga: int = Field(
+        default=55,
+        validation_alias="PANELIA_PANEL_QUALITY_SCORE_MANGA",
+        description="Quality score threshold for manga format (0-100)",
+    )
+    panel_quality_score_webtoon: int = Field(
+        default=72,
+        validation_alias="PANELIA_PANEL_QUALITY_SCORE_WEBTOON",
+        description="Quality score threshold for webtoon format (0-100)",
+    )
     narration_enhancement_enabled: bool = True
     narration_sentence_cache_workers: int = 2
     narration_mastering_enabled: bool = True
@@ -105,6 +116,10 @@ class Settings(BaseSettings):
     anime_face_scale_factor: float = 1.08
     anime_face_min_neighbors: int = 4
     apple_vision_ocr_enabled: bool = True
+    comic_ocr_apple_vision_enabled: bool = Field(
+        default=True,
+        validation_alias="PANELIA_COMIC_OCR_APPLE_VISION_ENABLED",
+    )
 
     kokoro_default_voice: str = "af_bella"
     kokoro_default_lang_code: str = "a"

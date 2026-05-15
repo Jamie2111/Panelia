@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * TimelineRuler — time markers at the top of the timeline.
+ * TimelineRuler - time markers at the top of the timeline.
  *
  * Adapts tick density to zoom level so we never crowd the ruler: at low
  * pixels-per-second we step in 5s/10s, at high zoom we step in 0.5s.
@@ -17,7 +17,7 @@ interface TimelineRulerProps {
 }
 
 function pickTickStep(pixelsPerSecond: number): number {
-  // Goal: a major tick roughly every 60–120 px.
+  // Goal: a major tick roughly every 60-120 px.
   const targetPx = 90;
   const raw = targetPx / pixelsPerSecond;
   // Snap to a friendly value.

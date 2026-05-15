@@ -64,6 +64,27 @@ _SFX_TOKENS = {
 _LOW_SIGNAL_TOKENS = {"amazing", "awesome", "great", "incredible", "nice", "wow", "whoa"}
 
 _MEANINGFUL_SHORT_TOKENS = {"go", "no", "run", "wait", "stop", "help", "why", "what", "who", "yes"}
+_MEANINGFUL_SINGLE_WORD_DIALOGUE = {
+    "beautiful",
+    "fine",
+    "goodbye",
+    "hello",
+    "help",
+    "hey",
+    "hurry",
+    "no",
+    "okay",
+    "ok",
+    "please",
+    "run",
+    "sorry",
+    "stop",
+    "thanks",
+    "wait",
+    "what",
+    "why",
+    "yes",
+}
 _DANGLING_ENDINGS = {"if", "and", "or", "but", "to", "of", "for", "with", "because", "when", "than", "then"}
 _COMMON_VERBS = {
     "am", "are", "be", "begins", "buy", "buys", "can", "come", "comes", "did", "do", "does", "eat", "eats",
@@ -72,6 +93,26 @@ _COMMON_VERBS = {
     "need", "needs", "pay", "pays", "preparing", "promise", "realize", "realizes", "say", "says", "see",
     "sees", "share", "spend", "spending", "stay", "stays", "stock", "stockpile", "take", "takes", "throwing",
     "treat", "try", "trying", "understand", "understood", "want", "wants", "will", "won't", "would",
+}
+
+_KNOWN_OCR_GARBAGE_TOKENS = {
+    "alis",
+    "cni",
+    "eoneannn",
+    "fnu",
+    "fop",
+    "jaiv",
+    "jle",
+    "kcdikaini",
+    "kjur",
+    "lnits",
+    "lnne",
+    "nc",
+    "snntnn",
+    "sviovcnt",
+    "teene",
+    "trle",
+    "uen",
 }
 
 
@@ -113,9 +154,117 @@ def clean_ocr_text(text: str) -> str:
     return cleaned.strip()
 
 
+def classify_ocr_text(text: str, expected_language: str = "en") -> str:
+    cleaned = clean_ocr_text(text)
+    if not cleaned:
+        return "ocr_garbage"
+    expected = str(expected_language or "en").casefold().split("-")[0]
+    if _looks_like_foreign_noise_for_expected_language(cleaned, expected):
+        return "foreign_text"
+    sfx_tokens = [_latin_token_key(token) for token in re.findall(rf"[{_LATIN_CHAR_CLASS}']+", cleaned)]
+    sfx_tokens = [token for token in sfx_tokens if token]
+    if _looks_like_sfx_only(sfx_tokens):
+        return "sfx"
+    if _looks_like_broken_letter_sequence(cleaned):
+        return "ocr_garbage"
+    if _looks_like_ocr_garbage(cleaned):
+        return "ocr_garbage"
+    if _looks_like_isolated_name_fragment(cleaned):
+        return "low_confidence"
+    lowered = cleaned.casefold()
+    if any(re.search(pattern, cleaned) for pattern in _SCANLATOR_PATTERNS):
+        if re.search(r"(?i)\b(?:translated|typeset|proofread|scanlation|credit|quality control|cleaning|redraw)\b", cleaned):
+            return "credit"
+        return "source_label"
+    tokens = sfx_tokens
+    tokens = [token for token in tokens if token]
+    if not is_usable_ocr_text(cleaned):
+        return "ocr_garbage"
+    if re.search(r"(?i)\b(?:tap to|episode|chapter|menu|setting|login|subscribe|follow|read more|next)\b", cleaned):
+        return "ui"
+    if re.search(r"(?i)\b(?:©|copyright|watermark|all rights reserved)\b", cleaned):
+        return "watermark"
+    if re.search(r'["“”]', cleaned) or cleaned.endswith(("!", "?", ".")) or re.search(r"\b(?:i|you|we|he|she|they|my|your|our)\b", lowered):
+        return "dialogue"
+    if len(tokens) >= 4:
+        return "narration"
+    return "dialogue"
+
+
+def clean_ocr_fragment_payloads(
+    entries: Iterable[dict[str, object]],
+    *,
+    expected_language: str = "en",
+) -> list[dict[str, object]]:
+    cleaned: list[dict[str, object]] = []
+    seen: set[tuple[str, tuple[int, ...]]] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        raw_text = str(entry.get("raw_text") or entry.get("text") or entry.get("text_english") or entry.get("text_original") or "")
+        script_text = str(
+            entry.get("repaired_text")
+            or entry.get("text")
+            or entry.get("text_english")
+            or entry.get("text_original")
+            or raw_text
+        )
+        text = clean_ocr_text(script_text)
+        category = classify_ocr_text(text, expected_language=expected_language)
+        confidence = entry.get("confidence")
+        if (
+            isinstance(confidence, (int, float))
+            and float(confidence) < 0.68
+            and _looks_like_ocr_garbage(text, strict=False)
+        ):
+            category = "low_confidence"
+        if category in {"ocr_garbage", "foreign_text", "low_confidence", "sfx", "ui", "watermark", "credit", "source_label"}:
+            usable = False
+        else:
+            usable = is_usable_ocr_text(text)
+        rejection_reason = "" if usable else category
+        raw_bbox = entry.get("bbox") or entry.get("bubble_bbox") or []
+        bbox = tuple(int(value) for value in raw_bbox[:4]) if isinstance(raw_bbox, (list, tuple)) and len(raw_bbox) >= 4 else ()
+        key = (text.casefold(), bbox)
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        output = {
+            "text": text,
+            "raw_text": raw_text,
+            "cleaned_text": text,
+            "bbox": list(bbox),
+            "bubble_group_id": entry.get("bubble_id") or entry.get("bubble_group_id"),
+            "bubble_bbox": entry.get("bubble_bbox"),
+            "page": entry.get("page"),
+            "panel": entry.get("panel"),
+            "panel_id": entry.get("panel_id"),
+            "panel_order": entry.get("panel_order"),
+            "reading_order_index": len(cleaned) + 1,
+            "confidence": confidence,
+            "detector": entry.get("detector"),
+            "ocr_engine": entry.get("ocr_engine"),
+            "classification": category,
+            "category": category,
+            "accepted": bool(usable),
+            "usable_for_script": bool(usable),
+            "rejection_reason": rejection_reason,
+        }
+        cleaned.append(output)
+    return sorted(
+        cleaned,
+        key=lambda item: (
+            (item.get("bbox") or [0, 0, 0, 0])[1],
+            (item.get("bbox") or [0, 0, 0, 0])[0],
+        ),
+    )
+
+
 def is_usable_ocr_text(text: str) -> bool:
     stripped = str(text or "").strip()
     if len(stripped) < 2:
+        return False
+    if _looks_like_ocr_garbage(stripped):
         return False
     if re.search(r"[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]", stripped):
         return True
@@ -336,3 +485,107 @@ def _looks_like_section_header(text: str, tokens: list[str]) -> bool:
     if len(tokens) <= 3:
         return True
     return False
+
+
+def _looks_like_ocr_garbage(text: str, *, strict: bool = True) -> bool:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return True
+    lowered = cleaned.casefold()
+    latin_tokens = [_latin_token_key(token) for token in re.findall(rf"[{_LATIN_CHAR_CLASS}']+", cleaned)]
+    latin_tokens = [token for token in latin_tokens if token]
+    if not latin_tokens:
+        return False
+    if any(token in _KNOWN_OCR_GARBAGE_TOKENS for token in latin_tokens):
+        return True
+    if any(
+        phrase in lowered
+        for phrase in (
+            "what a high nance girl",
+            "nance girl",
+            "kcdikaini lass",
+            "me stay who sorry",
+            "take a lhne",
+            "show some self oc",
+        )
+    ):
+        return True
+
+    letters = sum(char.isalpha() for char in cleaned)
+    digits = sum(char.isdigit() for char in cleaned)
+    punctuation = sum(char in ".,!?;:|/\\[]{}()" for char in cleaned)
+    short_tokens = sum(1 for token in latin_tokens if len(token) <= 2)
+    long_tokens = sum(1 for token in latin_tokens if len(token) >= 4)
+    no_vowel_tokens = sum(1 for token in latin_tokens if len(token) >= 4 and not re.search(r"[aeiouy]", token))
+    malformed_digits = bool(re.search(r"\b(?:[a-z]\s*)?\d(?:\s+\d|[a-z])", lowered))
+    repeated_tiny_clauses = cleaned.count(".") >= 4 and short_tokens >= max(3, len(latin_tokens) // 3)
+
+    if digits >= 2 and malformed_digits:
+        return True
+    if no_vowel_tokens >= 2 and no_vowel_tokens >= long_tokens // 2:
+        return True
+    if repeated_tiny_clauses:
+        return True
+    if punctuation > max(6, letters // 5) and short_tokens >= 3:
+        return True
+    if short_tokens >= max(5, round(len(latin_tokens) * 0.55)) and not any(token in _MEANINGFUL_SHORT_TOKENS for token in latin_tokens):
+        return True
+    if not strict:
+        if no_vowel_tokens >= 1 and short_tokens >= 3:
+            return True
+        if digits and short_tokens >= 4:
+            return True
+        if punctuation > max(4, letters // 7) and len(latin_tokens) >= 5:
+            return True
+    return False
+
+
+def _looks_like_foreign_noise_for_expected_language(text: str, expected_language: str) -> bool:
+    if expected_language not in {"en", "eng", "a", ""}:
+        return False
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return False
+    kana_kanji = len(re.findall(r"[\u3040-\u30ff\u3400-\u9fff]", cleaned))
+    hangul = len(re.findall(r"[\uac00-\ud7af]", cleaned))
+    latin_letters = len(re.findall(rf"[{_LATIN_CHAR_CLASS}]", cleaned))
+    punctuation_runs = len(re.findall(r"[.。・…]{3,}", cleaned))
+    if kana_kanji + hangul == 0:
+        return False
+    if latin_letters and kana_kanji + hangul >= 1:
+        return True
+    if kana_kanji + hangul >= 3 and latin_letters <= 12:
+        return True
+    if kana_kanji + hangul >= 2 and punctuation_runs:
+        return True
+    if kana_kanji + hangul >= 1 and _looks_like_broken_letter_sequence(cleaned):
+        return True
+    return False
+
+
+def _looks_like_broken_letter_sequence(text: str) -> bool:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return True
+    if re.search(r"(?<![A-Za-z])[A-Za-z]\s*[.．。・]\s*[A-Za-z]\s*[.．。・]", cleaned):
+        return True
+    if re.search(r"(?<![A-Za-z])[A-Za-z]\s+[A-Za-z]\s+[A-Za-z](?![A-Za-z])", cleaned):
+        return True
+    latin_tokens = re.findall(rf"[{_LATIN_CHAR_CLASS}]+", cleaned)
+    short_tokens = sum(1 for token in latin_tokens if len(token) <= 3)
+    punctuation_runs = len(re.findall(r"[.．。・…]{2,}", cleaned))
+    if punctuation_runs and latin_tokens and short_tokens == len(latin_tokens):
+        return True
+    return False
+
+
+def _looks_like_isolated_name_fragment(text: str) -> bool:
+    cleaned = str(text or "").strip()
+    if not cleaned.endswith("."):
+        return False
+    body = cleaned.rstrip(".．。").strip()
+    if not re.fullmatch(rf"[{_LATIN_CHAR_CLASS}][{_LATIN_CHAR_CLASS}'-]{{1,24}}", body):
+        return False
+    if body.casefold() in _MEANINGFUL_SINGLE_WORD_DIALOGUE:
+        return False
+    return body[:1].isupper() and not body.isupper()

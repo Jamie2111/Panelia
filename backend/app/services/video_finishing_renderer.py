@@ -1,5 +1,5 @@
 """
-VideoFinishingRenderer — renders the cold-open + outro clips, optionally
+VideoFinishingRenderer - renders the cold-open + outro clips, optionally
 the watermark overlay, and concatenates everything with the main video
 into the publish-ready final.
 
@@ -9,12 +9,12 @@ Inputs:
   • The active ChannelPreset
 
 Outputs (alongside the original):
-  • `final_publish.mp4` — cold-open + title-card + main + outro,
+  • `final_publish.mp4` - cold-open + title-card + main + outro,
     everything stitched. This is the file the user uploads to YouTube.
 
 Implementation notes:
   • We render cold-open and outro as standalone MP4s with FFmpeg using
-    the lavfi `color` + `drawtext` filters — no PIL, no Pillow font
+    the lavfi `color` + `drawtext` filters - no PIL, no Pillow font
     pain. This keeps the dependency surface flat and runs anywhere
     FFmpeg + a TrueType font are present.
   • Cold-open uses TTS to speak the teaser line (Edge TTS by default;
@@ -73,7 +73,7 @@ def _drawtext_escape(text: str) -> str:
     return (
         text.replace("\\", "\\\\")
         .replace(":", "\\:")
-        .replace("'", "’")  # straight to curly apostrophe — same visual, FFmpeg-safe
+        .replace("'", "’")  # straight to curly apostrophe - same visual, FFmpeg-safe
         .replace("%", "\\%")
         .replace("[", "\\[")
         .replace("]", "\\]")
@@ -450,7 +450,7 @@ class VideoFinishingRenderer:
         video_config: VideoConfig,
     ) -> Path | None:
         """A subscribe-CTA card. Sized for YouTube's end-screen overlay,
-        so the actual rendered text occupies the LEFT side only — the
+        so the actual rendered text occupies the LEFT side only - the
         right side stays empty for end-screen placement."""
         width = video_config.width
         height = video_config.height
@@ -506,7 +506,7 @@ class VideoFinishingRenderer:
     # ── Concat ───────────────────────────────────────────────────────────
 
     def _concat_clips(self, parts: list[Path], output: Path) -> None:
-        """Stitch the clips end-to-end. We use a two-pass approach —
+        """Stitch the clips end-to-end. We use a two-pass approach -
         first normalize every clip to the same codec/timebase, then
         concat via the demuxer. This avoids the "first frame is black"
         bug FFmpeg's concat filter has when input streams differ."""

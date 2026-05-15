@@ -1330,7 +1330,7 @@ def pause_job(project_id: str, job_id: str):
         finished_at=store._now().isoformat(),
         message="Paused",
     )
-    store.update_stage_state(project_id, job.stage, StageStatus.PAUSED, progress=job.progress, message="Paused — click Resume to continue")
+    store.update_stage_state(project_id, job.stage, StageStatus.PAUSED, progress=job.progress, message="Paused - click Resume to continue")
     return {"status": "paused", "job_id": job_id}
 
 

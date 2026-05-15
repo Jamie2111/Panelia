@@ -6,13 +6,13 @@ import { cn } from "@/lib/utils";
 import { PageHeader, type PageHeaderViewLink } from "@/components/ui/page-header";
 
 /**
- * AppShell — the persistent chrome around every page.
+ * AppShell - the persistent chrome around every page.
  *
  * Top bar (compact, sticky, blurred) is unchanged. The page-content
  * heading is now driven by props that map 1:1 to PageHeader, so every
  * page in the app uses the same hero pattern the timeline editor
  * established. Pages can also pass `hero` to slot in a fully custom
- * header — useful for the timeline page which already had its own
+ * header - useful for the timeline page which already had its own
  * rich header before this refactor.
  */
 
@@ -51,7 +51,7 @@ export function AppShell({
 }) {
   return (
     <div className="min-h-screen text-foreground">
-      {/* Sticky top bar — heavy backdrop blur, hairline divider */}
+      {/* Sticky top bar - heavy backdrop blur, hairline divider */}
       <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-[rgb(var(--p-bg-base)/0.65)] backdrop-blur-liquid">
         <div className="mx-auto flex h-14 max-w-[1680px] items-center gap-6 px-6 lg:px-10">
           <Link

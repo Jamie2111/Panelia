@@ -39,6 +39,9 @@ class KokoroTTSEngine:
             if cancel_callback:
                 cancel_callback()
             cache_path = self._sentence_cache_dir / f"{signature}.wav"
+            if progress_callback:
+                start_progress = ((index - 1) / max(len(ordered_jobs), 1)) * 38
+                progress_callback(start_progress, f"Preparing narration sentence cache {index}/{len(ordered_jobs)}")
             if not cache_path.exists():
                 unit_voice = payload["voice_config"]
                 self._kokoro.synthesize_to_file(str(payload["text"]), cache_path, unit_voice)
@@ -57,8 +60,15 @@ class KokoroTTSEngine:
 
         max_workers = max(1, min(int(self.settings.narration_sentence_cache_workers or 1), os.cpu_count() or 1, 4))
         if max_workers <= 1 or len(assembly_payloads) <= 1:
-            results = [self._assemble_unit_audio(payload) for payload in assembly_payloads]
+            results = []
+            for index, payload in enumerate(assembly_payloads, start=1):
+                if progress_callback:
+                    start_progress = 38 + ((index - 1) / max(len(assembly_payloads), 1)) * 62
+                    progress_callback(start_progress, f"Assembling narration clip {index}/{len(assembly_payloads)}")
+                results.append(self._assemble_unit_audio(payload))
         else:
+            if progress_callback:
+                progress_callback(38, f"Assembling {len(assembly_payloads)} narration clips")
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 results = list(executor.map(self._assemble_unit_audio, assembly_payloads))
 

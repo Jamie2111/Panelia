@@ -23,7 +23,7 @@ interface EditorState {
   canUndo: boolean;
   canRedo: boolean;
 
-  // Actions — project
+  // Actions - project
   setProject: (
     project: ProjectDetail,
     options?: {
@@ -32,11 +32,12 @@ interface EditorState {
     }
   ) => void;
 
-  // Actions — navigation
+  // Actions - navigation
   selectPage: (page: number) => void;
   nextPage: (pageCount: number) => void;
   prevPage: () => void;
   jumpToPage: (page: number, pageCount: number) => void;
+  jumpToPanel: (panelNumber: number) => void;
   selectPanel: (id: string, additive?: boolean) => void;
   selectPanels: (ids: string[]) => void;
   clearSelection: () => void;
@@ -44,13 +45,13 @@ interface EditorState {
   selectPrevPanel: () => void;
   nextFlaggedPanel: (pageCount: number) => void;
 
-  // Actions — modes
+  // Actions - modes
   setDrawMode: (on: boolean) => void;
   toggleDrawMode: () => void;
   setFlaggedOnlyMode: (on: boolean) => void;
   toggleFlaggedOnlyMode: () => void;
 
-  // Actions — panel mutations (all push undo history)
+  // Actions - panel mutations (all push undo history)
   setPageKeep: (page: number, keep: boolean) => void;
   setAllPagesKeep: (keep: boolean) => void;
   updatePanel: (id: string, updates: Partial<PanelBox>) => void;
@@ -63,12 +64,12 @@ interface EditorState {
   splitPanel: (id: string, axis: "horizontal" | "vertical") => void;
   mergeSelected: () => void;
 
-  // Actions — batch
+  // Actions - batch
   batchSetKeep: (ids: string[], keep: boolean) => void;
   batchSetDuration: (ids: string[], seconds: number) => void;
   batchDelete: (ids: string[]) => void;
 
-  // Actions — undo / redo
+  // Actions - undo / redo
   undo: () => void;
   redo: () => void;
 }
@@ -149,8 +150,9 @@ export const usePanelEditorStore = create<EditorState>((set, get) => ({
   // ── project ────────────────────────────────────────────
   setProject: (project, options) =>
     set((state) => {
-      const preserveLocalPanels = options?.preserveLocalPanels ?? false;
-      const preserveSelection = options?.preserveSelection ?? preserveLocalPanels;
+      const sameProject = state.project?.id === project.id;
+      const preserveLocalPanels = sameProject && (options?.preserveLocalPanels ?? false) && state.panels.length > 0;
+      const preserveSelection = sameProject && (options?.preserveSelection ?? preserveLocalPanels);
       const normalizedPanels = reindex(project.panels);
       const nextPanels = preserveLocalPanels ? state.panels : normalizedPanels;
       const knownIds = new Set(nextPanels.map((p) => p.id));
@@ -189,6 +191,16 @@ export const usePanelEditorStore = create<EditorState>((set, get) => ({
       selectedPage: Math.max(1, Math.min(page, pageCount)),
       selectedIds: []
     })),
+
+  jumpToPanel: (panelNumber) =>
+    set((state) => {
+      const target = state.panels.find((panel) => panel.order === panelNumber);
+      if (!target) return {};
+      return {
+        selectedPage: target.page,
+        selectedIds: [target.id]
+      };
+    }),
 
   selectPanel: (id, additive = false) =>
     set((state) => ({

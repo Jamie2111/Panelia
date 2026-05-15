@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from app.core.config import get_settings
 from app.services.apple_vision_ocr import AppleVisionOCRService
 from app.services.dialogue_cleaner import DialogueCleaner
 from app.services.language_detector import LanguageDetector
@@ -33,6 +34,7 @@ class ComicOCRService:
     _LOAD_LOCK = Lock()
 
     def __init__(self, cleaner: DialogueCleaner | None = None, language_detector: LanguageDetector | None = None) -> None:
+        self.settings = get_settings()
         self.cleaner = cleaner or DialogueCleaner()
         self.language_detector = language_detector or LanguageDetector(self.cleaner)
         self.multilingual_ocr = MultilingualOCRService(self.cleaner)
@@ -42,10 +44,6 @@ class ComicOCRService:
         candidates: list[dict[str, Any]] = []
         hint = self.language_detector.normalize_language_code(language_hint)
         fragments = self._extract_paddle_fragments(panel_image, hint)
-        if self._should_use_apple_vision(hint):
-            apple_fragments = self._extract_apple_fragments(panel_image, hint)
-            if apple_fragments:
-                fragments.extend(apple_fragments)
         if not fragments:
             fragments = [
                 {
@@ -56,8 +54,6 @@ class ComicOCRService:
                 }
                 for fragment in self.multilingual_ocr.extract(panel_image)
             ]
-            if self._should_use_apple_vision(hint):
-                fragments.extend(self._extract_apple_fragments(panel_image, hint))
 
         fallback_attempts = 0
         max_fallback_attempts = 12
@@ -74,7 +70,7 @@ class ComicOCRService:
                     panel_image,
                     self._expand_bbox(bbox, panel_image.shape[1], panel_image.shape[0]),
                 )
-                fallback = self.recognize_region(crop, language_hint)
+                fallback = self.recognize_region(crop, language_hint, fast_only=True)
                 if self._is_better_candidate(fallback.original_text, fallback.confidence, text, confidence):
                     text = fallback.original_text
                     confidence = fallback.confidence
@@ -102,20 +98,31 @@ class ComicOCRService:
             return True
         return len(tokens) == 1 and len(tokens[0]) >= 4
 
-    def recognize_region(self, region_image: np.ndarray, language_hint: str) -> BubbleOCRResult:
+    def recognize_region(
+        self,
+        region_image: np.ndarray,
+        language_hint: str,
+        *,
+        use_apple_vision: bool = True,
+        fast_only: bool = False,
+    ) -> BubbleOCRResult:
         hint = self.language_detector.normalize_language_code(language_hint)
         best_text = ""
         best_confidence: float | None = None
         best_engine = "none"
         variants = self._ocr_variants(region_image)
         primary_variant = variants[0]
-        secondary_variants = variants[1:]
+        secondary_variants = variants[1:2] if fast_only else variants[1:]
 
         engine_order = (
             ["manga-ocr", "paddleocr", "apple-vision", "easyocr"]
             if hint == "ja"
             else ["apple-vision", "paddleocr", "easyocr", "manga-ocr"]
         )
+        if not use_apple_vision:
+            engine_order = [engine for engine in engine_order if engine != "apple-vision"]
+        if fast_only:
+            engine_order = [engine for engine in engine_order if engine in {"apple-vision", "paddleocr", "manga-ocr"}]
         for engine in engine_order:
             if engine == "manga-ocr" and hint == "ja" and self._has_manga_ocr():
                 for candidate in [primary_variant]:
@@ -232,7 +239,7 @@ class ComicOCRService:
             if engine:
                 engines.append(engine)
         if not fragments:
-            fallback = self.recognize_region(panel_image, language_hint)
+            fallback = self.recognize_region(panel_image, language_hint, use_apple_vision=False, fast_only=True)
             return fallback.original_text, fallback.confidence, fallback.ocr_engine
         text = self.cleaner.clean_text(" ".join(fragments))
         confidence = sum(confidences) / len(confidences) if confidences else None
@@ -676,6 +683,8 @@ class ComicOCRService:
             return False
 
     def _has_apple_vision(self) -> bool:
+        if not self.settings.comic_ocr_apple_vision_enabled:
+            return False
         return self.apple_vision_ocr.is_available()
 
     def _should_use_apple_vision(self, language_code: str) -> bool:

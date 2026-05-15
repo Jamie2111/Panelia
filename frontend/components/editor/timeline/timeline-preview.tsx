@@ -1,11 +1,11 @@
 "use client";
 
 /**
- * TimelinePreview — top-of-editor "what plays right now" surface.
+ * TimelinePreview - top-of-editor "what plays right now" surface.
  *
  * Shows the selected panel image, its narration, and a transport readout
  * (playhead timecode / total / I-O range). Will eventually overlay Ken
- * Burns motion, transitions, and TTS preview — but those are downstream
+ * Burns motion, transitions, and TTS preview - but those are downstream
  * features; the data flow is already in place for them.
  */
 
@@ -52,7 +52,7 @@ export function TimelinePreview({
             Select a clip to preview.
           </div>
         )}
-        {/* Narration overlay — subtitle style */}
+        {/* Narration overlay - subtitle style */}
         {clip?.narration && (
           <div className="absolute inset-x-0 bottom-0 p-6 text-center text-[rgb(var(--p-text))] text-base md:text-lg leading-snug bg-gradient-to-t from-black/70 via-black/40 to-transparent">
             {clip.narration}

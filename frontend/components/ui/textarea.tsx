@@ -3,7 +3,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 /**
- * Textarea — glass surface, accent focus ring, comfortable reading width.
+ * Textarea - glass surface, accent focus ring, comfortable reading width.
  * Resize vertical only to keep the page rhythm intact.
  */
 export const Textarea = React.forwardRef<

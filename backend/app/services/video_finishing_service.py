@@ -1,22 +1,22 @@
 """
-VideoFinishingService — the three "look like a real YouTuber" finishing
+VideoFinishingService - the three "look like a real YouTuber" finishing
 touches that bolt onto an already-rendered panel video:
 
-  1. Cold open    — a 5-7 second hook from the climax panel + teaser
+  1. Cold open    - a 5-7 second hook from the climax panel + teaser
                     voiceover, placed BEFORE the chronological narration
-  2. Title card   — channel-branded title slide for 2-3 seconds after
+  2. Title card   - channel-branded title slide for 2-3 seconds after
                     the cold open
-  3. Outro card   — a subscribe-CTA card for ~5 seconds at the end of
+  3. Outro card   - a subscribe-CTA card for ~5 seconds at the end of
                     the video, sized for YouTube's end-screen overlay
-  4. Chapter      — emit a `chapter_markers.json` with timecodes the
+  4. Chapter      - emit a `chapter_markers.json` with timecodes the
      timestamps     YouTube bundle service folds into the description
 
-The service doesn't actually render video frames — it builds two
+The service doesn't actually render video frames - it builds two
 artifact files the existing video pipeline + YouTube bundle consume:
 
-  • <project>/output/cold_open_plan.json    — telling video_service.py
+  • <project>/output/cold_open_plan.json    - telling video_service.py
     what to prepend (panel id, teaser text, hold time)
-  • <project>/output/chapter_markers.json   — list of (sec, label)
+  • <project>/output/chapter_markers.json   - list of (sec, label)
     that the bundle service writes into description.md
 
 Rendering of cold open / outro frames happens in video_service.py
@@ -45,7 +45,7 @@ except ImportError:
     _GEMINI_AVAILABLE = False
 
 
-# Keywords that signal a moment worth opening with — same vocabulary the
+# Keywords that signal a moment worth opening with - same vocabulary the
 # thumbnail picker uses, since "best thumbnail" and "best cold open" are
 # the same problem (find the dramatic peak).
 _CLIMAX_KEYWORDS = (
@@ -161,7 +161,7 @@ class VideoFinishingService:
     ) -> ColdOpenPlan:
         """Pick the climax panel and write a punchy teaser line for it."""
         # Same scoring shape as the thumbnail picker, but biased even
-        # harder toward the back half of the chapter — viewers tolerate
+        # harder toward the back half of the chapter - viewers tolerate
         # spoilers in cold opens, in fact they hook on them.
         total = len(kept_sorted)
         scores: list[tuple[float, int, dict[str, Any], str]] = []
@@ -222,7 +222,7 @@ class VideoFinishingService:
                 "  • Hint at the climax WITHOUT naming the exact outcome\n"
                 "  • End on suspense (no 'and they lived happily ever after')\n"
                 "  • Do not use 'In this chapter', 'Today on', or any meta wrapper\n"
-                "  • Return JUST the line — no quotes, no prefix\n\n"
+                "  • Return JUST the line - no quotes, no prefix\n\n"
                 f"Opening of the recap: {opener[:1200]}\n\n"
                 f"Climax moment: {climax_narration[:200]}"
             )
@@ -342,7 +342,7 @@ class VideoFinishingService:
                     label=label,
                 )
             )
-        # YouTube requires the first marker to be at 0:00 — guarantee it.
+        # YouTube requires the first marker to be at 0:00 - guarantee it.
         if markers and markers[0].timecode_seconds > 0.01:
             markers.insert(0, ChapterMarker(timecode_seconds=0.0, label="Intro"))
         elif not markers:

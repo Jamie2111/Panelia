@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * TimelineClip — a single panel clip on the video track.
+ * TimelineClip - a single panel clip on the video track.
  *
  * Responsible for rendering a clip's thumbnail + label and exposing the
  * right-edge drag handle that lets the user trim duration. Drag-to-trim

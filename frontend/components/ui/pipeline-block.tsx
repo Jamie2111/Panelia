@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * PipelineBlock — the single most important UI element of the new design.
+ * PipelineBlock - the single most important UI element of the new design.
  *
  * Replaces the horizontal tab strip ("Overview / Panel Editor / Character
  * Review / ...") with a vertical, glanceable, narrative pipeline. At any
@@ -14,7 +14,7 @@
  *   ◉ ── ◉ ── ◉ ── ●═══─ ○ ── ○
  *   Pages  Panels  Vision  Script  Audio  Video
  *                          ↑
- *               "Writing your script — about a minute left"
+ *               "Writing your script - about a minute left"
  *               [ Pause ]
  *
  * Filled circles = complete. Half-filled with shimmer = running. Empty =
@@ -62,7 +62,7 @@ interface PipelineBlockProps {
     label: string;
     onClick: () => void;
   };
-  /** Optional cost breakdown — surfaces "$X to finish" in the block. */
+  /** Optional cost breakdown - surfaces "$X to finish" in the block. */
   cost?: CostBreakdown;
   className?: string;
 }
@@ -139,7 +139,7 @@ export function PipelineBlock({
                   onClick={onSelectStage ? () => onSelectStage(stage) : undefined}
                   disabled={!onSelectStage}
                   aria-current={isFocus ? "step" : undefined}
-                  aria-label={`${label} — ${status}`}
+                  aria-label={`${label} - ${status}`}
                   className={[
                     "relative h-5 w-5 rounded-full transition-all duration-[var(--p-mid)] ease-[var(--p-ease)]",
                     "focus:outline-none focus:ring-2 focus:ring-[rgb(var(--p-accent-ring))]",

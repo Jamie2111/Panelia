@@ -980,7 +980,7 @@ export default function NarrationPage() {
                 <CardDescription className="mt-1">
                   {storyEditMode
                     ? "Edit narration directly in the textarea, then save."
-                    : "Live preview — stays in sync with panel lines below."}
+                    : "Live preview - stays in sync with panel lines below."}
                 </CardDescription>
               </div>
               {!storyEditMode ? (

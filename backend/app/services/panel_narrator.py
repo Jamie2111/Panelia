@@ -69,7 +69,7 @@ class PanelNarrator:
         if not kept:
             return []
 
-        # Collect manually locked narrations — used both to preserve user edits
+        # Collect manually locked narrations - used both to preserve user edits
         # and as authoritative context fed back to the LLM for other panels.
         locked_map: dict[int, str] = {}
         for panel in kept:
@@ -202,7 +202,7 @@ class PanelNarrator:
 
         parts: list[dict[str, Any]] | None = None
         if panel_image_path and panel_image_path.exists():
-            # Use _load_and_resize_image to cap at _IMAGE_MAX_PX — avoids
+            # Use _load_and_resize_image to cap at _IMAGE_MAX_PX - avoids
             # sending full-resolution images (can be 5+ MB each) to Gemini.
             img_data, mime = self._load_and_resize_image(panel_image_path)
             if img_data:
@@ -329,7 +329,7 @@ class PanelNarrator:
                         translation_failed = True
 
             prepared.append({
-                "panel": panel.order,
+                "panel": int(panel.page or 0) * 10000 + int(getattr(panel, "panel", 0) or 0),
                 "panel_id": panel.id,
                 "page": panel.page,
                 "text": combined,
@@ -504,7 +504,7 @@ class PanelNarrator:
         locked_examples = context.get("locked_examples", "") or ""
 
         text_part = (
-            "[Translation unavailable — use image and chapter transcript for context]"
+            "[Translation unavailable - use image and chapter transcript for context]"
             if translation_failed
             else (f'"{text}"' if text else "(no text)")
         )
@@ -523,7 +523,7 @@ class PanelNarrator:
             "Rules:\n"
             "- Write ONE complete English sentence with a subject and verb.\n"
             "- 8-20 words.\n"
-            "- Describe the STORY EVENT — not what the image looks like.\n"
+            "- Describe the STORY EVENT - not what the image looks like.\n"
             "- Use character names when known. No generic filler.\n\n"
             f'Return JSON only: {{"panel_narrations":[{{"panel":{panel_num},"narration":"..."}}]}}\n'
         )
@@ -608,7 +608,7 @@ class PanelNarrator:
                 )
                 return self._parse_batch_response(result, payloads)
             except Exception as exc:
-                logger.warning("Panel narration batch (multimodal) failed: %s — retrying text-only", exc)
+                logger.warning("Panel narration batch (multimodal) failed: %s - retrying text-only", exc)
 
         # Attempt 2: text-only (no images)
         try:
@@ -627,7 +627,7 @@ class PanelNarrator:
             if non_blank >= len(panels) // 2:
                 return lines
         except Exception as exc:
-            logger.warning("Panel narration batch (text-only) also failed: %s — falling back to individual", exc)
+            logger.warning("Panel narration batch (text-only) also failed: %s - falling back to individual", exc)
 
         # Attempt 3: narrate each panel individually (text-only, no images)
         logger.warning("Falling back to individual panel narration for %d panels", len(panels))
@@ -692,7 +692,7 @@ class PanelNarrator:
                     if aliases:
                         parts.append(f"(also: {', '.join(aliases)})")
                     if role:
-                        parts.append(f"— {role}")
+                        parts.append(f"- {role}")
                     if appearance:
                         parts.append(f"[appearance: {appearance}]")
                     entries.append(" ".join(parts))
@@ -718,7 +718,7 @@ class PanelNarrator:
 
             parts = [f"Panel {panel_num}"]
             if translation_failed:
-                parts.append("Extracted text: [Translation unavailable — use panel image and scene context]")
+                parts.append("Extracted text: [Translation unavailable - use panel image and scene context]")
             elif text:
                 parts.append(f"Extracted text: {text[:520]}")
             else:
@@ -740,7 +740,7 @@ class PanelNarrator:
             .replace("{chapter_summary}", context.get("chapter_summary", "") or "(none)")
             .replace("{character_dictionary}", char_block or "(none)")
             .replace("{chapter_transcript}", context.get("chapter_transcript", "") or "(none)")
-            .replace("{locked_examples}", locked_examples or "(none — this is a fresh run)")
+            .replace("{locked_examples}", locked_examples or "(none - this is a fresh run)")
             .replace("{preceding_narrations}", preceding_block or "(this is the first batch)")
             .replace("{panel_block}", panel_block)
         )
@@ -812,7 +812,7 @@ class PanelNarrator:
             except Exception as exc:
                 logger.debug("PIL resize failed for %s: %s", img_path, exc)
 
-        # PIL not available — use raw bytes but cap at 500KB
+        # PIL not available - use raw bytes but cap at 500KB
         raw = img_path.read_bytes()
         if len(raw) > 500 * 1024:
             logger.debug("Image %s is %dKB, skipping (PIL unavailable for resize)", img_path, len(raw) // 1024)

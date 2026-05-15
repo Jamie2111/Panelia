@@ -19,7 +19,7 @@
 import * as React from "react";
 
 interface WaveformStripProps {
-  /** Total seconds the strip represents — drives sample count. */
+  /** Total seconds the strip represents - drives sample count. */
   totalDurationSec: number;
   pixelsPerSecond: number;
   /** Optional URL for a real waveform image; if present, supersedes the SVG. */
@@ -34,7 +34,7 @@ const PIXELS_PER_BAR = 3;
 const BAR_GAP = 1;
 
 function pseudoRandom(seed: number) {
-  // Simple xorshift — fine for visuals, deterministic per seed.
+  // Simple xorshift - fine for visuals, deterministic per seed.
   let x = (seed + 1) | 0;
   return () => {
     x ^= x << 13;
@@ -85,7 +85,7 @@ export function WaveformStrip({
       : tone === "info" ? "rgb(147, 197, 253)"
       : "rgb(200, 200, 210)";
 
-  // Real-waveform PNG path — used when the consumer provides one.
+  // Real-waveform PNG path - used when the consumer provides one.
   if (waveformUrl) {
     return (
       <div

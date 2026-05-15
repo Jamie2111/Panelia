@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from app.services.character_name_filters import looks_like_false_character_name
+from app.services.character_name_filters import is_valid_character_name_candidate, looks_like_false_character_name
 
 
 class CharacterMemory:
@@ -43,6 +43,7 @@ class CharacterMemory:
             role_hint = role_hints.most_common(1)[0][0] if role_hints else "Character"
             name = self._resolve_name(names, protagonist_name, role_hint)
             description = self._description_for(role_hint, stable_id, name, protagonist_name)
+            narration_reference = name or self._reference_for_unknown(role_hint, stable_id, protagonist_name)
             memory[stable_id] = {
                 "id": stable_id,
                 "name": name,
@@ -53,8 +54,8 @@ class CharacterMemory:
                 "appearance_count": int(entry.get("appearance_count") or len(entry.get("appearances", []))),
                 "appearances": entry.get("appearances", []),
                 "source_character_ids": source_ids,
-                "display_name": name or stable_id,
-                "narration_reference": name or self._reference_for_unknown(role_hint, stable_id, protagonist_name),
+                "display_name": name or narration_reference,
+                "narration_reference": narration_reference,
             }
 
         return {
@@ -67,7 +68,7 @@ class CharacterMemory:
         candidates = [
             name
             for name in names
-            if name and name not in {"Other", "Stranger", "Character"} and not looks_like_false_character_name(name)
+            if name and name not in {"Other", "Stranger", "Character"} and is_valid_character_name_candidate(name) and not looks_like_false_character_name(name)
         ]
         if protagonist_name and role_hint == "Protagonist":
             return protagonist_name

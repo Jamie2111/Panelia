@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * /settings/channel — the YouTuber's brand kit.
+ * /settings/channel - the YouTuber's brand kit.
  *
  * Edits the single ChannelPreset that's applied automatically to every
  * thumbnail, cold-open title card, outro slide, and Shorts CTA in the
@@ -60,7 +60,7 @@ export default function ChannelSettingsPage() {
   return (
     <AppShell
       title="Channel"
-      description="Your branding applied to every thumbnail, cold open, outro, and Shorts CTA — across all projects."
+      description="Your branding applied to every thumbnail, cold open, outro, and Shorts CTA - across all projects."
       breadcrumb={{ href: "/", label: "Studio" }}
       meta={(
         <>
@@ -135,7 +135,7 @@ export default function ChannelSettingsPage() {
         <Card padded="md">
           <CardTitle>Look</CardTitle>
           <CardDescription className="mt-1">
-            The accent color is your channel's signature — applied to the
+            The accent color is your channel's signature - applied to the
             thumbnail's highlight word, the outro accent strip, and the
             Shorts CTA.
           </CardDescription>
@@ -158,7 +158,7 @@ export default function ChannelSettingsPage() {
                 />
               </div>
               <p className="text-xs text-mutedForeground">
-                Pick something distinctive — mint, rose, electric blue, gold. This
+                Pick something distinctive - mint, rose, electric blue, gold. This
                 is what makes viewers say "that's the channel with the X thumbnails."
               </p>
             </label>

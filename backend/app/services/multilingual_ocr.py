@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 
+from app.core.config import get_settings
 from app.services.apple_vision_ocr import AppleVisionOCRService
 from app.services.dialogue_cleaner import DialogueCleaner
 
@@ -26,6 +27,7 @@ class MultilingualOCRService:
     _LOAD_LOCK = Lock()
 
     def __init__(self, cleaner: DialogueCleaner | None = None) -> None:
+        self.settings = get_settings()
         self.cleaner = cleaner or DialogueCleaner()
         self.apple_vision = AppleVisionOCRService(self.cleaner)
 
@@ -57,7 +59,11 @@ class MultilingualOCRService:
             or len(fragments) < 3
             or sum(len(fragment.text) for fragment in fragments) < 40
         )
-        if should_try_apple_vision and self.apple_vision.is_available():
+        if (
+            should_try_apple_vision
+            and self.settings.comic_ocr_apple_vision_enabled
+            and self.apple_vision.is_available()
+        ):
             for fragment in self.apple_vision.extract(image, language_hint):
                 bbox = self._normalise_bbox(fragment.bbox, image.shape[1], image.shape[0])
                 if bbox is None:

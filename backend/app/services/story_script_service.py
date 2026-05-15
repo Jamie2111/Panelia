@@ -1,4 +1,4 @@
-"""DEPRECATED — see app/services/DEPRECATED.md.
+"""DEPRECATED - see app/services/DEPRECATED.md.
 
 StoryScriptService coordinates the legacy multi-pass narration cascade.
 Replaced by PanelVisionNarrator (single vision-grounded pass). Retained for
@@ -76,17 +76,17 @@ class StoryScriptBundle:
 
 class StoryScriptService:
     _SCENE_CHUNK_SIZE = 14
-    _MULTIMODAL_SCENE_CHUNK_SIZE = 8   # doubled from 4 — fewer total API calls
-    _CRITIC_BATCH_SIZE = 10            # was 6 — fewer critic API calls
+    _MULTIMODAL_SCENE_CHUNK_SIZE = 8   # doubled from 4 - fewer total API calls
+    _CRITIC_BATCH_SIZE = 10            # was 6 - fewer critic API calls
     _RESCUE_BATCH_SIZE = 2             # smaller multimodal rescue batches hit Gemini image blocks less often
     _MAX_MULTIMODAL_LINE_RESCUES = 48
     _MAX_VISUAL_ONLY_RECOVERIES = 32
-    _STYLE_BATCH_SIZE = 16             # was 8 — fewer style API calls
+    _STYLE_BATCH_SIZE = 16             # was 8 - fewer style API calls
     _STYLE_PASSES = 2
     _DRAFT_WORKERS = 2                 # concurrent draft threads
     _CRITIC_WORKERS = 2                # concurrent critic threads
 
-    # Words that look like short names but are common English words — excluded from
+    # Words that look like short names but are common English words - excluded from
     # character-name extraction in the mechanical OCR paraphrase.
     _MECHANICAL_NAME_STOPWORDS: frozenset[str] = frozenset({
         "ago", "ain't", "all", "also", "and", "are", "aren't", "ask",
@@ -207,7 +207,7 @@ class StoryScriptService:
                     if clean_ocr_text(str(p.ocr_text or "").strip())
                 )
                 # Keep only entries whose name appears in OCR, and strip appearance
-                # descriptions — those are often franchise-derived from a previous
+                # descriptions - those are often franchise-derived from a previous
                 # vision-mode run and will trigger franchise hallucination in the LLM
                 # even when the character name alone matches OCR.
                 filtered_dict: dict[str, Any] = {}
@@ -229,7 +229,7 @@ class StoryScriptService:
         chapter_dialogue_context = " ".join(all_panels_ocr_fragments)[:6000] if all_panels_ocr_fragments else ""
         previous_story_bible = self._load_story_bible_cache(cache_dir / "story_bible.json")
         if panel_vision_records:
-            # Vision evidence available — use richer per-panel payloads that include
+            # Vision evidence available - use richer per-panel payloads that include
             # action_beat, dialogue, caption, and visual_cues from Gemini Vision.
             character_dictionary = self._build_vision_character_dictionary(
                 canonical_characters or [], character_dictionary
@@ -308,7 +308,7 @@ class StoryScriptService:
         if ocr_only_mode and chapter_dialogue_context:
             from app.services.story_beats import StoryBeatBundle as _SBB
             # Build a chapter summary from mechanical paraphrases of the scene seeds.
-            # Do NOT use raw OCR sentences — passing those to the polish/critic LLMs
+            # Do NOT use raw OCR sentences - passing those to the polish/critic LLMs
             # causes them to quote dialogue literally ("The conversation reveals '...'").
             # Mechanical paraphrases describe story events without quoting raw text.
             _mech_summaries: list[str] = []
@@ -423,7 +423,7 @@ class StoryScriptService:
         _progress(36, "Expanding panel story segments")
         # Panel mode: each kept panel becomes exactly one narration slot.
         # Bypasses scene-seed grouping, coalescing, and segment coherence merging
-        # entirely — the main sources of out-of-order panels, skipped panels,
+        # entirely - the main sources of out-of-order panels, skipped panels,
         # franchise hallucination bleed, and disconnected-transition failures.
         story_units = self._panel_mode_story_units(ordered_payloads, name_grounding)
         scene_visual_paths = self._build_scene_visual_paths(
@@ -578,7 +578,7 @@ class StoryScriptService:
                 disable_multimodal_rescue=disable_multimodal_rescue,
                 style_vocab=style_vocab,
                 # In OCR-only mode, polished mechanical paraphrases are already our
-                # best content. Skip the LLM critic — it tends to add generic filler
+                # best content. Skip the LLM critic - it tends to add generic filler
                 # sentences and can re-introduce franchise hallucination through the
                 # story_bible / beats context it receives.
                 skip_llm_critic=ocr_only_mode,
@@ -921,7 +921,7 @@ class StoryScriptService:
 
         _progress(97, "Finalizing aligned story segments")
         story_segments = self._build_story_segments(story_units, reviewed_segments)
-        # Panel mode: skip segment-coherence merging — each panel must stay as
+        # Panel mode: skip segment-coherence merging - each panel must stay as
         # its own slot.  _cohere_story_segments_for_delivery was the source of
         # out-of-order panel refs and 5-panel blobs being stitched together.
         # In OCR-only mode the coverage repair pass reads raw panel.ocr_text and
@@ -1449,7 +1449,7 @@ class StoryScriptService:
         legacy_narration = self._normalize_segment_text(str(panel.narration or "").strip(), allow_empty=True)
         if legacy_narration and not self._text_is_noisy_ocr(legacy_narration):
             return legacy_narration[:500]
-        # Fall back to speech-bubble OCR text extracted during detection — this
+        # Fall back to speech-bubble OCR text extracted during detection - this
         # is the primary source of dialogue and should always be preferred over
         # silence when vision records are absent.
         raw_ocr = clean_ocr_text(str(getattr(panel, "ocr_text", None) or "").strip())
@@ -1795,12 +1795,12 @@ class StoryScriptService:
         ordered_payloads: list[dict[str, Any]],
         grounding: dict[str, Any] | None,
     ) -> list[dict[str, Any]]:
-        """Create exactly one story unit per panel — no merging or grouping.
+        """Create exactly one story unit per panel - no merging or grouping.
 
         This is the strict panel mode: each kept panel becomes its own
         narration slot.  Scene seeds, coalescing, and segment coherence
         merging are all bypassed.  The result is maximum alignment between
-        the artwork and the narration — one sentence describes one panel.
+        the artwork and the narration - one sentence describes one panel.
         """
         units: list[dict[str, Any]] = []
         for index, payload in enumerate(ordered_payloads, start=1):
@@ -2651,7 +2651,7 @@ class StoryScriptService:
         ]
 
         if len(chunks) <= 1 or self._DRAFT_WORKERS <= 1:
-            # Single-threaded path — rolling draft_history gives cross-chunk context.
+            # Single-threaded path - rolling draft_history gives cross-chunk context.
             draft_lines: list[str] = []
             for start in range(0, len(units), self._MULTIMODAL_SCENE_CHUNK_SIZE):
                 chunk = units[start : start + self._MULTIMODAL_SCENE_CHUNK_SIZE]
@@ -2675,7 +2675,7 @@ class StoryScriptService:
                 )
             return draft_lines
 
-        # Multi-threaded path — all chunks drafted in parallel.
+        # Multi-threaded path - all chunks drafted in parallel.
         # draft_history is empty per-chunk; the story_bible provides full
         # scene-level context so the rolling last-4-lines context is not critical.
         _story_bible_ref = story_bible or {}
@@ -4661,7 +4661,7 @@ class StoryScriptService:
         # In OCR-only mode the polished mechanical paraphrases are our best and only
         # content.  _apply_weak_scene_policy has many filters (overly_generic, low_quality,
         # etc.) designed for vision-mode output that false-positive on our short
-        # mechanical templates (e.g. "An unexpected offer is extended — a chance to join
+        # mechanical templates (e.g. "An unexpected offer is extended - a chance to join
         # forces and face it together." is flagged as overly_generic by the scene_unit_count
         # branch). This causes valid beats to be blanked and then incorrectly replaced by
         # _force_fill_remaining_blank_payloads with content from a neighbouring unit.
@@ -6374,7 +6374,7 @@ class StoryScriptService:
         if not is_usable_ocr_text(cleaned):
             return True
         # Flag 4+ consecutive special characters as noise (e.g. "----", "....").
-        # Allow ".." and "..." (ellipsis) and "?!" (common manga punctuation) — using
+        # Allow ".." and "..." (ellipsis) and "?!" (common manga punctuation) - using
         # {2,} here was too aggressive and wiped legitimate manga dialogue that ends
         # with trailing ".." or has OCR-reconstructed speech-bubble tails.
         if re.search(r"[.?!,:;/\\|_-]{4,}", cleaned):
@@ -7139,18 +7139,18 @@ class StoryScriptService:
             "letter", "character", "symbol", "word", "term", "phrase",
         })
         stripped = lower_text.strip()
-        # "naomi.." — name before double-dot at the very start of the text
+        # "naomi.." - name before double-dot at the very start of the text
         m = re.match(r"^([a-z]{3,12})\.\.", stripped)
         if m:
             _add(m.group(1))
-        # "hiro," — name at the very start followed by a comma
+        # "hiro," - name at the very start followed by a comma
         m = re.match(r"^([a-z]{3,12}),", stripped)
         if m:
             _add(m.group(1))
-        # ", hiro" or ", naomi" — address position inside the sentence
+        # ", hiro" or ", naomi" - address position inside the sentence
         # Guard: skip the candidate when the word immediately before the comma is a
         # language/script identifier (e.g. "in japanese, kathek") or a single character
-        # (e.g. "letter a, kathek") — those mark translation notes, not character addresses.
+        # (e.g. "letter a, kathek") - those mark translation notes, not character addresses.
         for m in re.finditer(r"([a-z]{2,}|[a-z\d]),\s+([a-z]{3,12})(?=[.\s!?]|$)", stripped):
             pre_word = m.group(1)
             candidate = m.group(2)
@@ -7190,7 +7190,7 @@ class StoryScriptService:
         template without picking up unrelated names from other scenes.
 
         Templates are designed so that key OCR tokens (character names, dialogue
-        keywords) appear verbatim in the output — this ensures the quality
+        keywords) appear verbatim in the output - this ensures the quality
         service's token-overlap check registers the contributing panel as *used*.
         Templates also deliberately avoid "someone", "the moment", and other
         strings that trigger ``_line_is_overly_generic``.
@@ -7209,12 +7209,12 @@ class StoryScriptService:
             if n1:
                 return (
                     "farewell",
-                    f"{n1} and the others say a final goodbye — "
+                    f"{n1} and the others say a final goodbye - "
                     f"it's probably the end of the line, and they won't be seeing each other again.",
                 )
             return (
                 "farewell",
-                "A final goodbye falls between them — "
+                "A final goodbye falls between them - "
                 "it's probably the end of the line, and they won't be seeing each other again.",
             )
 
@@ -7237,12 +7237,12 @@ class StoryScriptService:
             if n1:
                 return (
                     "warning",
-                    f"A warning stops {n1} cold — "
+                    f"A warning stops {n1} cold - "
                     f"the path ahead is heading toward death, and the danger stops being abstract.",
                 )
             return (
                 "warning",
-                "A warning cuts through — "
+                "A warning cuts through - "
                 "the path ahead is heading toward death, and the danger stops being abstract.",
             )
 
@@ -7260,37 +7260,37 @@ class StoryScriptService:
             if n1:
                 return (
                     "bequest",
-                    f"{n1} passes along belongings she won't be needing anymore — "
+                    f"{n1} passes along belongings she won't be needing anymore - "
                     f"share them with everyone else, she says, like it's already over.",
                 )
             return (
                 "bequest",
-                "She passes along belongings she won't be needing anymore — "
+                "She passes along belongings she won't be needing anymore - "
                 "share them with everyone else, she says, like it's already over.",
             )
 
         # --- Second chance / remaining hope ---
-        # Avoid "someone", "the moment" — both trigger _line_is_overly_generic.
+        # Avoid "someone", "the moment" - both trigger _line_is_overly_generic.
         if any(kw in text for kw in ("still have a chance", "one more chance", "another chance", "not over yet", "isn't over yet")):
             if n1:
                 return (
                     "second_chance",
-                    f"{n1} still has a chance — "
+                    f"{n1} still has a chance - "
                     f"that opening hasn't closed yet, and the path forward is still there.",
                 )
             return (
                 "second_chance",
-                "One last chance stays open — "
+                "One last chance stays open - "
                 "that opening hasn't closed yet, and the path forward is still there.",
             )
 
-        # --- Request / offer (check before isolation — offer is a stronger beat) ---
+        # --- Request / offer (check before isolation - offer is a stronger beat) ---
         if any(kw in text for kw in ("ride with me", "come with me", "join me", "offering you the chance", "partner up")):
             if n1:
-                return ("offer", f"{n1} extends an offer to ride together — turning a personal risk into something shared.")
+                return ("offer", f"{n1} extends an offer to ride together - turning a personal risk into something shared.")
             return (
                 "offer",
-                "An offer to ride together turns a personal risk into something shared — "
+                "An offer to ride together turns a personal risk into something shared - "
                 "one side extends it, and the other has to decide.",
             )
 
@@ -7299,12 +7299,12 @@ class StoryScriptService:
             if n1:
                 return (
                     "name_reveal",
-                    f"The name {n1} is encoded inside the numeral sequence — "
+                    f"The name {n1} is encoded inside the numeral sequence - "
                     f"each part can be read as a syllable, turning a string of numbers into a personal identity.",
                 )
             return (
                 "name_reveal",
-                "A name is hidden inside a numeral sequence — "
+                "A name is hidden inside a numeral sequence - "
                 "each part can be read as a syllable, turning numbers into a personal identity.",
             )
 
@@ -7312,7 +7312,7 @@ class StoryScriptService:
         if any(kw in text for kw in ("always been alone", "always alone", "lonely", "been alone")):
             return (
                 "isolation",
-                "An admission of loneliness surfaces — they say they've always been alone, "
+                "An admission of loneliness surfaces - they say they've always been alone, "
                 "and the confession makes connection feel less like comfort and more like survival.",
             )
 
@@ -7320,7 +7320,7 @@ class StoryScriptService:
         if any(kw in text for kw in ("in a book", "read about", "learned about", "written about", "tales of", "they have to hide", "hide and")):
             return (
                 "lore",
-                "Old knowledge surfaces from a book or memory that came before the current crisis — "
+                "Old knowledge surfaces from a book or memory that came before the current crisis - "
                 "the remembered detail turns the problem into part of a larger history.",
             )
 
@@ -7328,7 +7328,7 @@ class StoryScriptService:
         if any(kw in text for kw in ("you'll regret", "don't underestimate", "come at me", "try me", "bring it")):
             return (
                 "threat",
-                "A direct challenge cuts through before the tension can settle — "
+                "A direct challenge cuts through before the tension can settle - "
                 "the threat forces the other side to respond instead of pretending the conflict can be avoided.",
             )
 
@@ -7338,7 +7338,7 @@ class StoryScriptService:
             if question_parts and len(question_parts[0]) >= 10:
                 return (
                     "question",
-                    "A question cuts through before anyone can move — "
+                    "A question cuts through before anyone can move - "
                     "whoever answers it will be deciding what they can risk next.",
                 )
 
@@ -7404,7 +7404,7 @@ class StoryScriptService:
                 "The dialogue presses forward through uncertainty "
                 "instead of giving the characters a clean answer."
             )
-        # Default: no recognized speech act — return "" so the caller does NOT
+        # Default: no recognized speech act - return "" so the caller does NOT
         # inject this as dialogue (which would cause the polish LLM to quote it).
         return ""
 
@@ -7448,7 +7448,7 @@ class StoryScriptService:
             # When OCR has a recognized speech act, inject the mechanical paraphrase so the
             # polish pass works from a narrative template rather than franchise hallucination
             # or raw OCR quotation.  When no speech act is recognized, mechanical = "" and
-            # we CLEAR dialogue entirely — sending fragmentary OCR as dialogue causes the
+            # we CLEAR dialogue entirely - sending fragmentary OCR as dialogue causes the
             # polish LLM to quote it literally ("The conversation reveals '...'").
             draft_line = draft_lines[index] if index < len(draft_lines) else ""
             mechanical = self._mechanical_ocr_paraphrase(source_ocr) if source_ocr else ""
@@ -7595,11 +7595,11 @@ class StoryScriptService:
             candidate_start = int(candidate.panel_start or candidate.order or 0)
             overlaps_panels = bool(bucket_end and candidate_start and candidate_start <= bucket_end)
             # Guard: count panels already in bucket + candidate; never merge when
-            # the result would exceed 4 panels — enforce strict 4-panel limit.
+            # the result would exceed 4 panels - enforce strict 4-panel limit.
             bucket_panel_count = sum(len(item.panel_ids or []) for item in bucket)
             candidate_panel_count = len(candidate.panel_ids or [])
             merged_panel_count = bucket_panel_count + candidate_panel_count
-            # Only collapse near-duplicates when both are very small — if segments
+            # Only collapse near-duplicates when both are very small - if segments
             # represent genuinely different page ranges they should stay distinct
             # even when the LLM happened to generate similar text.
             near_duplicate = (

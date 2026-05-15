@@ -1,5 +1,5 @@
 """
-EdgeTTSEngine — same sentence-cache + per-panel assembly orchestration
+EdgeTTSEngine - same sentence-cache + per-panel assembly orchestration
 that KokoroTTSEngine implements, but using EdgeTTSService underneath.
 
 Why two engines: Kokoro stays as a fully-local fallback for situations
@@ -60,18 +60,41 @@ class EdgeTTSEngine:
 
         sentence_jobs = self._collect_sentence_jobs(units, voice_config)
         ordered_jobs = list(sentence_jobs.items())
-        for index, (signature, payload) in enumerate(ordered_jobs, start=1):
+
+        # Parallelize the per-sentence Edge TTS HTTP calls. They're I/O
+        # bound (~1.5-2s each round trip to Microsoft), so a small pool
+        # gives a real speedup. We cap at 4 workers because Microsoft's
+        # public endpoint gets unhappy past that - pushing higher made
+        # the WebSocket connection stall mid-batch in testing.
+        cache_workers = max(2, min(int(self.settings.narration_sentence_cache_workers or 2) * 2, 4))
+        completed_count = 0
+        completed_lock = __import__("threading").Lock()
+
+        def _prepare_one(idx_signature_payload: tuple[int, tuple[str, dict]]) -> int:
+            nonlocal completed_count
+            idx, (sig, payload) = idx_signature_payload
             if cancel_callback:
                 cancel_callback()
-            cache_path = self._sentence_cache_dir / f"{signature}.wav"
-            if progress_callback:
-                start_progress = ((index - 1) / max(len(ordered_jobs), 1)) * 38
-                progress_callback(start_progress, f"Preparing Edge narration sentence cache {index}/{len(ordered_jobs)}")
+            cache_path = self._sentence_cache_dir / f"{sig}.wav"
             if not cache_path.exists():
                 unit_voice = payload["voice_config"]
                 self._edge.synthesize_to_file(str(payload["text"]), cache_path, unit_voice)
+            with completed_lock:
+                completed_count += 1
+                done = completed_count
             if progress_callback:
-                progress_callback(index / max(len(ordered_jobs), 1) * 38, f"Prepared Edge narration sentence cache {index}/{len(ordered_jobs)}")
+                progress_callback(
+                    done / max(len(ordered_jobs), 1) * 38,
+                    f"Prepared Edge narration sentence cache {done}/{len(ordered_jobs)}",
+                )
+            return idx
+
+        if len(ordered_jobs) <= 1:
+            for item in enumerate(ordered_jobs, start=1):
+                _prepare_one(item)
+        else:
+            with ThreadPoolExecutor(max_workers=cache_workers) as executor:
+                list(executor.map(_prepare_one, enumerate(ordered_jobs, start=1)))
 
         assembly_payloads = [
             (
@@ -132,7 +155,7 @@ class EdgeTTSEngine:
         spoken_text = " ".join(str(unit.spoken_text or "").split()).strip()
         if not spoken_text:
             return []
-        # Edge TTS already does natural prosody on a full sentence — keeping
+        # Edge TTS already does natural prosody on a full sentence - keeping
         # each panel as one segment avoids artificial silences mid-narration.
         segments = [spoken_text]
         segment_voice = voice_config.model_copy(update={

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from threading import Lock
@@ -13,7 +14,7 @@ from PIL import Image
 
 from app.core.config import get_settings
 from app.schemas.project import ChapterMetadata, PanelBox
-from app.services.character_name_filters import looks_like_false_character_name
+from app.services.character_name_filters import is_valid_character_name_candidate, looks_like_false_character_name
 from app.services.character_name_service import CharacterNameService
 from app.services.llm_router import LLMRouter, LLMRouterError
 from app.services.ocr_cleaner import clean_ocr_text
@@ -305,15 +306,27 @@ class CharacterClusterer:
     ) -> str:
         dialogue_text = " ".join(str(line).strip() for line in cluster.get("dialogues", []) if str(line).strip())
         if dialogue_text:
-            extracted = self._name_service.extract_names(dialogue_text)
+            extracted = []
+            for line in cluster.get("dialogues", []) or []:
+                extracted.extend(self._extract_self_identified_names(str(line or "")))
             if extracted:
                 return extracted[0]
-            found = self._name_service.character_names_in_text(dialogue_text, character_dictionary)
-            if found:
-                return found[0]
         if protagonist_name and str(cluster.get("role_hint") or "") == "Protagonist":
             return protagonist_name
         return ""
+
+    def _extract_self_identified_names(self, text: str) -> list[str]:
+        found: list[str] = []
+        for pattern in (
+            r"(?i)\bmy name is\s+([a-z][a-z-]+(?:\s+[a-z][a-z-]+){0,2})\b",
+            r"(?i)\bi(?:'m| am)\s+([a-z][a-z-]+(?:\s+[a-z][a-z-]+){0,2})\b",
+            r"(?i)\bthis is\s+([a-z][a-z-]+(?:\s+[a-z][a-z-]+){0,2})\b",
+        ):
+            for match in re.finditer(pattern, clean_ocr_text(text)):
+                for candidate in self._name_service.extract_names(match.group(1)):
+                    if is_valid_character_name_candidate(candidate):
+                        found.append(candidate)
+        return list(dict.fromkeys(found))
 
     def _sanitize_name(
         self,
@@ -332,7 +345,7 @@ class CharacterClusterer:
             return protagonist_name
         if lowered.startswith("speaker ") or lowered.startswith("character "):
             return self._fallback_cluster_name(cluster, protagonist_name, Counter(), ordinal=ordinal)
-        if looks_like_false_character_name(cleaned):
+        if looks_like_false_character_name(cleaned) or not is_valid_character_name_candidate(cleaned):
             return self._fallback_cluster_name(cluster, protagonist_name, Counter(), ordinal=ordinal)
         return " ".join(token.capitalize() for token in cleaned.split())
 

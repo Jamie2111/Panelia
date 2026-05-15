@@ -52,7 +52,7 @@ def _mark_skipped_legacy_stages(store: ProjectStore, project_id: str) -> None:
             stage,
             StageStatus.COMPLETED,
             progress=100,
-            message="Skipped — not used by the vision pipeline.",
+            message="Skipped - not used by the vision pipeline.",
         )
 
 
@@ -94,7 +94,7 @@ def continue_auto_run_pipeline(
                 PipelineStage.PANEL_REVIEW,
                 StageStatus.NEEDS_REVIEW,
                 progress=100,
-                message="Auto-run paused — detected panels need a quick human review before scripting.",
+                message="Auto-run paused - detected panels need a quick human review before scripting.",
             )
             return False
 
@@ -125,7 +125,7 @@ def continue_auto_run_pipeline(
             )
             return True
 
-        # Legacy path — keep prior behaviour.
+        # Legacy path - keep prior behaviour.
         if review_state is not None:
             store.update_stage_state(
                 project_id,

@@ -1,7 +1,7 @@
 """Script polishing service.
 
 DEPRECATED (see app/services/DEPRECATED.md). New code should not import
-ScriptPolisher. Use PanelVisionNarrator instead — it produces panel-grounded
+ScriptPolisher. Use PanelVisionNarrator instead - it produces panel-grounded
 narrations on the first pass, so a polish cascade is no longer needed.
 
 Post-processes draft narration for cohesion and quality.
@@ -69,7 +69,7 @@ _VISUAL_PATTERNS = [
     re.compile(r"\bspeech bubble\b|\btext bubble\b", re.IGNORECASE),
     re.compile(r"^(a|an|the)\s+(young|old|tall|short)?\s*(man|woman|boy|girl|person|figure|character)\s+(stands?|sits?|is\s+standing|is\s+sitting)", re.IGNORECASE),
     re.compile(r"\b(close-up|wide shot|panel shows|scene depicts|frame captures)\b", re.IGNORECASE),
-    # Generic "A [adjective] [person] with [physical description]" — visual, not a story event
+    # Generic "A [adjective] [person] with [physical description]" - visual, not a story event
     re.compile(r"^(a|an|the)\s+\w+\s+(man|woman|boy|girl|person|figure)\s+(with|in|wearing|holding|sitting|standing)\b", re.IGNORECASE),
 ]
 
@@ -516,7 +516,7 @@ class ScriptPolisher:
                     if aliases:
                         parts.append(f"(also: {', '.join(aliases)})")
                     if role:
-                        parts.append(f"— {role}")
+                        parts.append(f"- {role}")
                     if appearance:
                         parts.append(f"[appearance: {appearance}]")
                     entries.append(" ".join(parts))
@@ -540,7 +540,7 @@ class ScriptPolisher:
             .replace("{chapter_metadata}", json.dumps(metadata_payload or {}, ensure_ascii=False) or "{}")
             .replace("{character_dictionary}", char_block or "(none)")
             .replace("{chapter_summary}", summary or "(none)")
-            .replace("{locked_examples}", locked_examples or "(none — this is a fresh run)")
+            .replace("{locked_examples}", locked_examples or "(none - this is a fresh run)")
             .replace("{draft_script}", numbered_draft)
         )
 
@@ -782,17 +782,17 @@ class ScriptPolisher:
             line = self._replace_machine_placeholders(line)
 
             # Blank sentences that end abruptly on an honorific ("Zhang Yi meets with Mr.")
-            # — these are truncated scene-summary copies where the LLM stopped mid-sentence.
+            # - these are truncated scene-summary copies where the LLM stopped mid-sentence.
             if line and re.search(r"\b(?:Mr|Mrs|Ms|Dr|Sr|Jr)\.\s*$", line):
                 line = ""
 
-            # Blank exact duplicates — same normalized text already seen earlier.
+            # Blank exact duplicates - same normalized text already seen earlier.
             if line:
                 norm_key = re.sub(r"\s+", " ", line.casefold()).strip()
                 if norm_key in seen_normalized:
                     line = ""
 
-            # Blank near-duplicates — ≥80% keyword overlap with any of the last 5 lines.
+            # Blank near-duplicates - ≥80% keyword overlap with any of the last 5 lines.
             # This catches "Zhang Yi begins his preparations" vs
             # "Zhang Yi starts preparing for the apocalypse" that exact-dup misses.
             if line:
@@ -1272,7 +1272,7 @@ class ScriptPolisher:
                 if pattern.match(stripped):
                     return True
 
-        # Very short lines (≤3 words) ending with period — almost certainly a fragment
+        # Very short lines (≤3 words) ending with period - almost certainly a fragment
         words = stripped.split()
         if len(words) <= 3 and stripped.endswith("."):
             return True
@@ -1325,7 +1325,7 @@ class ScriptPolisher:
                 flags=re.IGNORECASE,
             ):
                 # Allow sentences where a real subject-complement is clearly
-                # present, e.g. "Her eyes narrow and she nods." — checked by
+                # present, e.g. "Her eyes narrow and she nods." - checked by
                 # looking for at least 5 tokens AND a content verb before the
                 # linking verb. For narration we're strict: these are almost
                 # always OCR fragments.

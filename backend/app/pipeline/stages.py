@@ -467,7 +467,7 @@ def run_panel_detection(context: PipelineContext) -> None:
         write_json(store._project_dir(context.project_id) / "output" / "page_ocr_boxes.json", page_text_boxes)
     context.progress(96, "Saving detected panels")
 
-    # Preserve pages the user has manually reviewed — their corrections override fresh detections
+    # Preserve pages the user has manually reviewed - their corrections override fresh detections
     existing_panels = store.load_panels(context.project_id) or []
     locked_pages = {int(p.page) for p in existing_panels if p.detection_locked}
     if locked_pages:
@@ -1406,7 +1406,7 @@ def _run_script_generation_vision(
     script_manifest.json + mirrors to panels.json + script.json + script.txt.
 
     No polish/repair cascade. Panels that fail are flagged for in-place
-    regeneration in the UI — they are never silently filled with garbage.
+    regeneration in the UI - they are never silently filled with garbage.
     """
     import asyncio
     import json as _json
@@ -1478,7 +1478,7 @@ def _run_script_generation_vision(
         project_dir, panel_inputs, batch.results, panels_json
     )
 
-    # Post-write consistency check — catches any panels↔script drift before
+    # Post-write consistency check - catches any panels↔script drift before
     # we hand off to TTS. Failing fast here beats discovering a desync after
     # audio has been generated.
     try:
@@ -1894,7 +1894,7 @@ def run_script_generation(context: PipelineContext) -> None:
     # If a panel_vision_final.json exists from a prior portrait + vision
     # extraction run, load it now so story script generation gets rich
     # per-panel evidence (action_beat, dialogue, caption, visual_cues).
-    # This runs non-fatally — if the file is missing or corrupt, panel
+    # This runs non-fatally - if the file is missing or corrupt, panel
     # mode falls back to OCR-only evidence without crashing.
     vision_final_path = project_dir / "output" / "panel_vision_final.json"
     canonical_path = project_dir / "output" / "canonical_characters.json"
@@ -2331,7 +2331,7 @@ def run_narration_generation(context: PipelineContext) -> None:
     # The legacy ScriptQualityService gate was tuned for the old multi-pass
     # cascade; it false-positives heavily on vision-narrator output (which
     # writes panel-specific descriptions the gate flags as "caption-like").
-    # Bypass it entirely for vision-mode projects — content quality is
+    # Bypass it entirely for vision-mode projects - content quality is
     # already enforced by PanelVisionNarrator's per-panel post-process.
     pipeline_version = (
         getattr(project.pipeline_config, "script_pipeline_version", "legacy") or "legacy"
@@ -2428,14 +2428,14 @@ def run_youtube_bundle(context: PipelineContext) -> None:
 
     panels_path = project_dir / "panels.json"
     if not panels_path.exists():
-        raise RuntimeError("panels.json is missing — cannot pick a thumbnail.")
+        raise RuntimeError("panels.json is missing - cannot pick a thumbnail.")
     panels_json = _json.loads(panels_path.read_text(encoding="utf-8"))
     if not any(p.get("keep") for p in panels_json):
-        raise RuntimeError("No kept panels — nothing to thumbnail.")
+        raise RuntimeError("No kept panels - nothing to thumbnail.")
 
     script_lines = list(project.script_lines or store.load_script(context.project_id))
     if not script_lines:
-        raise RuntimeError("No script is available — generate a script first.")
+        raise RuntimeError("No script is available - generate a script first.")
 
     context.start("Generating your YouTube bundle")
 

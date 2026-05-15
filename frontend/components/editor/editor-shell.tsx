@@ -5,7 +5,7 @@ import { ArrowLeft, PenSquare } from "lucide-react";
 import { ProjectTabs } from "@/components/project/project-tabs";
 
 /**
- * EditorShell — full-bleed wrapper for the panel/timeline editing screens.
+ * EditorShell - full-bleed wrapper for the panel/timeline editing screens.
  * Keeps the icon rail + project tabs anchored while inner content scrolls.
  */
 export function EditorShell({

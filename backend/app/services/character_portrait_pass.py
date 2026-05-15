@@ -134,7 +134,7 @@ class CharacterPortraitPass:
 
         # Second pass: cache misses, parallel. Each worker calls
         # ``_enumerate_pages_with_split`` which internally uses ``asyncio.run``
-        # — that creates a fresh event loop per call so threads are safe.
+        # - that creates a fresh event loop per call so threads are safe.
         completed = 0
 
         def _process_miss(idx: int) -> tuple[int, dict[str, Any]]:
@@ -771,7 +771,7 @@ class CharacterPortraitPass:
              narration layer can filter it out while still keeping it in
              ``canonical_characters.json`` as an audit trail.
 
-        Named canonicals are left untouched — this only promotes/absorbs
+        Named canonicals are left untouched - this only promotes/absorbs
         placeholder orphans.
         """
         if not items:
@@ -806,7 +806,7 @@ class CharacterPortraitPass:
                 if not (gender_overlap or hair_overlap):
                     continue
                 visual = self._visual_similarity(named_item, placeholder)
-                # Gate — need at least a modest appearance overlap or a gender+hair
+                # Gate - need at least a modest appearance overlap or a gender+hair
                 # match before we absorb, so distinct people don't collapse.
                 if visual < 0.2 and not (gender_overlap and hair_overlap):
                     continue
@@ -820,7 +820,7 @@ class CharacterPortraitPass:
             if best_index is not None:
                 result[best_index] = self._merge_character(result[best_index], placeholder)
                 continue
-            # No named match — keep the placeholder but demote it so the
+            # No named match - keep the placeholder but demote it so the
             # narration layer knows to skip it.
             demoted = dict(placeholder)
             demoted["role"] = "cameo"
@@ -837,13 +837,13 @@ class CharacterPortraitPass:
         wrong canonical (e.g. "Unknown man with curly hair" absorbed under a
         female canonical named "Fang Yu Qing"). Our appearance-conflict check
         can only catch these when the pre-consolidation entries arrive as
-        separate canonicals — by the time they're already aliases, we need to
+        separate canonicals - by the time they're already aliases, we need to
         re-check each one and drop the bad ones.
 
         An alias is "bad" if the gender/hair markers extracted from its own
         text disagree with the canonical's own markers (e.g. "Unknown man..."
         alias on a canonical whose description says "woman"). We only prune
-        placeholder-style aliases — real-name aliases ("Mr. Zhang", "Tio",
+        placeholder-style aliases - real-name aliases ("Mr. Zhang", "Tio",
         "Ning Ning") are left alone even if their text happens to share a
         gender token.
         """
@@ -856,15 +856,15 @@ class CharacterPortraitPass:
             if not aliases:
                 cleaned.append(current)
                 continue
-            # Use only the canonical's own name + visual_description — not
-            # its aliases — so a wrongly-absorbed alias can't justify itself.
+            # Use only the canonical's own name + visual_description - not
+            # its aliases - so a wrongly-absorbed alias can't justify itself.
             canonical_traits = self._appearance_traits(current, include_aliases=False)
             kept_aliases: list[str] = []
             for alias in aliases:
                 alias_str = str(alias).strip()
                 if not alias_str:
                     continue
-                # Only audit placeholder-style aliases — a real-name alias
+                # Only audit placeholder-style aliases - a real-name alias
                 # (e.g. "Mr. Zhang", "Tio", "Ning Ning") should stick even if
                 # we can't verify its gender.
                 if not self._is_placeholder_name(alias_str):

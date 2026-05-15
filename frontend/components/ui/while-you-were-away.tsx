@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * WhileYouWereAway — proactive "what changed" callout.
+ * WhileYouWereAway - proactive "what changed" callout.
  *
  * The fix for the most common UX failure I observed: the user closes
  * the browser tab while a long stage is running, comes back, and has
@@ -15,8 +15,8 @@
  * either way so the banner only fires when something actually new
  * happened.
  *
- * It is intentionally subtle — a one-line glass banner with a single
- * action — not a modal. The goal is awareness, not interruption.
+ * It is intentionally subtle - a one-line glass banner with a single
+ * action - not a modal. The goal is awareness, not interruption.
  */
 
 import * as React from "react";
@@ -29,9 +29,9 @@ import type {
 import { shortStageLabel } from "@/lib/pipeline-messages";
 
 interface Snapshot {
-  /** Map of stage → "status@updated_at" — small string we can diff cheaply. */
+  /** Map of stage → "status@updated_at" - small string we can diff cheaply. */
   states: Partial<Record<PipelineStage, string>>;
-  /** Map of stage → progress (0–100) at last view. */
+  /** Map of stage → progress (0-100) at last view. */
   progress: Partial<Record<PipelineStage, number>>;
   /** Timestamp of the snapshot. */
   savedAt: number;
@@ -149,7 +149,7 @@ export function WhileYouWereAway({
     if (!project?.stage_states) return;
     const fresh = buildSnapshot(project.stage_states as Record<PipelineStage, StageState>);
     // Only overwrite the snapshot when we've actually rendered (or
-    // dismissed) the banner — otherwise we'd clobber unread changes
+    // dismissed) the banner - otherwise we'd clobber unread changes
     // mid-render.
     if (dismissed) {
       saveSnapshot(project.id, fresh);

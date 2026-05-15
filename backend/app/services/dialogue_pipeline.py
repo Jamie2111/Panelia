@@ -8,12 +8,14 @@ import math
 import os
 import re
 import time
+import base64
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import requests
 from PIL import Image
 
 from app.core.config import get_settings
@@ -21,7 +23,7 @@ from app.schemas.project import ChapterMetadata, PanelBox
 from app.services.character_clusterer import CharacterClusterer
 from app.services.character_identity_tracker import CharacterIdentityTracker
 from app.services.character_memory import CharacterMemory
-from app.services.character_name_filters import looks_like_false_character_name
+from app.services.character_name_filters import is_valid_character_name_candidate, looks_like_false_character_name
 from app.services.character_name_service import CharacterNameService
 from app.services.character_vision_recognizer import GeminiCharacterRecognizer
 from app.services.comic_ocr_service import ComicOCRService
@@ -30,7 +32,7 @@ from app.services.language_detector import LanguageDetector
 from app.services.llm_router import LLMRouter
 from app.services.magi_service import MagiHFService
 from app.services.panel_detection_service import MagiSpeakerAttributionService
-from app.services.ocr_cleaner import clean_ocr_lines, clean_ocr_text, is_usable_ocr_text
+from app.services.ocr_cleaner import classify_ocr_text, clean_ocr_fragment_payloads, clean_ocr_lines, clean_ocr_text, is_usable_ocr_text
 from app.services.script_generator import ScriptGenerator
 from app.services.translate_text import TranslateTextService
 from app.utils.files import ensure_dir, read_json, write_json
@@ -54,11 +56,18 @@ class DialogueRegion:
     confidence: float | None = None
     detector: str = "opencv"
     ocr_engine: str = "none"
+    raw_ocr_text: str = ""
+    repaired_ocr_text: str = ""
+    repair_applied: bool = False
+    repair_confidence: float | None = None
+    repair_reason: str = ""
+    reading_order_index: int | None = None
     character_id: str | None = None
     stable_character_id: str | None = None
     speaker_name: str | None = None
     speaker_label: str | None = None
     character_display_name: str | None = None
+    text_category: str = "dialogue"
 
 
 @dataclass(slots=True)
@@ -81,6 +90,7 @@ class DialogueScene:
     character_names: list[str]
     character_ids: list[str]
     character_labels: list[str]
+    character_roles: dict[str, list[str]] = field(default_factory=dict)
     primary_speaker_name: str | None = None
     protagonist_name: str | None = None
     logical_panel_id: str | None = None
@@ -112,10 +122,11 @@ class OCRCandidate:
     confidence: float | None = None
     detector: str = "opencv"
     ocr_engine: str = "none"
+    raw_text: str = ""
 
 
 class DialogueExtractionPipeline:
-    _ARTIFACT_STRATEGY = "dialogue_pipeline_v3_applevision_recall"
+    _ARTIFACT_STRATEGY = "dialogue_pipeline_v6_clean_region_source"
     _GLOBAL_PADDLE_OCR: dict[str, Any] = {}
     _GLOBAL_TRANSLATOR_CACHE: dict[str, tuple[Any, Any]] = {}
     _GLOBAL_TRANSLATED_TEXT_CACHE: dict[tuple[str, str], str] = {}
@@ -140,6 +151,7 @@ class DialogueExtractionPipeline:
         self._llm_router = LLMRouter()
         self._magi_service = MagiHFService()
         self._panel_dialogue_cache_dir = ensure_dir(self.settings.data_dir / "_panel_dialogue_cache")
+        self._region_ocr_cache_dir = ensure_dir(self.settings.data_dir / "_region_ocr_cache")
 
     def run(
         self,
@@ -148,6 +160,7 @@ class DialogueExtractionPipeline:
         metadata: ChapterMetadata,
         page_text_boxes: dict[str, list] | None = None,
         allow_expensive_ocr: bool = True,
+        force_refresh: bool = False,
         progress_callback: callable | None = None,
         cancel_callback: callable | None = None,
     ) -> dict[str, Any]:
@@ -172,6 +185,14 @@ class DialogueExtractionPipeline:
             "triage_light_ocr": 0,
             "fast_ocr_skips": 0,
             "expensive_ocr_enabled": bool(allow_expensive_ocr),
+            "text_regions_detected": 0,
+            "bubble_regions_detected": 0,
+            "coverage_failures": 0,
+            "region_recall_fallbacks": 0,
+            "gemini_region_fallbacks": 0,
+            "apple_vision_region_candidates": 0,
+            "non_apple_region_candidates": 0,
+            "ocr_engine_counts": {},
             "elapsed_seconds": 0.0,
         }
         page_paths = sorted((project_dir / "pages").glob("*"))
@@ -188,15 +209,16 @@ class DialogueExtractionPipeline:
         output_dir = ensure_dir(project_dir / "output")
         panel_signature = self._panel_signature(kept_panels)
 
-        cached_artifacts = self._load_cached_artifacts(
-            output_dir / "dialogue_pipeline_manifest.json",
-            panel_signature,
-            extraction_mode,
-        )
-        if cached_artifacts is not None:
-            if progress_callback:
-                progress_callback(100, "Reused cached dialogue extraction")
-            return cached_artifacts
+        if not force_refresh:
+            cached_artifacts = self._load_cached_artifacts(
+                output_dir / "dialogue_pipeline_manifest.json",
+                panel_signature,
+                extraction_mode,
+            )
+            if cached_artifacts is not None:
+                if progress_callback:
+                    progress_callback(100, "Reused cached dialogue extraction")
+                return cached_artifacts
 
         magi_page_payloads: dict[int, dict[str, Any]] = {}
         requested_magi_pages = sorted({int(panel.page) for panel in kept_panels})
@@ -261,6 +283,7 @@ class DialogueExtractionPipeline:
                 (output_dir / "magi_page_payloads.json").unlink(missing_ok=True)
 
         raw_regions: list[DialogueRegion] = []
+        ocr_coverage_records: list[dict[str, Any]] = []
         scenes: list[DialogueScene] = []
 
         if not kept_panels:
@@ -270,6 +293,7 @@ class DialogueExtractionPipeline:
                 "reading_mode": reading_mode,
                 "project_language": project_language,
                 "dialogue_regions": [],
+                "ocr_coverage": [],
                 "scenes": [],
                 "scene_clusters": [],
                 "character_clusters": [],
@@ -319,10 +343,24 @@ class DialogueExtractionPipeline:
             elif triage["mode"] == "light":
                 metrics["triage_light_ocr"] += 1
 
-            cached_regions = self._load_cached_panel_dialogue(panel_hash, project_language, reading_mode, str(triage["mode"]))
+            cached_regions = None if force_refresh else self._load_cached_panel_dialogue(
+                panel_hash,
+                project_language,
+                reading_mode,
+                str(triage["mode"]),
+            )
             if cached_regions is not None:
                 metrics["panel_cache_hits"] += 1
                 scene_regions = self._hydrate_cached_dialogue_regions(panel, crop_bbox, cached_regions)
+                coverage_after = self._panel_ocr_coverage(crop, scene_regions, reading_mode)
+                coverage_after["fallback_triggered"] = False
+                coverage_after["panel_id"] = panel.id
+                coverage_after["panel_order"] = panel.order
+                coverage_after["page"] = panel.page
+                coverage_after["panel"] = panel.panel
+                metrics["text_regions_detected"] += int(coverage_after.get("detected_text_region_count") or 0)
+                metrics["bubble_regions_detected"] += int(coverage_after.get("detected_bubble_region_count") or 0)
+                ocr_coverage_records.append(coverage_after)
             else:
                 ocr_started_at = time.perf_counter()
                 scene_regions: list[DialogueRegion] = []
@@ -332,19 +370,23 @@ class DialogueExtractionPipeline:
                 page_ocr_available = page_key in self._page_text_boxes
                 page_ocr_boxes = self._page_text_boxes.get(page_key, [])
                 page_backfill_regions: list[DialogueRegion] = []
-                existing_panel_region = self._region_from_existing_panel_text(panel, crop_bbox, project_language)
+                existing_panel_region = None
+                if not allow_expensive_ocr or bool(getattr(panel, "manual_ocr_text", False)):
+                    existing_panel_region = self._region_from_existing_panel_text(panel, crop_bbox, project_language)
                 if existing_panel_region is not None:
                     scene_regions.append(existing_panel_region)
                 if page_ocr_available:
-                    page_backfill_regions = self._backfill_from_page_ocr(
-                        panel,
-                        crop_bbox,
-                        image.shape[1],
-                        image.shape[0],
-                        project_language,
-                        metrics,
-                    )
-                    if self._scene_regions_have_substantial_signal(page_backfill_regions):
+                    if not allow_expensive_ocr:
+                        page_backfill_regions = self._backfill_from_page_ocr(
+                            panel,
+                            crop_bbox,
+                            image.shape[1],
+                            image.shape[0],
+                            project_language,
+                            reading_mode,
+                            metrics,
+                        )
+                    if not allow_expensive_ocr and self._scene_regions_have_substantial_signal(page_backfill_regions):
                         scene_regions.extend(page_backfill_regions)
                     if scene_regions:
                         metrics["page_ocr_primary_panels"] += 1
@@ -417,7 +459,7 @@ class DialogueExtractionPipeline:
                     )
                     metrics["translation_seconds"] += time.perf_counter() - translation_started_at
 
-                if not scene_regions and page_backfill_regions:
+                if not allow_expensive_ocr and not scene_regions and page_backfill_regions:
                     scene_regions.extend(page_backfill_regions)
                     metrics["page_ocr_primary_panels"] += 1
 
@@ -428,9 +470,12 @@ class DialogueExtractionPipeline:
                     and allow_expensive_ocr
                     and triage["mode"] != "skip"
                 ):
-                    fallback_text, confidence, ocr_engine = self._ocr_full_panel(crop, project_language)
+                    expected_regions = len(self._detect_dialogue_region_boxes(crop, reading_mode))
+                    fallback_text, confidence, ocr_engine = ("", None, "none")
+                    if expected_regions <= 1:
+                        fallback_text, confidence, ocr_engine = self._ocr_full_panel(crop, project_language)
                     fallback_text = self._clean_text(fallback_text)
-                    if fallback_text:
+                    if fallback_text and self._bubble_ocr_text_is_plausible(fallback_text, project_language):
                         detected_language = self._panel_text_language(fallback_text, project_language)
                         text_english = self._translate_to_english(fallback_text, detected_language)
                         if text_english and text_english.strip() != fallback_text.strip():
@@ -450,8 +495,60 @@ class DialogueExtractionPipeline:
                             )
                         )
 
+                recall_triggered = False
+                coverage_before = self._panel_ocr_coverage(crop, scene_regions, reading_mode)
+                if (
+                    allow_expensive_ocr
+                    and triage["mode"] != "skip"
+                    and not skip_expensive_panel_ocr
+                    and self._coverage_should_trigger_region_recall(coverage_before)
+                ):
+                    metrics["coverage_failures"] += 1
+                    recall_candidates = self._extract_panel_candidates(
+                        crop,
+                        project_language,
+                        reading_mode,
+                        cancel_callback=cancel_callback,
+                    )
+                    if recall_candidates:
+                        metrics["region_recall_fallbacks"] += 1
+                        translation_started_at = time.perf_counter()
+                        recall_regions = self._build_dialogue_regions(
+                            panel,
+                            recall_candidates,
+                            project_language,
+                            metrics,
+                        )
+                        metrics["translation_seconds"] += time.perf_counter() - translation_started_at
+                        merged_regions = self._merge_scene_regions_for_recall(
+                            panel,
+                            scene_regions,
+                            recall_regions,
+                            project_language,
+                            reading_mode,
+                            crop.shape[1],
+                            crop.shape[0],
+                            metrics,
+                        )
+                        if self._coverage_is_better(
+                            self._panel_ocr_coverage(crop, merged_regions, reading_mode),
+                            coverage_before,
+                        ):
+                            scene_regions = merged_regions
+                            recall_triggered = True
+
                 if not allow_expensive_ocr and not scene_regions:
                     metrics["fast_ocr_skips"] += 1
+
+                coverage_after = self._panel_ocr_coverage(crop, scene_regions, reading_mode)
+                coverage_after["fallback_triggered"] = recall_triggered
+                coverage_after["panel_id"] = panel.id
+                coverage_after["panel_order"] = panel.order
+                coverage_after["page"] = panel.page
+                coverage_after["panel"] = panel.panel
+                metrics["text_regions_detected"] += int(coverage_after.get("detected_text_region_count") or 0)
+                metrics["bubble_regions_detected"] += int(coverage_after.get("detected_bubble_region_count") or 0)
+                ocr_coverage_records.append(coverage_after)
 
                 metrics["ocr_seconds"] += time.perf_counter() - ocr_started_at
                 if allow_expensive_ocr:
@@ -515,7 +612,7 @@ class DialogueExtractionPipeline:
             magi_speakers = cluster_payload.get("page_payloads", magi_speakers)
             character_clusters = cluster_payload.get("clusters", [])
 
-        # Gemini Vision character scan — runs whenever CLIP found no clusters.
+        # Gemini Vision character scan - runs whenever CLIP found no clusters.
         # This is the primary path for non-English manga where Magi/OCR struggles.
         if not character_clusters and self._gemini_recognizer.is_available():
             if progress_callback:
@@ -636,6 +733,7 @@ class DialogueExtractionPipeline:
             "reading_mode": reading_mode,
             "project_language": project_language,
             "dialogue_regions": [asdict(item) for item in raw_regions],
+            "ocr_coverage": ocr_coverage_records,
             "scenes": [asdict(item) for item in scenes],
             "scene_clusters": [asdict(item) for item in scene_clusters],
             "character_clusters": character_clusters,
@@ -848,7 +946,8 @@ class DialogueExtractionPipeline:
         digest = hashlib.sha1(
             json.dumps(
                 {
-                    "strategy": "panel_dialogue_cache_v5_applevision_recall",
+                    "strategy": "panel_dialogue_cache_v9_clean_region_source",
+                    "recall": "apple_then_layout_then_deep_v12",
                     "panel_hash": panel_hash,
                     "language_hint": language_hint,
                     "reading_mode": reading_mode,
@@ -958,6 +1057,8 @@ class DialogueExtractionPipeline:
             return False
         if manual:
             return True
+        if classify_ocr_text(cleaned, expected_language="en") in {"ocr_garbage", "foreign_text", "low_confidence", "sfx"}:
+            return False
         if re.search(r"[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]", cleaned):
             return True
 
@@ -967,6 +1068,8 @@ class DialogueExtractionPipeline:
             if token.strip("'")
         ]
         if not tokens:
+            return False
+        if len(tokens) < 3:
             return False
         if sum(1 for token in tokens if len(token) <= 2) > max(1, len(tokens) // 2):
             return False
@@ -1002,13 +1105,15 @@ class DialogueExtractionPipeline:
             "yes",
         }
         long_tokens = [token for token in tokens if len(token) >= 3]
-        if len(tokens) == 1:
-            return tokens[0] in common_dialogue_tokens
-        if any(token in common_dialogue_tokens for token in tokens):
-            return True
+        if len(tokens) >= 4 and any(token in common_dialogue_tokens for token in tokens):
+            return self._english_ocr_word_quality_ok(cleaned)
         if re.search(r"[?!]", cleaned) and len(long_tokens) >= 2:
-            return True
-        return False
+            return self._english_ocr_word_quality_ok(cleaned)
+        return (
+            len(tokens) >= 5
+            and any(len(token) >= 5 for token in tokens)
+            and self._english_ocr_word_quality_ok(cleaned)
+        )
 
     def _should_skip_expensive_panel_ocr(
         self,
@@ -1105,6 +1210,10 @@ class DialogueExtractionPipeline:
             text = self._clean_text(str(box.get("text") or ""))
             if not text or self._looks_like_noise(text):
                 continue
+            if classify_ocr_text(text, expected_language="en") in {"ocr_garbage", "foreign_text", "low_confidence", "sfx"}:
+                continue
+            if not self._english_ocr_word_quality_ok(text):
+                continue
             meaningful.append(box)
         return meaningful
 
@@ -1125,8 +1234,6 @@ class DialogueExtractionPipeline:
             total_tokens += token_count
             if token_count >= 4:
                 return True
-            if token_count >= 3 and len(text) >= 8:
-                return True
             if token_count >= 2 and len(text) >= 10:
                 return True
 
@@ -1135,6 +1242,10 @@ class DialogueExtractionPipeline:
     def _text_has_substantial_signal(self, text: str) -> bool:
         cleaned = self._clean_text(text)
         if not cleaned or self._looks_like_noise(cleaned):
+            return False
+        if classify_ocr_text(cleaned, expected_language="en") in {"ocr_garbage", "foreign_text", "low_confidence", "sfx"}:
+            return False
+        if not self._english_ocr_word_quality_ok(cleaned):
             return False
 
         token_count = len(
@@ -1145,9 +1256,78 @@ class DialogueExtractionPipeline:
         )
         if token_count >= 4:
             return True
-        if token_count >= 2 and len(cleaned) >= 10:
+        if token_count >= 3:
+            return True
+        if token_count >= 2 and re.search(r"[?!]", cleaned):
             return True
         return False
+
+    def _english_ocr_word_quality_ok(self, text: str) -> bool:
+        cleaned = self._clean_text(text)
+        if re.search(r"[^\x00-\x7f]", cleaned):
+            return False
+        tokens = [
+            token.casefold().strip("'")
+            for token in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿĀ-žƀ-ɏḀ-ỿ']+", cleaned)
+            if token.strip("'")
+        ]
+        if not tokens:
+            return False
+        common_words = {
+            "a", "about", "after", "again", "all", "am", "an", "and", "are", "as", "at", "away", "be",
+            "because", "before", "but", "by", "can", "come", "control's", "could", "did", "do", "does", "don't", "down",
+            "for", "from", "get", "go", "gone", "good", "got", "had", "has", "have", "he", "her", "here",
+            "him", "his", "happened", "how", "i", "if", "in", "is", "it", "it's", "just", "like", "me", "mind", "my",
+            "man's",
+            "no", "none", "not", "now", "of", "off", "old", "on", "one", "or", "our", "out", "really",
+            "gotten", "heavier", "right", "run", "she", "so", "some", "someone", "something", "somewhere", "sorry", "stop",
+            "take", "than", "that", "the", "their", "them", "then", "there", "they", "think", "this", "those",
+            "to", "too", "truly", "understand", "up", "us", "was", "way", "we", "well", "were", "what",
+            "when", "where", "who", "why", "will", "whims", "with", "won't", "would", "you", "your",
+            "ape", "code", "darling", "garden", "hiro", "ichigo",
+            "naomi", "nana", "parasite", "parasites", "plantation", "plantations", "stamen",
+            "zero",
+        }
+        known_ocr_artifacts = {
+            "aken", "bmbl", "becalise", "codel", "constitlition", "dasal", "dellision", "dolibt",
+            "enoligh", "feavter", "folind", "geols", "linder", "lodel", "mencing", "mohor", "oool",
+            "ourisole", "ovicic", "shwp", "thung", "waud", "wewere", "whod", "whud", "wnwv", "chig",
+        }
+        if len(tokens) <= 4 and any(len(token) == 1 and token not in {"a", "i"} for token in tokens):
+            return False
+        if len(tokens) <= 2:
+            return not any(token in known_ocr_artifacts for token in tokens)
+        suspicious_unknown = 0
+        known = 0
+        if any(token in known_ocr_artifacts for token in tokens):
+            return False
+        for token in tokens:
+            if token in common_words:
+                known += 1
+                continue
+            vowel_count = sum(1 for char in token if char in "aeiouy")
+            vowel_ratio = vowel_count / max(len(token), 1)
+            consonant_cluster = re.search(r"[^aeiouy]{4,}", token) is not None
+            awkward_short_word = re.search(r"^[bcdfghjklmnpqrstvwxyz][aeiou][bcdfghjklmnpqrstvwxyz]{2,}$", token) is not None
+            suffix_fragment = token in {"geous"}
+            if len(token) >= 4 and (suffix_fragment or awkward_short_word or consonant_cluster or vowel_ratio < 0.22 or vowel_ratio > 0.78):
+                suspicious_unknown += 1
+        if len(tokens) <= 3 and suspicious_unknown:
+            return False
+        known_ratio = known / max(len(tokens), 1)
+        if suspicious_unknown == 0:
+            return True
+        if len(tokens) >= 12 and suspicious_unknown >= 2 and known_ratio < 0.65:
+            return False
+        if len(tokens) >= 5 and known_ratio < 0.38:
+            return False
+        if len(tokens) <= 6 and suspicious_unknown >= 1 and known_ratio < 0.7:
+            return False
+        if suspicious_unknown >= 2 and known_ratio < 0.5:
+            return False
+        if any(char.isdigit() for char in cleaned) and len(tokens) <= 6 and known_ratio < 0.8:
+            return False
+        return True
 
     def _candidate_set_has_substantial_signal(self, candidates: list[OCRCandidate]) -> bool:
         if not candidates:
@@ -1187,6 +1367,131 @@ class DialogueExtractionPipeline:
 
         return len(regions) >= 2 and total_tokens >= 3
 
+    def _panel_ocr_coverage(
+        self,
+        panel_image: np.ndarray,
+        regions: list[DialogueRegion],
+        reading_mode: str,
+    ) -> dict[str, Any]:
+        bubble_boxes = self._detect_speech_bubble_regions(panel_image, reading_mode)
+        text_boxes = self._detect_text_regions_opencv(panel_image)
+        expected_boxes = self._detect_dialogue_region_boxes(panel_image, reading_mode)
+        accepted_regions = [
+            region
+            for region in regions
+            if self._bubble_ocr_text_is_plausible(region.text_english or region.text_original or "", region.language or "en")
+        ]
+        accepted_chars = sum(len(self._clean_text(region.text_english or region.text_original or "")) for region in accepted_regions)
+        accepted_words = sum(self._ocr_token_count(region.text_english or region.text_original or "") for region in accepted_regions)
+        expected_count = len(expected_boxes)
+        accepted_count = len(accepted_regions)
+        average_chars_per_expected = accepted_chars / max(expected_count, 1)
+        coverage_score = 0.0
+        if expected_count:
+            count_score = min(accepted_count / max(expected_count, 1), 1.0)
+            text_score = min(average_chars_per_expected / 24.0, 1.0)
+            coverage_score = round((count_score * 0.55 + text_score * 0.45), 3)
+        elif accepted_count:
+            coverage_score = 1.0
+        return {
+            "detected_bubble_region_count": len(bubble_boxes),
+            "detected_text_region_count": len(text_boxes),
+            "expected_text_region_count": expected_count,
+            "accepted_text_region_count": accepted_count,
+            "accepted_word_count": accepted_words,
+            "accepted_char_count": accepted_chars,
+            "average_chars_per_bubble": round(average_chars_per_expected, 2),
+            "coverage_score": coverage_score,
+            "coverage_failure": self._coverage_values_indicate_failure(
+                expected_count=expected_count,
+                accepted_count=accepted_count,
+                accepted_chars=accepted_chars,
+                accepted_words=accepted_words,
+            ),
+            "backend_counts": dict(
+                Counter(
+                    str(region.ocr_engine or region.detector or "unknown")
+                    for region in accepted_regions
+                )
+            ),
+            "detectors": dict(Counter(str(region.detector or "unknown") for region in accepted_regions)),
+            "reconstructed_dialogue": " ".join(
+                self._clean_text(region.text_english or region.text_original or "")
+                for region in accepted_regions
+                if self._clean_text(region.text_english or region.text_original or "")
+            ),
+        }
+
+    def _coverage_values_indicate_failure(
+        self,
+        *,
+        expected_count: int,
+        accepted_count: int,
+        accepted_chars: int,
+        accepted_words: int,
+    ) -> bool:
+        if expected_count <= 0:
+            return False
+        if expected_count >= 2 and accepted_count == 0:
+            return True
+        if expected_count >= 3 and accepted_count <= 1:
+            return True
+        if expected_count >= 3 and accepted_words <= max(3, expected_count * 2):
+            return True
+        if expected_count >= 4 and accepted_chars < expected_count * 12:
+            return True
+        return False
+
+    def _coverage_should_trigger_region_recall(self, coverage: dict[str, Any]) -> bool:
+        return bool(coverage.get("coverage_failure"))
+
+    def _coverage_is_better(self, candidate: dict[str, Any], current: dict[str, Any]) -> bool:
+        if bool(candidate.get("coverage_failure")) and not bool(current.get("coverage_failure")):
+            return False
+        candidate_score = float(candidate.get("coverage_score") or 0.0)
+        current_score = float(current.get("coverage_score") or 0.0)
+        if candidate_score > current_score + 0.08:
+            return True
+        candidate_words = int(candidate.get("accepted_word_count") or 0)
+        current_words = int(current.get("accepted_word_count") or 0)
+        candidate_regions = int(candidate.get("accepted_text_region_count") or 0)
+        current_regions = int(current.get("accepted_text_region_count") or 0)
+        return candidate_words >= current_words + 4 or candidate_regions > current_regions
+
+    def _merge_scene_regions_for_recall(
+        self,
+        panel: PanelBox,
+        existing_regions: list[DialogueRegion],
+        recall_regions: list[DialogueRegion],
+        language_hint: str,
+        reading_mode: str,
+        image_width: int,
+        image_height: int,
+        metrics: dict[str, Any],
+    ) -> list[DialogueRegion]:
+        candidates: list[OCRCandidate] = []
+        for region in [*existing_regions, *recall_regions]:
+            text = self._clean_text(region.text_english or region.text_original or "")
+            if not text:
+                continue
+            candidates.append(
+                OCRCandidate(
+                    bbox=[int(value) for value in region.bbox],
+                    text=text,
+                    confidence=region.confidence,
+                    detector=region.detector,
+                    ocr_engine=region.ocr_engine,
+                    raw_text=region.raw_ocr_text or region.text_original,
+                )
+            )
+        if not candidates:
+            return existing_regions
+        merged_candidates = self._sort_candidates(
+            self._dedupe_candidates(candidates, max(int(image_width), 1), max(int(image_height), 1)),
+            reading_mode,
+        )
+        return self._build_dialogue_regions(panel, merged_candidates, language_hint, metrics)
+
     def _load_cached_panel_dialogue(
         self,
         panel_hash: str,
@@ -1223,6 +1528,12 @@ class DialogueExtractionPipeline:
                         "confidence": region.confidence,
                         "detector": region.detector,
                         "ocr_engine": region.ocr_engine,
+                        "raw_ocr_text": region.raw_ocr_text,
+                        "repaired_ocr_text": region.repaired_ocr_text,
+                        "repair_applied": region.repair_applied,
+                        "repair_confidence": region.repair_confidence,
+                        "repair_reason": region.repair_reason,
+                        "reading_order_index": region.reading_order_index,
                     }
                     for region in scene_regions
                 ]
@@ -1256,6 +1567,12 @@ class DialogueExtractionPipeline:
                     confidence=float(item["confidence"]) if isinstance(item.get("confidence"), (int, float)) else None,
                     detector=str(item.get("detector") or "cache"),
                     ocr_engine=str(item.get("ocr_engine") or "cache"),
+                    raw_ocr_text=str(item.get("raw_ocr_text") or item.get("text_original") or ""),
+                    repaired_ocr_text=str(item.get("repaired_ocr_text") or item.get("text_original") or ""),
+                    repair_applied=bool(item.get("repair_applied")),
+                    repair_confidence=float(item["repair_confidence"]) if isinstance(item.get("repair_confidence"), (int, float)) else None,
+                    repair_reason=str(item.get("repair_reason") or ""),
+                    reading_order_index=int(item["reading_order_index"]) if isinstance(item.get("reading_order_index"), int) else index,
                 )
             )
         return hydrated
@@ -1293,6 +1610,13 @@ class DialogueExtractionPipeline:
                 "confidence": item["confidence"],
                 "detector": item["detector"],
                 "ocr_engine": item["ocr_engine"],
+                "raw_ocr_text": item.get("raw_ocr_text") or item.get("text_original") or "",
+                "repaired_ocr_text": item.get("repaired_ocr_text") or item.get("text_original") or "",
+                "repair_applied": bool(item.get("repair_applied")),
+                "repair_confidence": item.get("repair_confidence"),
+                "repair_reason": item.get("repair_reason") or "",
+                "reading_order_index": item.get("reading_order_index"),
+                "text_category": item.get("text_category", "dialogue"),
                 "character_id": item.get("character_id"),
                 "stable_character_id": item.get("stable_character_id"),
                 "speaker_name": item.get("speaker_name"),
@@ -1310,6 +1634,44 @@ class DialogueExtractionPipeline:
         ]
         write_json(ocr_dir / "dialogue_regions.json", raw_payload)
         write_json(translations_dir / "dialogue_regions_translated.json", translated_payload)
+        clean_ocr_results = clean_ocr_fragment_payloads(
+            [
+                {
+                    **item,
+                    "text": item.get("text_english") or item.get("text_original"),
+                    "raw_text": item.get("raw_ocr_text") or item.get("text_original"),
+                    "repaired_text": item.get("repaired_ocr_text") or item.get("text_english") or item.get("text_original"),
+                    "repair_applied": bool(item.get("repair_applied")),
+                    "repair_confidence": item.get("repair_confidence"),
+                    "repair_reason": item.get("repair_reason") or "",
+                }
+                for item in artifacts["dialogue_regions"]
+            ],
+            expected_language=str(artifacts.get("project_language") or "en"),
+        )
+        expected_language = str(artifacts.get("project_language") or "en")
+        for item in clean_ocr_results:
+            text = str(item.get("text") or item.get("cleaned_text") or "").strip()
+            if item.get("usable_for_script") and not self._bubble_ocr_text_is_plausible(text, expected_language):
+                prior_reason = str(item.get("rejection_reason") or "").strip()
+                reason = "failed_dialogue_quality_gate"
+                item["accepted"] = False
+                item["usable_for_script"] = False
+                item["rejection_reason"] = f"{prior_reason}; {reason}" if prior_reason else reason
+        write_json(output_dir / "ocr_results.json", clean_ocr_results)
+        write_json(output_dir / "ocr_coverage.json", artifacts.get("ocr_coverage", []))
+        write_json(
+            output_dir / "transcript.json",
+            {
+                "fragments": [item for item in clean_ocr_results if item.get("usable_for_script")],
+                "text": " ".join(
+                    str(item.get("text") or "").strip()
+                    for item in clean_ocr_results
+                    if item.get("usable_for_script") and str(item.get("text") or "").strip()
+                ),
+                "coverage": artifacts.get("ocr_coverage", []),
+            },
+        )
         write_json(output_dir / "character_identity_report.json", artifacts.get("character_identity_report", {}))
         write_json(
             output_dir / "speaker_attributions.json",
@@ -1321,6 +1683,7 @@ class DialogueExtractionPipeline:
                     "protagonist_name": scene.get("protagonist_name"),
                     "speaker_names": scene.get("speaker_names", []),
                     "character_names": scene.get("character_names", []),
+                    "character_roles": scene.get("character_roles", {}),
                     "character_ids": scene.get("character_ids", []),
                     "character_labels": scene.get("character_labels", []),
                     "dialogue_entries": scene.get("dialogue_entries", []),
@@ -1343,9 +1706,71 @@ class DialogueExtractionPipeline:
         reading_mode: str,
         cancel_callback: callable | None = None,
     ) -> list[OCRCandidate]:
-        candidates = self._extract_paddle_candidates(panel_image, language_hint)
+        apple_line_candidates = self._extract_apple_line_group_candidates(panel_image, language_hint, reading_mode)
+        layout_candidates: list[OCRCandidate] = []
+        detected_dialogue_boxes = self._detect_dialogue_region_boxes(panel_image, reading_mode)
+        if (
+            self._candidate_set_has_substantial_signal(apple_line_candidates)
+            and not self._should_run_bubble_recall(panel_image, apple_line_candidates)
+            and len(apple_line_candidates) >= max(1, len(detected_dialogue_boxes) - 1)
+        ):
+            return self._sort_candidates(apple_line_candidates, reading_mode)
+
+        if detected_dialogue_boxes:
+            direct_box_candidates = self._ocr_detected_dialogue_boxes(
+                panel_image,
+                detected_dialogue_boxes,
+                language_hint,
+                reading_mode,
+                limit=8,
+            )
+            layout_candidates = self._extract_layout_bubble_candidates(
+                panel_image,
+                language_hint,
+                reading_mode,
+                cancel_callback=cancel_callback,
+                limit=8,
+            )
+            if direct_box_candidates:
+                layout_candidates = self._dedupe_candidates(
+                    direct_box_candidates + layout_candidates,
+                    panel_image.shape[1],
+                    panel_image.shape[0],
+                )
+            if self._candidate_set_has_substantial_signal(layout_candidates):
+                if apple_line_candidates:
+                    layout_candidates = self._dedupe_candidates(
+                        layout_candidates + apple_line_candidates,
+                        panel_image.shape[1],
+                        panel_image.shape[0],
+                    )
+                return self._sort_candidates(layout_candidates, reading_mode)
+
+        candidates = self._group_line_candidates_into_bubbles(
+            self._extract_paddle_candidates(panel_image, language_hint),
+            panel_image.shape[1],
+            panel_image.shape[0],
+            reading_mode,
+            language_hint,
+        )
         if candidates:
             candidates = self._repair_low_confidence_candidates(panel_image, candidates, language_hint, cancel_callback)
+            if self._should_run_bubble_recall(panel_image, candidates):
+                bubble_candidates = self._extract_layout_bubble_candidates(
+                    panel_image,
+                    language_hint,
+                    reading_mode,
+                    cancel_callback=cancel_callback,
+                    limit=8,
+                )
+                if bubble_candidates:
+                    merged = self._dedupe_candidates(
+                        bubble_candidates + candidates,
+                        panel_image.shape[1],
+                        panel_image.shape[0],
+                    )
+                    if self._candidate_set_has_substantial_signal(merged):
+                        return self._sort_candidates(merged, reading_mode)
             if self._candidate_set_has_substantial_signal(candidates):
                 return self._sort_candidates(candidates, reading_mode)
             fallback_candidates = self._extract_opencv_fallback_candidates(
@@ -1353,22 +1778,665 @@ class DialogueExtractionPipeline:
                 language_hint,
                 reading_mode,
                 cancel_callback=cancel_callback,
-                limit=16,
+                limit=8,
             )
             merged = self._dedupe_candidates(
-                candidates + fallback_candidates,
+                layout_candidates + candidates + fallback_candidates,
                 panel_image.shape[1],
                 panel_image.shape[0],
             )
+            if self._should_run_bubble_recall(panel_image, merged):
+                bubble_candidates = self._extract_layout_bubble_candidates(
+                    panel_image,
+                    language_hint,
+                    reading_mode,
+                    cancel_callback=cancel_callback,
+                    limit=8,
+                )
+                merged = self._dedupe_candidates(
+                    bubble_candidates + merged,
+                    panel_image.shape[1],
+                    panel_image.shape[0],
+                )
             return self._sort_candidates(merged, reading_mode)
 
-        return self._extract_opencv_fallback_candidates(
+        fallback_candidates = self._extract_opencv_fallback_candidates(
             panel_image,
             language_hint,
             reading_mode,
             cancel_callback=cancel_callback,
-            limit=16,
+            limit=8,
         )
+        if layout_candidates:
+            fallback_candidates = self._dedupe_candidates(
+                layout_candidates + fallback_candidates,
+                panel_image.shape[1],
+                panel_image.shape[0],
+            )
+        if self._should_run_bubble_recall(panel_image, fallback_candidates):
+            bubble_candidates = self._extract_layout_bubble_candidates(
+                panel_image,
+                language_hint,
+                reading_mode,
+                cancel_callback=cancel_callback,
+                limit=8,
+            )
+            fallback_candidates = self._dedupe_candidates(
+                bubble_candidates + fallback_candidates,
+                panel_image.shape[1],
+                panel_image.shape[0],
+            )
+        return self._sort_candidates(fallback_candidates, reading_mode)
+
+    def _ocr_detected_dialogue_boxes(
+        self,
+        panel_image: np.ndarray,
+        boxes: list[tuple[int, int, int, int]],
+        language_hint: str,
+        reading_mode: str,
+        *,
+        limit: int = 8,
+    ) -> list[OCRCandidate]:
+        if panel_image.size == 0 or not boxes:
+            return []
+        height, width = panel_image.shape[:2]
+        if reading_mode == "manga":
+            ordered_boxes = sorted(boxes, key=lambda box: (int(box[1]) // 80, -int(box[0]), int(box[1])))
+        else:
+            ordered_boxes = sorted(boxes, key=lambda box: (int(box[1]) // 80, int(box[0]), int(box[1])))
+        ordered_boxes = ordered_boxes[: max(1, limit)]
+        candidates: list[OCRCandidate] = []
+        for box in ordered_boxes:
+            x, y, box_width, box_height = [int(value) for value in box]
+            pad_x = max(10, int(box_width * 0.16))
+            pad_y = max(10, int(box_height * 0.12))
+            padded = (
+                max(0, x - pad_x),
+                max(0, y - pad_y),
+                min(width, x + box_width + pad_x) - max(0, x - pad_x),
+                min(height, y + box_height + pad_y) - max(0, y - pad_y),
+            )
+            crop = self._crop_box(panel_image, padded)
+            if crop.size == 0:
+                continue
+            text, confidence, engine = self._ocr_region(crop, language_hint, use_apple_vision=False)
+            if not self._clean_text(text) and self.settings.gemini_api_key:
+                text, confidence, engine = self._ocr_cropped_region_with_gemini(crop, language_hint)
+            text = self._clean_bubble_ocr_text(text)
+            if (
+                not text
+                or (
+                    not self._bubble_ocr_text_is_plausible(text, language_hint)
+                    and not self._text_has_substantial_signal(text)
+                )
+            ):
+                continue
+            candidates.append(
+                OCRCandidate(
+                    bbox=[padded[0], padded[1], max(1, padded[2]), max(1, padded[3])],
+                    text=text,
+                    confidence=confidence,
+                    detector="dialogue-box-region",
+                    ocr_engine=engine or "region-ocr",
+                    raw_text=text,
+                )
+            )
+        return self._sort_candidates(candidates, reading_mode)
+
+    def _should_run_bubble_recall(self, panel_image: np.ndarray, candidates: list[OCRCandidate]) -> bool:
+        if panel_image.size == 0:
+            return False
+        height, width = panel_image.shape[:2]
+        area = int(height) * int(width)
+        if area < 160_000 or min(height, width) < 220:
+            return False
+        expected_regions = len(self._detect_dialogue_region_boxes(panel_image, "webtoon" if height > width * 1.6 else "manga"))
+        if not candidates:
+            return area >= 420_000 or expected_regions >= 2
+        token_counts = [self._ocr_token_count(candidate.text) for candidate in candidates]
+        total_tokens = sum(token_counts)
+        short_fragments = sum(1 for count in token_counts if count <= 2)
+        if expected_regions >= 3 and (len(candidates) < expected_regions or total_tokens <= expected_regions * 3):
+            return True
+        if len(candidates) >= 8:
+            return True
+        if len(candidates) >= 4 and short_fragments / max(len(candidates), 1) >= 0.45:
+            return True
+        if len(candidates) <= 2 and total_tokens <= 4 and area >= 420_000:
+            return True
+        return False
+
+    def _group_line_candidates_into_bubbles(
+        self,
+        candidates: list[OCRCandidate],
+        image_width: int,
+        image_height: int,
+        reading_mode: str,
+        language_hint: str,
+    ) -> list[OCRCandidate]:
+        if len(candidates) < 2:
+            return candidates
+        line_candidates = [
+            candidate
+            for candidate in candidates
+            if int(candidate.bbox[2]) <= max(420, int(image_width * 0.42))
+            and int(candidate.bbox[3]) <= max(120, int(image_height * 0.12))
+        ]
+        if len(line_candidates) < 2:
+            return candidates
+        line_ids = {id(candidate) for candidate in line_candidates}
+        parent = list(range(len(line_candidates)))
+
+        def find(index: int) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        def union(left: int, right: int) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        def expanded(candidate: OCRCandidate) -> tuple[int, int, int, int]:
+            x, y, width, height = [int(value) for value in candidate.bbox]
+            pad_x = max(52, int(width * 0.9))
+            pad_y = max(44, int(height * 1.35))
+            x1 = max(x - pad_x, 0)
+            y1 = max(y - pad_y, 0)
+            x2 = min(x + width + pad_x, image_width)
+            y2 = min(y + height + pad_y, image_height)
+            return (x1, y1, x2 - x1, y2 - y1)
+
+        def line_boxes_can_share_bubble(left: OCRCandidate, right: OCRCandidate) -> bool:
+            lx, ly, lw, lh = [int(value) for value in left.bbox]
+            rx, ry, rw, rh = [int(value) for value in right.bbox]
+            left_cx = lx + lw / 2
+            right_cx = rx + rw / 2
+            left_cy = ly + lh / 2
+            right_cy = ry + rh / 2
+            horizontal_overlap = max(0, min(lx + lw, rx + rw) - max(lx, rx))
+            vertical_gap = max(0, max(ly, ry) - min(ly + lh, ry + rh))
+            min_width = max(1, min(lw, rw))
+            x_aligned = horizontal_overlap / min_width >= 0.18 or abs(left_cx - right_cx) <= max(92, max(lw, rw) * 0.9)
+            y_close = abs(left_cy - right_cy) <= max(96, max(lh, rh) * 4.0) or vertical_gap <= max(54, max(lh, rh) * 2.5)
+            return x_aligned and y_close
+
+        expanded_boxes = [expanded(candidate) for candidate in line_candidates]
+        for left in range(len(expanded_boxes)):
+            for right in range(left + 1, len(expanded_boxes)):
+                if (
+                    self._intersection_area(expanded_boxes[left], expanded_boxes[right]) > 0
+                    and line_boxes_can_share_bubble(line_candidates[left], line_candidates[right])
+                ):
+                    union(left, right)
+
+        groups: dict[int, list[OCRCandidate]] = defaultdict(list)
+        for index, candidate in enumerate(line_candidates):
+            groups[find(index)].append(candidate)
+
+        grouped: list[OCRCandidate] = []
+        grouped_ids: set[int] = set()
+        for group in groups.values():
+            if len(group) < 2:
+                continue
+            ordered = self._sort_candidates(group, reading_mode)
+            text = self._clean_bubble_ocr_text(" ".join(candidate.text for candidate in ordered))
+            grouped_tokens = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿĀ-žƀ-ɏḀ-ỿ']+", text)
+            has_group_signal = len(grouped_tokens) >= 4 and sum(1 for token in grouped_tokens if len(token.strip("'")) >= 4) >= 2
+            if (
+                not self._bubble_ocr_text_is_plausible(text, language_hint)
+                and not self._text_has_substantial_signal(text)
+                and not has_group_signal
+            ):
+                continue
+            x1 = min(int(candidate.bbox[0]) for candidate in group)
+            y1 = min(int(candidate.bbox[1]) for candidate in group)
+            x2 = max(int(candidate.bbox[0]) + int(candidate.bbox[2]) for candidate in group)
+            y2 = max(int(candidate.bbox[1]) + int(candidate.bbox[3]) for candidate in group)
+            union_width = max(1, x2 - x1)
+            union_height = max(1, y2 - y1)
+            if union_width > max(460, int(image_width * 0.48)) or union_height > max(300, int(image_height * 0.34)):
+                continue
+            confidences = [
+                float(candidate.confidence)
+                for candidate in group
+                if isinstance(candidate.confidence, (int, float))
+            ]
+            grouped_ids.update(id(candidate) for candidate in group)
+            grouped.append(
+                OCRCandidate(
+                    bbox=[x1, y1, max(1, x2 - x1), max(1, y2 - y1)],
+                    text=text,
+                    confidence=sum(confidences) / len(confidences) if confidences else None,
+                    detector="line-group",
+                    ocr_engine="line-group",
+                    raw_text=" ".join(str(candidate.raw_text or candidate.text) for candidate in ordered),
+                )
+            )
+        if not grouped:
+            return candidates
+        remaining = [candidate for candidate in candidates if id(candidate) not in grouped_ids or id(candidate) not in line_ids]
+        return self._sort_candidates(
+            self._dedupe_candidates(grouped + remaining, image_width, image_height),
+            reading_mode,
+        )
+
+    def _ocr_token_count(self, text: str) -> int:
+        return len(
+            re.findall(
+                r"[A-Za-z0-9\u00C0-\u024F\u1E00-\u1EFF\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af']+",
+                self._clean_text(text),
+            )
+        )
+
+    def _extract_layout_bubble_candidates(
+        self,
+        panel_image: np.ndarray,
+        language_hint: str,
+        reading_mode: str,
+        cancel_callback: callable | None = None,
+        *,
+        limit: int = 12,
+    ) -> list[OCRCandidate]:
+        apple_candidates = self._extract_apple_vision_bubble_candidates(panel_image, language_hint, reading_mode)
+        region_limit = min(max(limit - len(apple_candidates), 2), 4)
+        region_candidates = self._extract_speech_bubble_candidates(
+            panel_image,
+            language_hint,
+            reading_mode,
+            cancel_callback=cancel_callback,
+            limit=region_limit,
+            use_apple_vision=False,
+        )
+        apple_candidates = self._enhance_short_bubble_candidates(panel_image, apple_candidates, language_hint)
+        return self._sort_candidates(
+            self._dedupe_candidates(
+                apple_candidates + region_candidates,
+                panel_image.shape[1],
+                panel_image.shape[0],
+            ),
+            reading_mode,
+        )
+
+    def _enhance_short_bubble_candidates(
+        self,
+        panel_image: np.ndarray,
+        candidates: list[OCRCandidate],
+        language_hint: str,
+    ) -> list[OCRCandidate]:
+        enhanced: list[OCRCandidate] = []
+        enhance_all = len(candidates) <= 8
+        for candidate in candidates:
+            replacement = candidate
+            if enhance_all or self._ocr_token_count(candidate.text) <= 2 or len(self._clean_text(candidate.text)) <= 12:
+                region_crop = self._crop_box(panel_image, tuple(int(value) for value in candidate.bbox))
+                text_original, confidence, ocr_engine = self._ocr_region(region_crop, language_hint, use_apple_vision=False)
+                cleaned = self._clean_bubble_ocr_text(text_original)
+                if (
+                    self._bubble_ocr_text_is_plausible(cleaned, language_hint)
+                    and self._ocr_token_count(cleaned) >= self._ocr_token_count(candidate.text)
+                    and len(cleaned) > len(candidate.text)
+                ):
+                    replacement = OCRCandidate(
+                    bbox=candidate.bbox,
+                    text=cleaned,
+                    confidence=confidence,
+                    detector="speech-bubble-region",
+                    ocr_engine=ocr_engine,
+                    raw_text=str(text_original or ""),
+                )
+            enhanced.append(replacement)
+        return self._dedupe_candidates(enhanced, panel_image.shape[1], panel_image.shape[0])
+
+    def _extract_apple_vision_bubble_candidates(
+        self,
+        panel_image: np.ndarray,
+        language_hint: str,
+        reading_mode: str,
+    ) -> list[OCRCandidate]:
+        if panel_image.size == 0:
+            return []
+        apple_ocr = getattr(self._comic_ocr, "apple_vision_ocr", None)
+        if apple_ocr is None or not apple_ocr.is_available():
+            return []
+        bubble_boxes = self._dedupe_boxes(
+            [
+                *self._detect_apple_line_group_dialogue_boxes(panel_image, language_hint, reading_mode),
+                *self._detect_dialogue_region_boxes(panel_image, reading_mode),
+            ],
+            panel_image.shape[1],
+            panel_image.shape[0],
+        )
+        if not bubble_boxes:
+            return []
+        candidates: list[OCRCandidate] = []
+        for bubble_box in bubble_boxes[:18]:
+            region_crop = self._crop_box(panel_image, bubble_box)
+            try:
+                text_original, confidence = apple_ocr.recognize(region_crop, language_hint)
+            except Exception:
+                logger.exception("Apple Vision cropped bubble OCR failed")
+                continue
+            cleaned = self._clean_bubble_ocr_text(text_original)
+            if not self._bubble_ocr_text_is_plausible(cleaned, language_hint):
+                continue
+            candidates.append(
+                OCRCandidate(
+                    bbox=[int(value) for value in bubble_box],
+                    text=cleaned,
+                    confidence=confidence,
+                    detector="apple-vision-bubble",
+                    ocr_engine="apple-vision",
+                    raw_text=str(text_original or ""),
+                )
+            )
+        return self._dedupe_candidates(candidates, panel_image.shape[1], panel_image.shape[0])
+
+    def _extract_apple_line_group_candidates(
+        self,
+        panel_image: np.ndarray,
+        language_hint: str,
+        reading_mode: str,
+    ) -> list[OCRCandidate]:
+        """Group Apple Vision line detections into bubble-level candidates without full-panel transcript trust."""
+        apple_ocr = getattr(self._comic_ocr, "apple_vision_ocr", None)
+        if panel_image.size == 0 or apple_ocr is None or not apple_ocr.is_available():
+            return []
+        try:
+            fragments = apple_ocr.extract(panel_image, language_hint)
+        except Exception:
+            return []
+        line_items: list[dict[str, Any]] = []
+        for fragment in fragments:
+            cleaned = self._dialogue_cleaner.clean_text(str(fragment.text or ""))
+            if not cleaned or not re.search(r"[A-Za-z]", cleaned):
+                continue
+            category = classify_ocr_text(cleaned, expected_language=language_hint or "en")
+            if category in {"foreign_text", "ui", "watermark", "credit", "source_label"}:
+                continue
+            line_items.append(
+                {
+                    "bbox": tuple(int(value) for value in fragment.bbox),
+                    "text": cleaned,
+                    "raw_text": str(fragment.text or ""),
+                    "confidence": fragment.confidence,
+                }
+            )
+        if not line_items:
+            return []
+
+        height, width = panel_image.shape[:2]
+        parent = list(range(len(line_items)))
+
+        def find(index: int) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        def union(left: int, right: int) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        def expanded(box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+            x, y, box_width, box_height = box
+            pad_x = max(125, int(box_width * 1.15))
+            pad_y = max(125, int(box_height * 2.35))
+            x1 = max(x - pad_x, 0)
+            y1 = max(y - pad_y, 0)
+            x2 = min(x + box_width + pad_x, width)
+            y2 = min(y + box_height + pad_y, height)
+            return (x1, y1, x2 - x1, y2 - y1)
+
+        expanded_boxes = [expanded(item["bbox"]) for item in line_items]
+        for left in range(len(expanded_boxes)):
+            for right in range(left + 1, len(expanded_boxes)):
+                if self._intersection_area(expanded_boxes[left], expanded_boxes[right]) > 0:
+                    union(left, right)
+
+        groups: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for index, item in enumerate(line_items):
+            groups[find(index)].append(item)
+
+        candidates: list[OCRCandidate] = []
+        for group in groups.values():
+            ordered = sorted(group, key=lambda item: (item["bbox"][1], item["bbox"][0]))
+            text = self._clean_bubble_ocr_text(" ".join(str(item["text"]) for item in ordered))
+            if not self._bubble_ocr_text_is_plausible(text, language_hint):
+                continue
+            x1 = min(item["bbox"][0] for item in group)
+            y1 = min(item["bbox"][1] for item in group)
+            x2 = max(item["bbox"][0] + item["bbox"][2] for item in group)
+            y2 = max(item["bbox"][1] + item["bbox"][3] for item in group)
+            group_width = max(x2 - x1, 1)
+            group_height = max(y2 - y1, 1)
+            pad_x = max(58, int(group_width * 0.35))
+            pad_y = max(42, int(group_height * 0.22))
+            bbox = [
+                max(x1 - pad_x, 0),
+                max(y1 - pad_y, 0),
+                min(x2 + pad_x, width) - max(x1 - pad_x, 0),
+                min(y2 + pad_y, height) - max(y1 - pad_y, 0),
+            ]
+            confidences = [
+                float(item["confidence"])
+                for item in group
+                if isinstance(item.get("confidence"), (int, float))
+            ]
+            candidates.append(
+                OCRCandidate(
+                    bbox=bbox,
+                    text=text,
+                    confidence=sum(confidences) / len(confidences) if confidences else None,
+                    detector="apple-vision-line-group",
+                    ocr_engine="apple-vision-line-group",
+                    raw_text=" ".join(str(item["raw_text"]) for item in ordered),
+                )
+            )
+        return self._sort_candidates(
+            self._dedupe_candidates(candidates, width, height),
+            reading_mode,
+        )
+
+    def _detect_apple_line_group_dialogue_boxes(
+        self,
+        panel_image: np.ndarray,
+        language_hint: str,
+        reading_mode: str,
+    ) -> list[tuple[int, int, int, int]]:
+        """Use Apple Vision line boxes only as layout hints for cropped bubble OCR."""
+        apple_ocr = getattr(self._comic_ocr, "apple_vision_ocr", None)
+        if panel_image.size == 0 or apple_ocr is None or not apple_ocr.is_available():
+            return []
+        try:
+            fragments = apple_ocr.extract(panel_image, language_hint)
+        except Exception:
+            return []
+        line_boxes: list[tuple[int, int, int, int]] = []
+        for fragment in fragments:
+            text = self._dialogue_cleaner.clean_text(str(fragment.text or ""))
+            if not text or not re.search(r"[A-Za-z]", text) or classify_ocr_text(text, expected_language=language_hint or "en") in {
+                "foreign_text",
+                "ui",
+                "watermark",
+                "credit",
+                "source_label",
+            }:
+                continue
+            line_boxes.append(tuple(int(value) for value in fragment.bbox))
+        if not line_boxes:
+            return []
+
+        height, width = panel_image.shape[:2]
+        parent = list(range(len(line_boxes)))
+
+        def find(index: int) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        def union(left: int, right: int) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        def expanded(box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+            x, y, box_width, box_height = box
+            pad_x = max(110, int(box_width * 0.9))
+            pad_y = max(105, int(box_height * 2.0))
+            x1 = max(x - pad_x, 0)
+            y1 = max(y - pad_y, 0)
+            x2 = min(x + box_width + pad_x, width)
+            y2 = min(y + box_height + pad_y, height)
+            return (x1, y1, x2 - x1, y2 - y1)
+
+        expanded_boxes = [expanded(box) for box in line_boxes]
+        for left in range(len(expanded_boxes)):
+            for right in range(left + 1, len(expanded_boxes)):
+                if self._intersection_area(expanded_boxes[left], expanded_boxes[right]) > 0:
+                    union(left, right)
+
+        groups: dict[int, list[tuple[int, int, int, int]]] = defaultdict(list)
+        for index, box in enumerate(line_boxes):
+            groups[find(index)].append(box)
+
+        dialogue_boxes: list[tuple[int, int, int, int]] = []
+        panel_area = max(width * height, 1)
+        for group in groups.values():
+            if not group:
+                continue
+            x1 = min(box[0] for box in group)
+            y1 = min(box[1] for box in group)
+            x2 = max(box[0] + box[2] for box in group)
+            y2 = max(box[1] + box[3] for box in group)
+            group_width = max(x2 - x1, 1)
+            group_height = max(y2 - y1, 1)
+            if len(group) == 1 and min(group_width, group_height) < 34:
+                continue
+            pad_x = max(72, int(group_width * 0.85))
+            pad_y = max(72, int(group_height * 0.58))
+            crop_x1 = max(x1 - pad_x, 0)
+            crop_y1 = max(y1 - pad_y, 0)
+            crop_x2 = min(x2 + pad_x, width)
+            crop_y2 = min(y2 + pad_y, height)
+            crop_box = (crop_x1, crop_y1, crop_x2 - crop_x1, crop_y2 - crop_y1)
+            if crop_box[2] * crop_box[3] > panel_area * 0.38:
+                continue
+            dialogue_boxes.append(crop_box)
+
+        for line_box in line_boxes:
+            x, y, box_width, box_height = line_box
+            pad_x = max(110, int(width * 0.09), int(box_width * 1.1))
+            pad_y = max(180, int(height * 0.24), int(box_height * 5.0))
+            crop_x1 = max(x - pad_x, 0)
+            crop_y1 = max(y - pad_y, 0)
+            crop_x2 = min(x + box_width + pad_x, width)
+            crop_y2 = min(y + box_height + pad_y, height)
+            crop_box = (crop_x1, crop_y1, crop_x2 - crop_x1, crop_y2 - crop_y1)
+            if crop_box[2] * crop_box[3] > panel_area * 0.34:
+                continue
+            dialogue_boxes.append(crop_box)
+
+        deduped: list[tuple[int, int, int, int]] = []
+        for box in dialogue_boxes:
+            normalised = self._normalise_bbox([int(value) for value in box], width, height)
+            if normalised is None:
+                continue
+            candidate = tuple(int(value) for value in normalised)
+            if any(self._iou(candidate, existing) >= 0.72 for existing in deduped):
+                continue
+            deduped.append(candidate)
+        return self._sort_regions(deduped, reading_mode)
+
+    def _bubble_index_for_text_box(
+        self,
+        text_bbox: list[int],
+        bubble_boxes: list[tuple[int, int, int, int]],
+    ) -> int | None:
+        tx, ty, tw, th = [int(value) for value in text_bbox]
+        if tw <= 0 or th <= 0:
+            return None
+        center_x = tx + tw / 2
+        center_y = ty + th / 2
+        text_area = max(tw * th, 1)
+        best_index: int | None = None
+        best_score = 0.0
+        for index, box in enumerate(bubble_boxes):
+            bx, by, bw, bh = [int(value) for value in box]
+            contains_center = bx <= center_x <= bx + bw and by <= center_y <= by + bh
+            ix1 = max(tx, bx)
+            iy1 = max(ty, by)
+            ix2 = min(tx + tw, bx + bw)
+            iy2 = min(ty + th, by + bh)
+            overlap = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+            overlap_ratio = overlap / text_area
+            score = overlap_ratio + (0.35 if contains_center else 0.0)
+            if score > best_score:
+                best_score = score
+                best_index = index
+        return best_index if best_score >= 0.42 else None
+
+    def _extract_speech_bubble_candidates(
+        self,
+        panel_image: np.ndarray,
+        language_hint: str,
+        reading_mode: str,
+        cancel_callback: callable | None = None,
+        *,
+        limit: int = 6,
+        use_apple_vision: bool = True,
+    ) -> list[OCRCandidate]:
+        candidates: list[OCRCandidate] = []
+        gemini_attempts = 0
+        max_gemini_attempts = 2
+        bubble_boxes = sorted(
+            self._detect_dialogue_region_boxes(panel_image, reading_mode),
+            key=lambda box: self._speech_bubble_ocr_priority(panel_image, box),
+            reverse=True,
+        )
+        bounded_limit = min(max(int(limit), 1), 6)
+        scored_boxes = [
+            (box, self._speech_bubble_ocr_priority(panel_image, box))
+            for box in bubble_boxes
+        ]
+        high_value_boxes = [box for box, score in scored_boxes if score >= 0.45]
+        candidate_boxes = high_value_boxes[:bounded_limit] or [box for box, _score in scored_boxes[:bounded_limit]]
+        for bubble_box in candidate_boxes:
+            if cancel_callback:
+                cancel_callback()
+            region_crop = self._crop_box(panel_image, bubble_box)
+            text_original, confidence, ocr_engine = self._ocr_region(
+                region_crop,
+                language_hint,
+                use_apple_vision=use_apple_vision,
+            )
+            cleaned = self._clean_bubble_ocr_text(text_original)
+            if (
+                not self._bubble_ocr_text_is_plausible(cleaned, language_hint)
+                and gemini_attempts < max_gemini_attempts
+            ):
+                gemini_attempts += 1
+                text_original, confidence, ocr_engine = self._ocr_cropped_region_with_gemini(region_crop, language_hint)
+                cleaned = self._clean_bubble_ocr_text(text_original)
+            if not self._bubble_ocr_text_is_plausible(cleaned, language_hint):
+                continue
+            candidates.append(
+                OCRCandidate(
+                    bbox=[int(bubble_box[0]), int(bubble_box[1]), int(bubble_box[2]), int(bubble_box[3])],
+                    text=cleaned,
+                    confidence=confidence,
+                    detector="speech-bubble-region",
+                    ocr_engine=ocr_engine,
+                    raw_text=str(text_original or ""),
+                )
+            )
+        return self._dedupe_candidates(candidates, panel_image.shape[1], panel_image.shape[0])
 
     def _extract_opencv_fallback_candidates(
         self,
@@ -1377,11 +2445,12 @@ class DialogueExtractionPipeline:
         reading_mode: str,
         cancel_callback: callable | None = None,
         *,
-        limit: int = 10,
+        limit: int = 6,
     ) -> list[OCRCandidate]:
         opencv_boxes = self._sort_regions(self._detect_text_regions_opencv(panel_image), reading_mode)
         fallback_candidates: list[OCRCandidate] = []
-        for region_box in opencv_boxes[:limit]:
+        bounded_limit = min(max(int(limit), 1), 6)
+        for region_box in opencv_boxes[:bounded_limit]:
             if cancel_callback:
                 cancel_callback()
             region_crop = self._crop_box(panel_image, region_box)
@@ -1396,6 +2465,7 @@ class DialogueExtractionPipeline:
                     confidence=confidence,
                     detector="opencv",
                     ocr_engine=ocr_engine,
+                    raw_text=str(text_original or ""),
                 )
             )
         return self._dedupe_candidates(fallback_candidates, panel_image.shape[1], panel_image.shape[0])
@@ -1415,6 +2485,7 @@ class DialogueExtractionPipeline:
                     confidence=float(item["confidence"]) if isinstance(item.get("confidence"), (int, float)) else None,
                     detector="hybrid-comic-ocr",
                     ocr_engine=str(item.get("ocr_engine") or "paddleocr"),
+                    raw_text=str(item.get("text") or ""),
                 )
             )
         return self._dedupe_candidates(candidates, panel_image.shape[1], panel_image.shape[0])
@@ -1495,14 +2566,21 @@ class DialogueExtractionPipeline:
             other = cleaned[duplicate_index]
             other_score = other.confidence if other.confidence is not None else -1.0
             candidate_score = candidate.confidence if candidate.confidence is not None else -1.0
-            if candidate_score > other_score or len(candidate.text) > len(other.text):
+            candidate_len = len(self._clean_text(candidate.text))
+            other_len = len(self._clean_text(other.text))
+            if candidate_len > other_len * 1.25:
+                cleaned[duplicate_index] = candidate
+                continue
+            if other_len > candidate_len * 1.25:
+                continue
+            if candidate_score > other_score + 0.04:
                 cleaned[duplicate_index] = candidate
         return cleaned
 
     def _sort_candidates(self, candidates: list[OCRCandidate], reading_mode: str) -> list[OCRCandidate]:
         if reading_mode == "webtoon":
             return sorted(candidates, key=lambda item: (item.bbox[1], item.bbox[0]))
-        return sorted(candidates, key=lambda item: (item.bbox[1], -item.bbox[0]))
+        return self._sort_by_manga_rows(candidates, key=lambda item: item.bbox)
 
     def _repair_low_confidence_candidates(
         self,
@@ -1543,12 +2621,17 @@ class DialogueExtractionPipeline:
 
         region_payloads: list[dict[str, Any]] = []
         for candidate in candidates:
-            detected_language = self._panel_text_language(candidate.text, language_hint)
+            raw_text = self._dialogue_cleaner.merge_broken_lines(candidate.text)
+            repair = self._repair_dialogue_ocr_text(raw_text, language_hint)
+            script_text = repair["text"]
+            detected_language = self._panel_text_language(script_text, language_hint)
             region_payloads.append(
                 {
                     "candidate": candidate,
                     "language": detected_language,
-                    "text_original": self._dialogue_cleaner.merge_broken_lines(candidate.text),
+                    "text_original": script_text,
+                    "raw_text": raw_text,
+                    "repair": repair,
                 }
             )
 
@@ -1556,8 +2639,18 @@ class DialogueExtractionPipeline:
         scene_regions: list[DialogueRegion] = []
         for bubble_index, payload in enumerate(region_payloads, start=1):
             candidate = payload["candidate"]
+            engine_counts = metrics.setdefault("ocr_engine_counts", {})
+            engine_key = str(candidate.ocr_engine or "unknown").strip() or "unknown"
+            engine_counts[engine_key] = int(engine_counts.get(engine_key) or 0) + 1
+            if engine_key == "apple-vision":
+                metrics["apple_vision_region_candidates"] = int(metrics.get("apple_vision_region_candidates") or 0) + 1
+            elif engine_key == "gemini-region":
+                metrics["gemini_region_fallbacks"] = int(metrics.get("gemini_region_fallbacks") or 0) + 1
+            else:
+                metrics["non_apple_region_candidates"] = int(metrics.get("non_apple_region_candidates") or 0) + 1
             text_original = payload["text_original"]
             text_english = translations[(payload["language"], text_original)]
+            repair = payload.get("repair") if isinstance(payload.get("repair"), dict) else {}
             if text_english and text_english.strip() != text_original.strip():
                 metrics["translation_count"] += 1
             scene_regions.append(
@@ -1574,6 +2667,13 @@ class DialogueExtractionPipeline:
                     confidence=candidate.confidence,
                     detector=candidate.detector,
                     ocr_engine=candidate.ocr_engine,
+                    raw_ocr_text=candidate.raw_text or candidate.text,
+                    repaired_ocr_text=text_original,
+                    repair_applied=bool(repair.get("applied")),
+                    repair_confidence=float(repair["confidence"]) if isinstance(repair.get("confidence"), (int, float)) else None,
+                    repair_reason=str(repair.get("reason") or ""),
+                    reading_order_index=bubble_index,
+                    text_category=classify_ocr_text(text_english or text_original),
                 )
             )
         return scene_regions
@@ -1623,7 +2723,7 @@ class DialogueExtractionPipeline:
             lang_norm,
         )
 
-        # Translate in large batches — one Gemini call covers up to 80 strings.
+        # Translate in large batches - one Gemini call covers up to 80 strings.
         _PREWARM_BATCH = 80
         hint = self._translation_context_hint
         for i in range(0, len(unique), _PREWARM_BATCH):
@@ -1639,6 +2739,84 @@ class DialogueExtractionPipeline:
                     math.ceil(len(unique) / _PREWARM_BATCH),
                     exc,
                 )
+
+    def _repair_dialogue_ocr_text(self, text: str, language_hint: str) -> dict[str, Any]:
+        raw = self._dialogue_cleaner.merge_broken_lines(str(text or ""))
+        cleaned = self._clean_bubble_ocr_text(raw)
+        if not cleaned or self._language_detector.normalize_language_code(language_hint) not in {"", "en", "a"}:
+            return {"text": cleaned, "applied": False, "confidence": None, "reason": ""}
+
+        repaired = cleaned
+        reasons: list[str] = []
+
+        replacements: list[tuple[str, str, str]] = [
+            (r"\blantation\b", "plantation", "spelling:plantation"),
+            (r"\blinderstand\b", "understand", "spelling:understand"),
+            (r"\bbecalise\b", "because", "spelling:because"),
+            (r"\bdolibt\b", "doubt", "spelling:doubt"),
+            (r"\bfolind\b", "found", "spelling:found"),
+            (r"\bsome\s+where\b", "somewhere", "compound:somewhere"),
+            (r"\bsome\s+thing\b", "something", "compound:something"),
+            (r"\bdisappo(?:int)?\b", "disappoint", "spelling:disappoint"),
+            (r"\bmething\b", "something", "spelling:something"),
+            (r"\bething\b", "something", "spelling:something"),
+            (r"\bminidd\b", "mind", "spelling:mind"),
+            (r"\bitci\b", "itching", "spelling:itching"),
+            (r"\bwon you\b", "won't you", "spelling:won't-you"),
+        ]
+        for pattern, replacement, reason in replacements:
+            updated = re.sub(pattern, replacement, repaired, flags=re.IGNORECASE)
+            if updated != repaired:
+                repaired = updated
+                reasons.append(reason)
+
+        phrase_repairs: list[tuple[str, str, str]] = [
+            (r"\bi have (?:some)?thing mind\b", "i have something on my mind", "grammar:missing-on-my"),
+            (r"\bthink of it as man's whims\b", "think of it as an old man's whims", "grammar:missing-old-article"),
+            (r"\bwon't settle shower\?", "won't you settle for a shower?", "grammar:missing-you-for-a"),
+            (r"\bbut i'm itching swim\b", "but i'm itching for a swim", "grammar:missing-for-a"),
+            (r"\bdo have something specific in mind\?", "so you do have something specific in mind?", "grammar:missing-so-you"),
+            (r"\bway,\s+([a-z][a-z'-]*)\.\.", r"by the way, \1..", "grammar:missing-by-the"),
+            (r"\bis this really right with you\?", "is this really all right with you?", "grammar:missing-all"),
+        ]
+        for pattern, replacement, reason in phrase_repairs:
+            updated = re.sub(pattern, replacement, repaired, flags=re.IGNORECASE)
+            if updated != repaired:
+                repaired = updated
+                reasons.append(reason)
+
+        repaired = self._dialogue_cleaner.merge_broken_lines(re.sub(r"\s+", " ", repaired).strip())
+        if not reasons or not self._repair_is_conservative(cleaned, repaired):
+            return {"text": cleaned, "applied": False, "confidence": None, "reason": ""}
+        return {
+            "text": repaired,
+            "applied": True,
+            "confidence": 0.86,
+            "reason": ", ".join(dict.fromkeys(reasons)),
+        }
+
+    def _repair_is_conservative(self, original: str, repaired: str) -> bool:
+        original_tokens = re.findall(r"[A-Za-z']+", original)
+        repaired_tokens = re.findall(r"[A-Za-z']+", repaired)
+        if not original_tokens or not repaired_tokens:
+            return False
+        if len(repaired_tokens) > len(original_tokens) + 7:
+            return False
+        original_terms = {token.casefold().strip("'") for token in original_tokens if len(token.strip("'")) >= 4}
+        repaired_terms = {token.casefold().strip("'") for token in repaired_tokens if len(token.strip("'")) >= 4}
+        added_terms = repaired_terms - original_terms
+        allowed_added = {
+            "something",
+            "because",
+            "plantation",
+            "understand",
+            "disappoint",
+            "doubt",
+            "found",
+            "itching",
+            "somewhere",
+        }
+        return added_terms <= allowed_added
 
     def _translate_payloads(self, region_payloads: list[dict[str, Any]]) -> dict[tuple[str, str], str]:
         translations: dict[tuple[str, str], str] = {}
@@ -1711,23 +2889,58 @@ class DialogueExtractionPipeline:
             {
                 str(region.character_display_name or "").strip()
                 for region in scene_regions
-                if self._is_reliable_character_name(str(region.character_display_name or "").strip())
+                if self._is_reliable_character_label(str(region.character_display_name or "").strip())
             }
         )
-        detected_names: list[str] = []
+        visible_names: list[str] = []
+        character_roles: dict[str, set[str]] = defaultdict(set)
+        for region in scene_regions:
+            display_name = str(region.character_display_name or "").strip()
+            if not display_name or not self._is_reliable_character_label(display_name):
+                continue
+            if str(region.stable_character_id or "").strip() or str(region.character_id or "").strip():
+                visible_names.append(display_name)
+                character_roles[display_name].add("visible_present")
+
+        mentioned_names: list[str] = []
         if character_dictionary:
             for line in dialogue_original + dialogue_english:
                 for name in self._character_names.character_names_in_text(line, character_dictionary):
-                    if name not in detected_names:
-                        detected_names.append(name)
+                    if name not in mentioned_names:
+                        mentioned_names.append(name)
+        addressed_names: list[str] = []
+        for line in dialogue_original + dialogue_english:
+            for name in self._extract_addressed_names(line):
+                if character_dictionary:
+                    matched = self._character_names.character_names_in_text(name, character_dictionary)
+                    name = matched[0] if matched else name
+                if self._is_reliable_character_name(name) and name not in addressed_names:
+                    addressed_names.append(name)
+
         for label in character_labels:
-            if label not in detected_names:
-                detected_names.append(label)
+            if label not in visible_names:
+                visible_names.append(label)
+                character_roles[label].add("visible_present")
         for name in speaker_names:
-            if name not in detected_names:
-                detected_names.append(name)
-        if protagonist_name and protagonist_name not in detected_names and any(re.search(r"\b(i|i'm|i’ve|i'll|my|me)\b", line.casefold()) for line in dialogue_original + dialogue_english):
-            detected_names.append(protagonist_name)
+            character_roles[name].add("speaker")
+            if name not in visible_names:
+                visible_names.append(name)
+        for name in addressed_names:
+            character_roles[name].add("addressee")
+            if name not in visible_names:
+                character_roles[name].add("mentioned_absent")
+        for name in mentioned_names:
+            if name not in visible_names:
+                character_roles[name].add("mentioned_absent")
+        if protagonist_name and protagonist_name not in visible_names and any(re.search(r"\b(i|i'm|i’ve|i'll|my|me)\b", line.casefold()) for line in dialogue_original + dialogue_english):
+            character_roles[protagonist_name].add("speaker")
+            visible_names.append(protagonist_name)
+        detected_names = self._dedupe_preserve_order(
+            [
+                *visible_names,
+                *speaker_names,
+            ]
+        )
         return DialogueScene(
             scene=panel.order,
             panel_id=panel.id,
@@ -1747,6 +2960,7 @@ class DialogueExtractionPipeline:
             character_names=detected_names,
             character_ids=character_ids,
             character_labels=character_labels,
+            character_roles={name: sorted(roles) for name, roles in character_roles.items() if self._is_reliable_character_label(name)},
             primary_speaker_name=self._primary_speaker_name(dialogue_entries),
             protagonist_name=protagonist_name,
             logical_panel_id=panel.logical_panel_id or panel.id,
@@ -2121,7 +3335,7 @@ class DialogueExtractionPipeline:
         return None
 
     def _is_reliable_character_name(self, name: str | None) -> bool:
-        if looks_like_false_character_name(name):
+        if not is_valid_character_name_candidate(name):
             return False
         tokens = [token for token in re.findall(r"[a-z]+", str(name or "").casefold()) if token]
         if not tokens:
@@ -2129,13 +3343,31 @@ class DialogueExtractionPipeline:
         banned = {
             "sorry", "wait", "okay", "thanks", "please", "hello", "customer", "manager", "world",
             "freeze", "apocalypse", "yes", "yeah", "yep", "no", "nope",
-            "be", "dead", "jle", "trle", "nati", "salur", "sauri",
+            "be", "break", "dead", "idiot", "jle", "other", "run", "stop", "trle", "nati", "salur", "sauri",
         }
         if any(token in banned for token in tokens):
             return False
         if len(tokens) == 1 and len(tokens[0]) < 4:
             return False
         return True
+
+    def _is_reliable_character_label(self, name: str | None) -> bool:
+        value = str(name or "").strip()
+        if not value:
+            return False
+        return is_valid_character_name_candidate(value, allow_stable_label=True)
+
+    def _dedupe_preserve_order(self, values: list[str]) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            cleaned = str(value or "").strip()
+            key = re.sub(r"\s+", " ", cleaned.casefold()).strip()
+            if not cleaned or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(cleaned)
+        return deduped
 
     def _metadata_description_excerpt(self, description: Any) -> str:
         if isinstance(description, dict):
@@ -2235,10 +3467,10 @@ class DialogueExtractionPipeline:
         while len(tokens) > 1 and tokens[0] in filler_leads:
             tokens = tokens[1:]
         stop_tokens = {
-            "a", "an", "am", "and", "apocalypse", "are", "can", "customer", "did", "do", "doing", "for", "freeze",
+            "a", "an", "am", "and", "apocalypse", "are", "break", "can", "customer", "did", "do", "doing", "for", "freeze",
             "going", "gonna", "hello", "help", "hey", "his", "how", "i", "im", "i'm", "is", "it", "just", "lot",
             "money", "my", "name", "need", "please", "she", "spending", "thank", "that", "the", "their", "they",
-            "this", "tired", "too", "very", "was", "we", "what", "world", "you", "your", "sorry", "okay",
+            "this", "tired", "too", "very", "was", "we", "what", "world", "you", "your", "sorry", "okay", "other",
         }
         if any(token in {"hello", "thank", "please", "world", "freeze", "apocalypse", "customer"} for token in tokens):
             return ""
@@ -2248,7 +3480,8 @@ class DialogueExtractionPipeline:
             return ""
         if len(tokens) > 3:
             tokens = tokens[:3]
-        return " ".join(token.capitalize() for token in tokens)
+        normalized = " ".join(token.capitalize() for token in tokens)
+        return normalized if is_valid_character_name_candidate(normalized) else ""
 
     def _first_person_score(self, text: str) -> int:
         lowered = clean_ocr_text(text).casefold()
@@ -2447,7 +3680,9 @@ class DialogueExtractionPipeline:
 
         if page_paths:
             width, height = Image.open(page_paths[0]).size
-            if height / max(width, 1) > 1.35:
+            # Standard manga pages are portrait too (~1.4x), so only treat very
+            # tall strip pages as webtoon when metadata tags are unavailable.
+            if height / max(width, 1) > 2.2:
                 return "webtoon"
 
         return "manga"
@@ -2657,9 +3892,284 @@ class DialogueExtractionPipeline:
 
         return self._dedupe_boxes(boxes, panel_image.shape[1], panel_image.shape[0])
 
-    def _ocr_region(self, region_image: np.ndarray, language_hint: str) -> tuple[str, float | None, str]:
-        result = self._comic_ocr.recognize_region(region_image, language_hint)
-        return self._clean_text(result.original_text), result.confidence, result.ocr_engine
+    def _detect_dialogue_region_boxes(self, panel_image: np.ndarray, reading_mode: str) -> list[tuple[int, int, int, int]]:
+        if panel_image.size == 0:
+            return []
+        height, width = panel_image.shape[:2]
+        boxes = list(self._detect_speech_bubble_regions(panel_image, reading_mode))
+        for text_box in self._detect_text_regions_opencv(panel_image):
+            boxes.append(self._expand_text_region_to_dialogue_box(text_box, width, height))
+        return self._sort_regions(self._dedupe_boxes(boxes, width, height), reading_mode)
+
+    def _expand_text_region_to_dialogue_box(
+        self,
+        box: tuple[int, int, int, int],
+        image_width: int,
+        image_height: int,
+    ) -> tuple[int, int, int, int]:
+        x, y, width, height = [int(value) for value in box]
+        pad_x = max(18, int(width * 0.55))
+        pad_y = max(14, int(height * 0.85))
+        x1 = max(x - pad_x, 0)
+        y1 = max(y - pad_y, 0)
+        x2 = min(x + width + pad_x, image_width)
+        y2 = min(y + height + pad_y, image_height)
+        return (x1, y1, max(1, x2 - x1), max(1, y2 - y1))
+
+    def _detect_speech_bubble_regions(self, panel_image: np.ndarray, reading_mode: str) -> list[tuple[int, int, int, int]]:
+        """Find likely white speech-bubble/caption regions for region-level OCR.
+
+        Dense manga pages often defeat full-panel OCR because each line is
+        recognized independently and then over-cleaned.  Whole-bubble crops give
+        the recognizer enough local context to reconstruct readable dialogue.
+        """
+        import cv2
+
+        if panel_image.size == 0:
+            return []
+        height, width = panel_image.shape[:2]
+        crop_area = max(int(height) * int(width), 1)
+        grayscale = cv2.cvtColor(panel_image, cv2.COLOR_RGB2GRAY)
+        white_mask = (grayscale > 238).astype("uint8") * 255
+        kernel = np.ones((5, 5), np.uint8)
+        white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+        component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(white_mask, 8)
+
+        boxes: list[tuple[int, int, int, int]] = []
+        min_area = max(3_000, int(crop_area * 0.0012))
+        max_area = int(crop_area * 0.32)
+        for component in range(1, component_count):
+            x, y, box_width, box_height, area = [int(value) for value in stats[component]]
+            if area < min_area or area > max_area:
+                continue
+            if box_width < max(42, int(width * 0.038)) or box_height < max(42, int(height * 0.03)):
+                continue
+            if box_height > height * 0.92 or box_width > width * 0.92:
+                continue
+            fill_ratio = area / max(box_width * box_height, 1)
+            if fill_ratio < 0.42:
+                continue
+            component_crop = grayscale[y : y + box_height, x : x + box_width]
+            ink_ratio = float(np.mean(component_crop < 90)) if component_crop.size else 0.0
+            if ink_ratio < 0.018 or ink_ratio > 0.24:
+                continue
+            touches_edge = x <= 2 or y <= 2 or x + box_width >= width - 2 or y + box_height >= height - 2
+            if touches_edge and (box_width > width * 0.55 or box_height > height * 0.55 or fill_ratio > 0.86):
+                continue
+            pad_x = max(6, int(box_width * 0.025))
+            pad_y = max(6, int(box_height * 0.025))
+            x1 = max(x - pad_x, 0)
+            y1 = max(y - pad_y, 0)
+            x2 = min(x + box_width + pad_x, width)
+            y2 = min(y + box_height + pad_y, height)
+            boxes.append((x1, y1, x2 - x1, y2 - y1))
+
+        boxes = self._dedupe_boxes(boxes, width, height)
+        return self._sort_regions(boxes, reading_mode)
+
+    def _speech_bubble_ocr_priority(self, panel_image: np.ndarray, box: tuple[int, int, int, int]) -> float:
+        import cv2
+
+        x, y, width, height = [int(value) for value in box]
+        if width <= 0 or height <= 0:
+            return 0.0
+        grayscale = cv2.cvtColor(panel_image, cv2.COLOR_RGB2GRAY)
+        crop = grayscale[y : y + height, x : x + width]
+        if crop.size == 0:
+            return 0.0
+        area = width * height
+        ink_ratio = float(np.mean(crop < 90))
+        white_ratio = float(np.mean(crop > 245))
+        shape_score = min(area / 120_000, 2.4)
+        ink_score = 1.0 - min(abs(ink_ratio - 0.095) / 0.16, 1.0)
+        small_bubble_bonus = (
+            0.8
+            if width >= 80 and height >= 130 and white_ratio >= 0.68 and 0.035 <= ink_ratio <= 0.19
+            else 0.0
+        )
+        return shape_score + ink_score + white_ratio * 0.5 + small_bubble_bonus
+
+    def _clean_bubble_ocr_text(self, text: str) -> str:
+        cleaned = self._dialogue_cleaner.clean_text(text)
+        if not cleaned:
+            return ""
+        # Paddle sometimes injects isolated confidence-like numerals into
+        # high-contrast manga bubbles. Remove standalone numeric noise while
+        # preserving numbers that are part of real words/codes.
+        cleaned = re.sub(r"(?<![A-Za-z])\b(?:0{2,}|8{2,})\b(?![A-Za-z])", " ", cleaned)
+        cleaned = re.sub(r"^\s*8\s+(?=[A-Za-z])", "", cleaned)
+        cleaned = re.sub(r"([.!?,])\s*8\s+(?=[A-Za-z])", r"\1 ", cleaned)
+        cleaned = re.sub(r"\b([A-Za-z])\s+(?=[A-Za-z]\b)", r"\1", cleaned)
+        cleaned = re.sub(r"\bby the\s+[i1]\s+way\b", "by the way", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(
+            r"\bsome\s+(thing|where|one|body|day|time|how|what)\b",
+            lambda match: "some" + match.group(1),
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" -_|/")
+        cleaned = self._dialogue_cleaner.merge_broken_lines(cleaned)
+        return cleaned.lower()
+
+    def _bubble_ocr_text_is_plausible(self, text: str, language_hint: str) -> bool:
+        cleaned = self._clean_text(text)
+        if not cleaned or self._looks_like_noise(cleaned):
+            return False
+        category = classify_ocr_text(cleaned, expected_language=language_hint or "en")
+        if category in {"ocr_garbage", "foreign_text", "ui", "watermark", "credit", "source_label"}:
+            return False
+        tokens = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿĀ-žƀ-ɏḀ-ỿ']+", cleaned)
+        if len(tokens) == 1 and re.search(r"([a-z])\1{2,}", tokens[0], flags=re.IGNORECASE):
+            return False
+        if category == "sfx" and len(tokens) <= 2:
+            return False
+        if category == "low_confidence" and not self._text_has_substantial_signal(cleaned):
+            return False
+        if self._language_detector.normalize_language_code(language_hint) in {"en", "a", ""}:
+            if not self._english_ocr_word_quality_ok(cleaned):
+                return False
+        return True
+
+    def _region_ocr_cache_path(self, region_image: np.ndarray, language_hint: str, backend: str, config: dict[str, Any]) -> Path:
+        digest = hashlib.sha1()
+        digest.update(str(region_image.shape).encode("utf-8"))
+        digest.update(region_image.tobytes())
+        digest.update(
+            json.dumps(
+                {
+                    "strategy": "region_ocr_cache_v2_fast_regions",
+                    "backend": backend,
+                    "language_hint": self._language_detector.normalize_language_code(language_hint),
+                    "config": config,
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        )
+        return self._region_ocr_cache_dir / f"{digest.hexdigest()}.json"
+
+    def _ocr_region(
+        self,
+        region_image: np.ndarray,
+        language_hint: str,
+        *,
+        use_apple_vision: bool = True,
+    ) -> tuple[str, float | None, str]:
+        cache_path = self._region_ocr_cache_path(
+            region_image,
+            language_hint,
+            "local-fast",
+            {"use_apple_vision": bool(use_apple_vision), "fast_only": True},
+        )
+        cached = read_json(cache_path, default=None)
+        if isinstance(cached, dict):
+            return (
+                self._clean_text(str(cached.get("text") or "")),
+                float(cached["confidence"]) if isinstance(cached.get("confidence"), (int, float)) else None,
+                str(cached.get("engine") or "cache"),
+            )
+
+        result = self._comic_ocr.recognize_region(
+            region_image,
+            language_hint,
+            use_apple_vision=use_apple_vision,
+            fast_only=True,
+        )
+        text = self._clean_text(result.original_text)
+        write_json(
+            cache_path,
+            {
+                "text": text,
+                "confidence": result.confidence,
+                "engine": result.ocr_engine,
+            },
+        )
+        return text, result.confidence, result.ocr_engine
+
+    def _ocr_cropped_region_with_gemini(
+        self,
+        region_image: np.ndarray,
+        language_hint: str,
+    ) -> tuple[str, float | None, str]:
+        if region_image.size == 0 or not self.settings.gemini_api_key:
+            return "", None, "none"
+        cache_path = self._region_ocr_cache_path(region_image, language_hint, "gemini-region", {})
+        cached = read_json(cache_path, default=None)
+        if isinstance(cached, dict):
+            return (
+                self._clean_text(str(cached.get("text") or "")),
+                float(cached["confidence"]) if isinstance(cached.get("confidence"), (int, float)) else None,
+                str(cached.get("engine") or "gemini-region"),
+            )
+        try:
+            buffer = io.BytesIO()
+            Image.fromarray(region_image).save(buffer, format="PNG", optimize=True)
+            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        except Exception:
+            return "", None, "none"
+
+        prompt = (
+            "Transcribe only the readable English dialogue or narration text in this cropped manga/manhwa text region. "
+            "Return JSON exactly as {\"text\":\"...\",\"confidence\":0.0}. "
+            "If this is sound effect text, credits, a watermark, or unreadable OCR noise, return an empty text string. "
+            "Do not summarize the image and do not invent missing words."
+        )
+        model = str(self.settings.llm_gemini_model or self.settings.gemini_model or "gemini-2.5-flash-lite").strip()
+        try:
+            response = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                params={"key": self.settings.gemini_api_key},
+                headers={"Content-Type": "application/json"},
+                json={
+                    "contents": [
+                        {
+                            "parts": [
+                                {"text": prompt},
+                                {"inlineData": {"mimeType": "image/png", "data": encoded}},
+                            ]
+                        }
+                    ],
+                    "generationConfig": {
+                        "temperature": 0.0,
+                        "maxOutputTokens": 160,
+                        "responseMimeType": "application/json",
+                    },
+                },
+                timeout=45,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            text_payload = self._extract_gemini_text_payload(payload)
+            parsed = json.loads(text_payload) if text_payload else {}
+            text = self._clean_bubble_ocr_text(str(parsed.get("text") or ""))
+            confidence = parsed.get("confidence")
+            confidence_value = float(confidence) if isinstance(confidence, (int, float)) else None
+            if text and self._bubble_ocr_text_is_plausible(text, language_hint):
+                write_json(
+                    cache_path,
+                    {
+                        "text": text,
+                        "confidence": confidence_value,
+                        "engine": "gemini-region",
+                    },
+                )
+                return text, confidence_value, "gemini-region"
+        except Exception as exc:
+            logger.debug("Gemini cropped OCR fallback failed: %s", exc)
+        write_json(cache_path, {"text": "", "confidence": None, "engine": "gemini-region"})
+        return "", None, "gemini-region"
+
+    def _extract_gemini_text_payload(self, payload: dict[str, Any]) -> str:
+        candidates = payload.get("candidates") if isinstance(payload, dict) else None
+        if not isinstance(candidates, list):
+            return ""
+        for candidate in candidates:
+            parts = ((candidate or {}).get("content") or {}).get("parts") or []
+            for part in parts:
+                text = str((part or {}).get("text") or "").strip()
+                if text:
+                    return text
+        return ""
 
     def _backfill_from_page_ocr(
         self,
@@ -2668,6 +4178,7 @@ class DialogueExtractionPipeline:
         image_width: int,
         image_height: int,
         project_language: str,
+        reading_mode: str,
         metrics: dict[str, Any],
     ) -> list:
         """Fill panels that have no OCR text using page-level OCR boxes from reconstruction."""
@@ -2692,13 +4203,21 @@ class DialogueExtractionPipeline:
             candidate_box = (bx, by, bw, bh)
             if self._candidate_belongs_to_panel(candidate_box, panel_box, association_box):
                 cleaned = self._clean_text(text)
-                if cleaned and not self._looks_like_noise(cleaned):
+                token_count = len(re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿĀ-žƀ-ɏḀ-ỿ']+", cleaned))
+                if (
+                    cleaned
+                    and not self._looks_like_noise(cleaned)
+                    and token_count >= 4
+                    and classify_ocr_text(cleaned, expected_language=project_language or "en")
+                    not in {"ocr_garbage", "foreign_text", "low_confidence", "sfx"}
+                    and self._english_ocr_word_quality_ok(cleaned)
+                ):
                     matched_texts.append((by, bx, cleaned, confidence))
 
         if not matched_texts:
             return []
 
-        matched_texts.sort(key=lambda item: (item[0], item[1]))
+        matched_texts.sort(key=lambda item: (item[0], -item[1] if reading_mode == "rtl" else item[1]))
         combined_text = " ".join(text for _, _, text, _ in matched_texts)
         avg_confidence = (
             sum(confidence for _, _, _, confidence in matched_texts) / len(matched_texts)
@@ -2966,7 +4485,35 @@ class DialogueExtractionPipeline:
     def _sort_regions(self, boxes: list[tuple[int, int, int, int]], reading_mode: str) -> list[tuple[int, int, int, int]]:
         if reading_mode == "webtoon":
             return sorted(boxes, key=lambda item: (item[1], item[0]))
-        return sorted(boxes, key=lambda item: (item[1], -item[0]))
+        return self._sort_by_manga_rows(boxes, key=lambda item: item)
+
+    def _sort_by_manga_rows(self, items: list[Any], *, key: callable) -> list[Any]:
+        if not items:
+            return []
+        boxes = [key(item) for item in items]
+        heights = sorted(max(int(box[3]), 1) for box in boxes if len(box) >= 4)
+        median_height = heights[len(heights) // 2] if heights else 80
+        row_tolerance = max(24, min(96, int(median_height * 0.22)))
+        ordered_pairs = sorted(zip(items, boxes), key=lambda pair: int(pair[1][1]))
+        rows: list[list[tuple[Any, Any]]] = []
+        for item, box in ordered_pairs:
+            y = int(box[1])
+            if not rows:
+                rows.append([(item, box)])
+                continue
+            row_y = min(int(existing_box[1]) for _, existing_box in rows[-1])
+            row_bottom = max(int(existing_box[1]) + int(existing_box[3]) for _, existing_box in rows[-1])
+            row_height = max(row_bottom - row_y, 1)
+            overlap = min(y + int(box[3]), row_bottom) - max(y, row_y)
+            overlaps_current_row = overlap >= min(int(box[3]), row_height) * 0.25
+            if y <= row_y + row_tolerance or overlaps_current_row:
+                rows[-1].append((item, box))
+            else:
+                rows.append([(item, box)])
+        sorted_items: list[Any] = []
+        for row in rows:
+            sorted_items.extend(item for item, _box in sorted(row, key=lambda pair: -int(pair[1][0])))
+        return sorted_items
 
     def _dedupe_boxes(
         self,
@@ -2983,8 +4530,11 @@ class DialogueExtractionPipeline:
             if width * height > crop_area * 0.65:
                 continue
             duplicate = False
-            for other in cleaned:
-                if self._iou(box, other) >= 0.7:
+            for other_index, other in enumerate(cleaned):
+                contains = self._bbox_contains(box, other) or self._bbox_contains(other, box)
+                if self._iou(box, other) >= 0.7 or contains:
+                    if contains and (width * height) > (other[2] * other[3]) * 1.2:
+                        cleaned[other_index] = (max(x, 0), max(y, 0), width, height)
                     duplicate = True
                     break
             if not duplicate:

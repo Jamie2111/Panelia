@@ -49,7 +49,7 @@ class ConsistencyReport:
 
     def summary(self) -> str:
         if not self.issues:
-            return f"OK — {self.kept_panel_count} kept panels match {self.segment_count} segments."
+            return f"OK - {self.kept_panel_count} kept panels match {self.segment_count} segments."
         counts = {"error": 0, "warning": 0, "info": 0}
         for issue in self.issues:
             counts[issue.severity] = counts.get(issue.severity, 0) + 1
@@ -88,7 +88,7 @@ def check_project(project_dir: Path, project_id: str | None = None) -> Consisten
                 ConsistencyIssue(
                     "missing_manifest",
                     "warning",
-                    "script_manifest.json not found — narration stage has not run.",
+                    "script_manifest.json not found - narration stage has not run.",
                 )
             ],
         )
@@ -182,7 +182,7 @@ def check_project(project_dir: Path, project_id: str | None = None) -> Consisten
                 issues.append(ConsistencyIssue(
                     "narration_text_mismatch",
                     "warning",
-                    f"Panel {pid} narration text differs from segment text — last write wins on next render.",
+                    f"Panel {pid} narration text differs from segment text - last write wins on next render.",
                     panel_id=str(pid),
                     segment_id=str(seg.get("id") or seg.get("segment_id") or ""),
                 ))

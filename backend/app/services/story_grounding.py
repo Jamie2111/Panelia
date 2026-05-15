@@ -210,7 +210,7 @@ def apply_name_corrections_to_text(text: str, grounding: dict[str, Any]) -> str:
         try:
             corrected = re.sub(pattern, canonical, corrected, flags=re.IGNORECASE)
         except re.error:
-            # Variable-width lookbehind on some Python versions can throw —
+            # Variable-width lookbehind on some Python versions can throw -
             # fall back to the naive replacement so we still apply the
             # correction (a stray double-name is preferable to a missing
             # canonical).

@@ -14,7 +14,7 @@ interface PanelThumbnailProps {
 
 /**
  * Renders a cropped thumbnail of a single panel using CSS clipping.
- * No canvas API or extra backend calls needed — uses the full page image
+ * No canvas API or extra backend calls needed - uses the full page image
  * with object-position and object-fit to show only the panel region.
  */
 export function PanelThumbnail({

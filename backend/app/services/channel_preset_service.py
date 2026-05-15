@@ -1,5 +1,5 @@
 """
-ChannelPresetService — the YouTuber's "brand kit" that applies across
+ChannelPresetService - the YouTuber's "brand kit" that applies across
 every project.
 
 After someone publishes 5 videos, viewers should be able to recognize
@@ -17,7 +17,7 @@ everywhere.
 Why a singleton JSON instead of per-project: branding should be
 consistent across every video on a channel. If you ever want to run
 multiple channels from one Panelia install we'd extend this to keyed
-presets — for now, one.
+presets - for now, one.
 """
 
 from __future__ import annotations

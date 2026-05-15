@@ -425,7 +425,7 @@ class LLMRouter:
         provider: str | None = None,
     ) -> RoutedResult:
         """Rewrite a chunk of the whole chapter into a single flowing YouTube
-        recap narrator voice — same line count, same order, same indices; each
+        recap narrator voice - same line count, same order, same indices; each
         line may grow to 2-3 sentences with natural transitions.
         """
         prompt = self._chapter_narrator_cohesion_prompt(lines, context)
@@ -533,6 +533,7 @@ class LLMRouter:
     ) -> RoutedResult:
         prompt = self._multimodal_story_segment_repair_prompt(segments, context)
         parts = self._story_segment_prompt_parts(prompt, segments, scene_image_paths, provider)
+        model_candidates = self._multimodal_story_repair_model_candidates()
         return await self._route_json(
             task_name="multimodal story segment repair",
             prompt=prompt,
@@ -540,6 +541,7 @@ class LLMRouter:
             max_output_tokens=min(4200, max(900, 220 * max(len(segments), 1))),
             provider=provider,
             parts=parts,
+            model_candidates=model_candidates,
         )
 
     def available_providers(self) -> list[str]:
@@ -579,7 +581,7 @@ class LLMRouter:
             if chapter_str:
                 query_parts.append(f"chapter {chapter_str}")
             query_parts.append(
-                "— main characters (names, roles, relationships, abilities), "
+                "- main characters (names, roles, relationships, abilities), "
                 "story setting, world rules, and key plot events. "
                 "Provide factual information that helps narrate the story accurately."
             )
@@ -765,7 +767,7 @@ class LLMRouter:
                         response.raise_for_status()
                         data = response.json()
                         # Gemini sometimes returns HTTP 200 with no candidates and
-                        # ``promptFeedback.blockReason: OTHER`` — a non-category
+                        # ``promptFeedback.blockReason: OTHER`` - a non-category
                         # prompt-level block that bypasses safety settings. When
                         # that happens, fall through to the next model rather
                         # than returning an empty payload to ``_route_json``.
@@ -777,7 +779,7 @@ class LLMRouter:
                                 f"(blockReason={prompt_block_reason})"
                             )
                             logger.warning(
-                                "Gemini %s prompt-level block (%s) — trying next model",
+                                "Gemini %s prompt-level block (%s) - trying next model",
                                 model,
                                 prompt_block_reason,
                             )
@@ -811,7 +813,7 @@ class LLMRouter:
                                     f"(finishReason={finish_reason or 'unset'})"
                                 )
                                 logger.warning(
-                                    "Gemini %s candidate-level refusal (finishReason=%s) — trying next model",
+                                    "Gemini %s candidate-level refusal (finishReason=%s) - trying next model",
                                     model,
                                     finish_reason or "unset",
                                 )
@@ -824,14 +826,14 @@ class LLMRouter:
                             if attempt < _HTTP_MAX_RETRIES - 1:
                                 wait = self._retry_after_seconds(exc.response, attempt)
                                 logger.warning(
-                                    "Gemini %s HTTP %s (attempt %d/%d) — retrying in %.1fs",
+                                    "Gemini %s HTTP %s (attempt %d/%d) - retrying in %.1fs",
                                     model, status_code, attempt + 1, _HTTP_MAX_RETRIES, wait,
                                 )
                                 time.sleep(wait)
                                 continue
                             # Exhausted retries for this model; try the next one.
                             logger.warning(
-                                "Gemini %s HTTP %s — exhausted %d retries, trying next model",
+                                "Gemini %s HTTP %s - exhausted %d retries, trying next model",
                                 model, status_code, _HTTP_MAX_RETRIES,
                             )
                             break
@@ -841,23 +843,23 @@ class LLMRouter:
                             # Either way, skip to the next model rather than retrying.
                             body = (exc.response.text[:400] if exc.response is not None else "(no body)")
                             logger.warning(
-                                "Gemini %s HTTP %s — skipping to next model. Response: %s",
+                                "Gemini %s HTTP %s - skipping to next model. Response: %s",
                                 model, status_code, body,
                             )
                             break
-                        # Any other HTTP error (401 Unauthorized, 403 Forbidden, …) — fatal.
+                        # Any other HTTP error (401 Unauthorized, 403 Forbidden, …) - fatal.
                         raise
                     except requests.Timeout:
                         last_exc = requests.Timeout(f"Gemini {model} timed out after {self._timeout_seconds}s")
                         if attempt < _HTTP_MAX_RETRIES - 1:
                             wait = self._retry_after_seconds(None, attempt)
                             logger.warning(
-                                "Gemini %s timeout (attempt %d/%d) — retrying in %.1fs",
+                                "Gemini %s timeout (attempt %d/%d) - retrying in %.1fs",
                                 model, attempt + 1, _HTTP_MAX_RETRIES, wait,
                             )
                             time.sleep(wait)
                             continue
-                        logger.warning("Gemini %s timeout — exhausted retries, trying next model", model)
+                        logger.warning("Gemini %s timeout - exhausted retries, trying next model", model)
                         break
             if last_exc is not None:
                 raise last_exc
@@ -890,7 +892,7 @@ class LLMRouter:
                     if status_code in _RETRYABLE_HTTP_CODES and attempt < _HTTP_MAX_RETRIES - 1:
                         wait = self._retry_after_seconds(exc.response, attempt)
                         logger.warning(
-                            "Grok HTTP %s (attempt %d/%d) — retrying in %.1fs",
+                            "Grok HTTP %s (attempt %d/%d) - retrying in %.1fs",
                             status_code, attempt + 1, _HTTP_MAX_RETRIES, wait,
                         )
                         time.sleep(wait)
@@ -901,7 +903,7 @@ class LLMRouter:
                     if attempt < _HTTP_MAX_RETRIES - 1:
                         wait = self._retry_after_seconds(None, attempt)
                         logger.warning(
-                            "Grok timeout (attempt %d/%d) — retrying in %.1fs",
+                            "Grok timeout (attempt %d/%d) - retrying in %.1fs",
                             attempt + 1, _HTTP_MAX_RETRIES, wait,
                         )
                         time.sleep(wait)
@@ -939,7 +941,7 @@ class LLMRouter:
                     if status_code in _RETRYABLE_HTTP_CODES and attempt < _HTTP_MAX_RETRIES - 1:
                         wait = self._retry_after_seconds(exc.response, attempt)
                         logger.warning(
-                            "DeepSeek HTTP %s (attempt %d/%d) — retrying in %.1fs",
+                            "DeepSeek HTTP %s (attempt %d/%d) - retrying in %.1fs",
                             status_code, attempt + 1, _HTTP_MAX_RETRIES, wait,
                         )
                         time.sleep(wait)
@@ -950,7 +952,7 @@ class LLMRouter:
                     if attempt < _HTTP_MAX_RETRIES - 1:
                         wait = self._retry_after_seconds(None, attempt)
                         logger.warning(
-                            "DeepSeek timeout (attempt %d/%d) — retrying in %.1fs",
+                            "DeepSeek timeout (attempt %d/%d) - retrying in %.1fs",
                             attempt + 1, _HTTP_MAX_RETRIES, wait,
                         )
                         time.sleep(wait)
@@ -1072,7 +1074,7 @@ class LLMRouter:
                                 f"(blockReason={prompt_block_reason})"
                             )
                             logger.warning(
-                                "Gemini %s prompt-level block (%s) — trying next model",
+                                "Gemini %s prompt-level block (%s) - trying next model",
                                 model, prompt_block_reason,
                             )
                             break
@@ -1094,7 +1096,7 @@ class LLMRouter:
                                     f"(finishReason={finish_reason or 'unset'})"
                                 )
                                 logger.warning(
-                                    "Gemini %s candidate-level refusal (finishReason=%s) — trying next model",
+                                    "Gemini %s candidate-level refusal (finishReason=%s) - trying next model",
                                     model, finish_reason or "unset",
                                 )
                                 break
@@ -1106,20 +1108,20 @@ class LLMRouter:
                             if attempt < _HTTP_MAX_RETRIES - 1:
                                 wait = self._retry_after_seconds_httpx(exc.response, attempt)
                                 logger.warning(
-                                    "Gemini %s HTTP %s (attempt %d/%d) — retrying in %.1fs",
+                                    "Gemini %s HTTP %s (attempt %d/%d) - retrying in %.1fs",
                                     model, status_code, attempt + 1, _HTTP_MAX_RETRIES, wait,
                                 )
                                 await asyncio.sleep(wait)
                                 continue
                             logger.warning(
-                                "Gemini %s HTTP %s — exhausted %d retries, trying next model",
+                                "Gemini %s HTTP %s - exhausted %d retries, trying next model",
                                 model, status_code, _HTTP_MAX_RETRIES,
                             )
                             break
                         if status_code in _SKIP_MODEL_HTTP_CODES:
                             body = exc.response.text[:400]
                             logger.warning(
-                                "Gemini %s HTTP %s — skipping to next model. Response: %s",
+                                "Gemini %s HTTP %s - skipping to next model. Response: %s",
                                 model, status_code, body,
                             )
                             break
@@ -1129,12 +1131,12 @@ class LLMRouter:
                         if attempt < _HTTP_MAX_RETRIES - 1:
                             wait = self._retry_after_seconds_httpx(None, attempt)
                             logger.warning(
-                                "Gemini %s timeout (attempt %d/%d) — retrying in %.1fs",
+                                "Gemini %s timeout (attempt %d/%d) - retrying in %.1fs",
                                 model, attempt + 1, _HTTP_MAX_RETRIES, wait,
                             )
                             await asyncio.sleep(wait)
                             continue
-                        logger.warning("Gemini %s timeout — exhausted retries, trying next model", model)
+                        logger.warning("Gemini %s timeout - exhausted retries, trying next model", model)
                         break
             if last_exc is not None:
                 raise last_exc
@@ -1166,7 +1168,7 @@ class LLMRouter:
                     if status_code in _RETRYABLE_HTTP_CODES and attempt < _HTTP_MAX_RETRIES - 1:
                         wait = self._retry_after_seconds_httpx(exc.response, attempt)
                         logger.warning(
-                            "Grok HTTP %s (attempt %d/%d) — retrying in %.1fs",
+                            "Grok HTTP %s (attempt %d/%d) - retrying in %.1fs",
                             status_code, attempt + 1, _HTTP_MAX_RETRIES, wait,
                         )
                         await asyncio.sleep(wait)
@@ -1177,7 +1179,7 @@ class LLMRouter:
                     if attempt < _HTTP_MAX_RETRIES - 1:
                         wait = self._retry_after_seconds_httpx(None, attempt)
                         logger.warning(
-                            "Grok timeout (attempt %d/%d) — retrying in %.1fs",
+                            "Grok timeout (attempt %d/%d) - retrying in %.1fs",
                             attempt + 1, _HTTP_MAX_RETRIES, wait,
                         )
                         await asyncio.sleep(wait)
@@ -1214,7 +1216,7 @@ class LLMRouter:
                     if status_code in _RETRYABLE_HTTP_CODES and attempt < _HTTP_MAX_RETRIES - 1:
                         wait = self._retry_after_seconds_httpx(exc.response, attempt)
                         logger.warning(
-                            "DeepSeek HTTP %s (attempt %d/%d) — retrying in %.1fs",
+                            "DeepSeek HTTP %s (attempt %d/%d) - retrying in %.1fs",
                             status_code, attempt + 1, _HTTP_MAX_RETRIES, wait,
                         )
                         await asyncio.sleep(wait)
@@ -1225,7 +1227,7 @@ class LLMRouter:
                     if attempt < _HTTP_MAX_RETRIES - 1:
                         wait = self._retry_after_seconds_httpx(None, attempt)
                         logger.warning(
-                            "DeepSeek timeout (attempt %d/%d) — retrying in %.1fs",
+                            "DeepSeek timeout (attempt %d/%d) - retrying in %.1fs",
                             attempt + 1, _HTTP_MAX_RETRIES, wait,
                         )
                         await asyncio.sleep(wait)
@@ -1281,10 +1283,10 @@ class LLMRouter:
 
         Gemini 2.5 Pro REQUIRES thinking mode: it rejects ``thinkingBudget: 0``
         with ``"Budget 0 is invalid. This model only works in thinking mode."``
-        Valid Pro budgets are 128–32768, or ``-1`` for dynamic.
+        Valid Pro budgets are 128-32768, or ``-1`` for dynamic.
 
         Gemini 2.5 Flash / Flash-Lite accept ``thinkingBudget`` but we omit it
-        entirely (``None``) so Gemini picks a safe default — sending ``0``
+        entirely (``None``) so Gemini picks a safe default - sending ``0``
         historically has sporadically returned 400s from the API too, and we
         don't want to force-disable thinking on Flash for vision rescue calls.
         """
@@ -1337,6 +1339,17 @@ class LLMRouter:
         if os.getenv("PANELIA_PANEL_VISION_LITE_FIRST", "").strip().lower() in {"1", "true", "yes"}:
             return ["gemini-2.5-flash-lite", "gemini-2.5-flash"]
         return ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+
+    def _multimodal_story_repair_model_candidates(self) -> list[str]:
+        raw_value = os.getenv("PANELIA_STORY_REPAIR_MODELS", "").strip()
+        if raw_value:
+            candidates = [item.strip() for item in raw_value.split(",") if item.strip()]
+            if candidates:
+                return candidates
+        # Late story repair can touch dozens of visual segments. Keep this pass
+        # on the fast Flash family so prompt blocks fail quickly instead of
+        # falling through to Pro retry ladders that make progress look frozen.
+        return ["gemini-2.5-flash-lite", "gemini-2.5-flash"]
 
     def _extract_provider_json(self, provider: str, payload: dict[str, Any]) -> Any:
         return self._parse_json_text(self._extract_provider_text(provider, payload))
@@ -1817,11 +1830,40 @@ class LLMRouter:
                         for name in item.get("character_names", []) or []
                         if str(name).strip()
                     ][:8],
+                    "character_roles": self._normalize_character_roles(item.get("character_roles")),
                 }
             )
         if not panels:
             raise LLMValidationError("Panel vision payload had no usable panels")
         return {"panels": panels}
+
+    def _normalize_character_roles(self, value: Any) -> dict[str, list[str]]:
+        allowed_roles = {
+            "visible_present",
+            "speaker",
+            "addressee",
+            "mentioned_absent",
+            "flashback_present",
+            "memory_present",
+            "imagined_present",
+            "uncertain",
+        }
+        if not isinstance(value, dict):
+            return {}
+        normalized: dict[str, list[str]] = {}
+        for raw_name, raw_roles in value.items():
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            role_values = raw_roles if isinstance(raw_roles, list) else [raw_roles]
+            roles = [
+                str(role or "").strip()
+                for role in role_values
+                if str(role or "").strip() in allowed_roles
+            ]
+            if roles:
+                normalized[name] = list(dict.fromkeys(roles))[:4]
+        return normalized
 
     def _load_prompt_template(self, filename: str) -> str:
         prompt_path = Path(__file__).resolve().parents[3] / "services" / "prompts" / filename
@@ -1995,6 +2037,7 @@ class LLMRouter:
                     for name in scene.get("character_names", []) or []
                     if str(name).strip()
                 ],
+                "character_roles": scene.get("character_roles") or {},
                 "scene_summary": str(scene.get("scene_summary") or "").strip(),
                 "combined_text": str(scene.get("combined_text") or "").strip(),
                 "visual_cues": str(scene.get("visual_cues") or "").strip(),
@@ -2002,28 +2045,38 @@ class LLMRouter:
                 "vision_caption": str(scene.get("vision_caption") or "").strip(),
                 "vision_action_beat": str(scene.get("vision_action_beat") or "").strip(),
                 "ocr_fallback_text": str(scene.get("ocr_fallback_text") or "").strip(),
+                "text_only_beat": bool(scene.get("text_only_beat")),
             }
             for scene in scenes
         ]
         mode_block = (
-            "BEAT MODE — each input segment represents one chronological beat made from one or more adjacent kept panels:\n"
-            "- Write narration covering ONLY that segment's panel_start-panel_end range. Never summarise later panels or the whole chapter.\n"
-            "- Use vision_action_beat, vision_dialogue, and vision_caption as primary evidence. Use ocr_fallback_text only when those three are all empty.\n"
-            "- Write 2-3 natural English sentences for multi-panel beats with clear action or dialogue; 1 tight sentence only for genuinely thin visual/transitional evidence.\n"
-            "  • Sentence 1: establish the active subject and the concrete event in this beat.\n"
-            "  • Sentence 2: add the reaction, consequence, or dialogue meaning supported by the same beat.\n"
-            "  • Sentence 3: name the local emotional pressure or handoff to the next beat when panel_count is 3+.\n"
-            "- If vision_dialogue is non-empty, integrate what is said into narration (paraphrase — do not quote directly).\n"
-            "EMOTIONAL TONE — match pacing to what the panel actually conveys:\n"
+            "RECAP BEAT MODE - each input segment represents one grouped story beat built from adjacent kept panels:\n"
+            "- Write narration covering ONLY that segment's panel_start-panel_end range. Never summarise later beats or the whole chapter.\n"
+            "- Narrate the beat as a recap paragraph, not as a panel log. Collapse related setup, action, reaction, and consequence into one coherent beat instead of restating each panel.\n"
+            "- Use vision_action_beat, vision_dialogue, and vision_caption as primary evidence. When all three are empty or blank, ocr_fallback_text and combined_text ARE the primary evidence - treat them as concrete story facts, not as noise to be ignored.\n"
+            "- OCR DIALOGUE → NARRATIVE CONVERSION: When the only evidence is speech bubbles (vision_dialogue contains raw quotes, or combined_text has dialogue), convert to narrative by identifying the STORY EVENT: a farewell, a warning, an offer, a refusal, a confession, a threat, a command, a revelation, or a decision. Start with that event - NEVER with a reporting verb or a quote. Example: 'I don't think we'll be seeing each other again.' → 'She delivers a quiet goodbye, the words carrying the weight of a permanent farewell.' Example: 'Stop, you're heading to your death!' → 'A desperate warning breaks through - someone refuses to let the other walk into certain death.'\n"
+            "- Each non-empty segment should usually be 2-5 natural English sentences. Use 1 concise sentence only for genuinely thin transitional evidence.\n"
+            "  • Sentence 1: establish what changed, who drives the beat, or what conflict/decision is now active.\n"
+            "  • Sentence 2: show the reaction, consequence, or dialogue meaning supported by the same beat.\n"
+            "  • Sentence 3: clarify the emotional pressure, stakes, or why this beat matters right now.\n"
+            "  • Sentence 4-5: use only when the local evidence clearly contains a layered exchange, reveal, fight turn, flashback turn, or aftermath.\n"
+            "- Every segment should answer as much as the evidence supports: what changed, who caused it, who reacts, why it matters, and what pressure carries into the next beat.\n"
+            "- If vision_dialogue is non-empty, integrate what is said into narration as story meaning. Do not turn every bubble into its own sentence.\n"
+            "EMOTIONAL TONE - match pacing to what the panel actually conveys:\n"
             "- Tense/action panels (vision_action_beat contains fighting, running, shouting, explosions, confrontations): use short punchy sentences, active verbs, present-tense urgency.\n"
-            "- Emotional peaks (visual_cues or vision_action_beat show tears, rage, shock, laughter, embrace, sacrifice): let the sentence breathe — name the emotion or its physical expression explicitly.\n"
+            "- Fight sequences with little/no dialogue: combine adjacent motion into readable combat beats. Track initiative, attack, dodge/block, counter, damage, power use, and the consequence of each exchange. Do not flatten a long fight into generic escalation or restate each panel as its own caption.\n"
+            "- For silent action chains, infer only physical cause-and-effect visible in local/adjacent evidence: who moves first, who is pressured, who gains ground, who is hurt, and what changes after the hit or ability.\n"
+            "- Emotional peaks (visual_cues or vision_action_beat show tears, rage, shock, laughter, embrace, sacrifice): let the sentence breathe - name the emotion or its physical expression explicitly.\n"
             "- Quiet/character panels (vision_action_beat is subdued, introspective, or conversational): slower rhythm, longer phrases, interiority allowed ('weighing her next words', 'something shifts in his gaze').\n"
             "- Revelatory panels (vision_caption or vision_dialogue contains a key fact or twist): lead with the revelation, not the setup.\n"
-            "- Transitional/establishing panels (wide shots, location changes, time skips): one efficient sentence that moves the story clock forward.\n"
+            "- Text-only bubble/caption panels (text_only_beat=true, or combined_text/ocr_fallback_text has meaningful words while visual action is sparse): treat the bubble/caption as a real story beat. Paraphrase its meaning - what does the dialogue DO to the story: threaten, confess, warn, refuse, reveal, decide, or goodbye? Anchor to that meaning, not to the words themselves. NEVER open a narration with report-verb phrases like 'The conversation reveals', 'a voice says', 'a character states', 'the next line adds', 'someone mentions', or 'a line reads'. These are mechanical captions masquerading as narration - rewrite them as story events every time.\n"
+            "- Transitional/establishing panels (wide shots, location changes, time skips): one efficient sentence or a short two-sentence bridge that moves the story clock forward and explains what changes because of the shift.\n"
+            "- Flashbacks/recollections: only label a beat as past memory when dialogue, captions, scene_summary, scene_memory, or adjacent evidence clearly establishes a past-time shift. If so, signal the move into the past cleanly and return to present action when the evidence does.\n"
+            "- Super powers and stylized ability states: treat black-and-white panels, frozen backgrounds, speed lines, aura/color isolation, or one colored character in a muted scene as possible power-state evidence when nearby text/action supports it. Explain the supported effect, tactical consequence, or visible limit of the ability, not the visual filter itself.\n"
             f"{style_vocab_block}"
-            "LENGTH TARGET per panel:\n"
-            "- 35-80 words is the healthy band for a multi-panel beat. Below 20 words is too thin. Above 100 words is over-extended.\n"
-            "- Ground every word in THIS panel's vision evidence — do not invent facts.\n"
+            "LENGTH TARGET per segment:\n"
+            "- 55-115 words is the healthy band for a rich grouped beat. Below 28 words is usually too thin. Above 130 words is usually over-extended.\n"
+            "- Ground every word in THIS segment's vision evidence - do not invent facts.\n"
             "- If local evidence is genuinely weak, write one short conservative sentence rather than padding with generic filler.\n"
         )
         return (
@@ -2037,18 +2090,24 @@ class LLMRouter:
             f"{mode_block}"
             f"{character_role_block}"
             "- The segments should feel like one unfolding story, not isolated captions.\n"
+            "- Use scene_memory and running story memory to keep goals, emotional carryover, relationships, unresolved conflict, supported ability facts, and timeline handoffs consistent, but never let them override local evidence.\n"
             "- Use the supplied reference images to identify setting, physical action, recurring characters, and emotional pressure when OCR is sparse.\n"
             "- Printed narration boxes, on-page exposition, and embedded captions visible in the images count as strong local evidence even when OCR extraction failed.\n"
+            "- Isolated speech/thought bubbles on otherwise blank pages count as strong OCR evidence. Use combined_text/ocr_fallback_text/vision_dialogue to preserve the stated fact, decision, or inner thought.\n"
             "- For prologues, lore dumps, or montage pages, paraphrase the visible narration text from the images into clean recap prose instead of leaving the beat empty.\n"
-            "- If OCR is malformed, clipped, or ungrammatical, ignore it and trust the images plus surrounding context instead.\n"
+            "- If OCR is malformed, clipped, or ungrammatical AND images are available, ignore it and trust the images instead. But when images are absent and OCR is the only evidence, use it: paraphrase dialogue meaning, preserve decisions and conflicts, and anchor the narration to those actual words rather than inventing generic filler.\n"
             "- Prefer concrete names from the character dictionary over vague labels like someone, a character, or a figure.\n"
+            "- Use known character names as often as local evidence safely allows. Once a character is established in the scene memory/roster and visually or contextually present, prefer their name over repeated role labels; avoid pronoun-only chains when multiple people are involved.\n"
             "- For segment-specific characters, use a proper name only when that name appears in this segment's character_names, vision_dialogue, vision_caption, vision_action_beat, combined_text, or local OCR evidence. The character dictionary and story bible may normalize names already present locally, but they do not let you introduce a character before the segment establishes them.\n"
+            "- character_roles is binding evidence: only visible_present, speaker, flashback_present, memory_present, or imagined_present characters may be described as acting, watching, standing, attacking, reacting physically, or expressing emotion in the scene.\n"
+            "- Names marked mentioned_absent or addressee-only may be described only as mentioned, called out to, remembered, feared, referenced, or discussed unless the local visual/action evidence also proves presence.\n"
             "- If a person's exact name is uncertain, use a natural role label instead of inventing a new proper name.\n"
             "- Do not invent flashbacks, motives, or time jumps unless the evidence clearly supports them.\n"
-            "- If the title and chapter metadata clearly identify a known series, you may use that context to disambiguate iconic characters, factions, and setting terms that are already visually obvious in the segment; you may also reference known character roles and reputations as emotional framing when those characters appear, but never override the local evidence.\n"
+            "- Do not mistake stylized power effects for flashbacks. A grayscale/frozen scene with one emphasized character should be narrated as an ability state only when the local evidence supports that ability.\n"
+            "- If the title and chapter metadata clearly identify a known series, you may use that context ONLY to disambiguate names or terms that are already locally present in the segment's combined_text, ocr_fallback_text, or character_names. Never invent story events, character actions, or dialogue beats from franchise knowledge alone. If a segment's local evidence is sparse, write a short conservative bridge line - do not fill the gap with trained franchise memory.\n"
             "- Use scene_summary as guidance, but ground the actual wording in the local scene evidence.\n"
             "- Treat vision_action_beat, vision_dialogue, vision_caption, visual_cues, and combined_text as the only sources for segment-specific facts.\n"
-            "- Use ocr_fallback_text only when the vision fields are empty, and ignore it if it looks clipped or garbled.\n"
+            "- When vision fields are empty, ocr_fallback_text and combined_text are the authoritative local evidence - use them to anchor the narration. Do not substitute generic scene descriptions when real dialogue or captions are available.\n"
             "- For 2-4 panel aligned chunks, do not return a single-sentence caption when the local evidence contains both action and dialogue/caption evidence.\n"
             "- Preserve important facts, named events, places, and causal explanations.\n"
             "- Respect the running story memory so each new segment picks up naturally from the previous ones.\n"
@@ -2058,6 +2117,7 @@ class LLMRouter:
             "- Avoid near-duplicate openings across adjacent scenes.\n"
             "- Do not use visual-report phrasing like 'is shown', 'is depicted', 'is displayed', 'is seen', or 'stands in front of'. Rewrite the evidence as story action, cause, pressure, or consequence.\n"
             "- Do not use empty glue phrases like 'confusion takes over', 'magic erupts without warning', 'the scene keeps evolving', or 'consequences push the story forward'.\n"
+            "- FORBIDDEN OPENER PATTERNS - never start a segment with: 'The conversation reveals', 'The exchange begins', 'A voice states', 'A character mentions', 'The next line', 'A nearby response adds', 'By the end of the exchange'. These are mechanical caption labels, not story narration.\n"
             "- Do not mention panels, pages, camera angles, or the viewer.\n\n"
             f"Project title: {project_title or '(unknown)'}\n"
             f"Chapter metadata: {json.dumps(metadata, ensure_ascii=False)}\n"
@@ -2076,7 +2136,7 @@ class LLMRouter:
         """Build a tonal framing block from story_bible cast roles and series_external_context.
 
         Allows the narrator to colour tone with known character roles/reputations without
-        inventing events — e.g. a character's known reputation (elite but feared, former prodigy
+        inventing events - e.g. a character's known reputation (elite but feared, former prodigy
         who failed) is a role fact, not a fabricated event.
         """
         story_bible = context.get("story_bible") or {}
@@ -2084,7 +2144,8 @@ class LLMRouter:
             return ""
         cast = story_bible.get("cast") or []
         series_context = str(story_bible.get("series_external_context") or "").strip()
-        if not cast and not series_context:
+        chapter_dialogue_context = str(story_bible.get("chapter_dialogue_context") or "").strip()
+        if not cast and not series_context and not chapter_dialogue_context:
             return ""
 
         lines: list[str] = []
@@ -2098,17 +2159,28 @@ class LLMRouter:
                 role_label = f" ({role})" if role else ""
                 lines.append(f"  • {name}{role_label}: {notes}")
 
-        if not lines and not series_context:
+        if not lines and not series_context and not chapter_dialogue_context:
             return ""
 
-        block = "CHARACTER ROLE FRAMING — use these as tonal anchors, not as new events:\n"
+        block = ""
+        if chapter_dialogue_context:
+            block += (
+                "CHAPTER DIALOGUE CONTEXT - background reference only. This raw speech-bubble text "
+                "comes from ALL pages in the chapter (not just the current segment). Use it only to "
+                "confirm that a specific word, name, or statement is real dialogue from this chapter "
+                "when it also appears in the current segment's combined_text or ocr_fallback_text. "
+                "Do NOT apply chapter-level dialogue to a segment where it is not locally present. "
+                "Each segment must be grounded in its own local evidence:\n"
+                f"{chapter_dialogue_context[:3000]}\n\n"
+            )
+        block += "CHARACTER ROLE FRAMING - use these as tonal anchors, not as new events:\n"
         if lines:
             block += "\n".join(lines) + "\n"
         block += (
             "Rules for role framing:\n"
             "- You MAY reference a character's established role or reputation when they appear in a segment (e.g., note the weight of a failed pilot's desperate need to prove themselves, or the unease that surrounds a character known to be dangerous).\n"
             "- You MAY NOT invent specific past events, dialogue, or motivations that are not visible in the current segment's vision evidence.\n"
-            "- Role framing colors tone — it does NOT override local evidence. If a character acts against type in this panel, describe what the panel shows.\n"
+            "- Role framing colors tone - it does NOT override local evidence. If a character acts against type in this panel, describe what the panel shows.\n"
             "- For scenes showing two lead characters together: reflect the underlying tension or connection their dynamic carries, grounded in what is visually expressed.\n"
         )
         return block
@@ -2155,6 +2227,7 @@ class LLMRouter:
                     for name in scene.get("character_names", []) or []
                     if str(name).strip()
                 ],
+                "character_roles": scene.get("character_roles") or {},
                 "scene_summary": str(scene.get("scene_summary") or "").strip(),
                 "combined_text": str(scene.get("combined_text") or "").strip()[:500],
             }
@@ -2169,13 +2242,17 @@ class LLMRouter:
             "Rules:\n"
             "- Keep this compact and practical for downstream generation.\n"
             "- Use the project title, chapter metadata, observed scene summaries, OCR snippets, and current character dictionary.\n"
-            "- Soft outside series knowledge may be used only to normalize highly likely names, roles, and setting terms for this exact title.\n"
+            "- Do NOT use outside series knowledge to invent character roles, relationships, or events. The story bible must be grounded only in the supplied scene evidence (combined_text, OCR, scene summaries).\n"
             "- Do not invent unsupported plot twists, backstory, or scene-specific facts.\n"
-            "- Cast names must come only from the character dictionary, protagonist hint, allowed character names list, or highly confident title-aware normalization.\n"
+            "- Cast names must come only from the character dictionary, protagonist hint, allowed character names list, or names that appear explicitly in combined_text/scene evidence. Do not add characters based on title recognition alone.\n"
             "- If a candidate name is uncertain, omit it from cast and use a role label in scene_memory instead of inventing a new person.\n"
             "- chapter_premise should be one short paragraph explaining the chapter's starting state and arc.\n"
             "- continuity_notes should be concrete rules or reminders that reduce naming and timeline drift.\n"
-            "- scene_memory should contain one short memory handoff per scene_id, grounded in the supplied scene evidence.\n\n"
+            "- scene_memory should contain one short memory handoff per scene_id, grounded in the supplied scene evidence.\n"
+            "- scene_memory.state should say what changed in that scene, who currently wants what, or what emotional/strategic position the scene leaves behind.\n"
+            "- scene_memory.open_thread should capture the unresolved pressure, stake, mystery, relationship shift, supported ability question, or timeline issue that carries into later scenes.\n"
+            "- If a scene clearly contains a flashback, memory, or time skip, make that timeline relation explicit in scene_memory.\n"
+            "- If an ability or power system is present, record only the supported effect, limit, or consequence. Never invent extra rules.\n\n"
             f"Project title: {project_title or '(unknown)'}\n"
             f"Chapter metadata: {json.dumps(chapter_metadata, ensure_ascii=False)}\n"
             f"Chapter summary: {chapter_summary or '(none)'}\n"
@@ -2217,28 +2294,29 @@ class LLMRouter:
                     for name in item.get("character_names", []) or []
                     if str(name).strip()
                 ],
+                "character_roles": item.get("character_roles") or {},
                 "visual_only": bool(item.get("visual_only")),
             }
             for item in lines
         ]
         multi_sentence_rule = (
-            "- HARD REQUIREMENT: for every non-empty visual_only=false line, return 2-3 complete sentences when evidence supports it. One-sentence rewrites are allowed only for genuinely minimal evidence.\n"
+            "- HARD REQUIREMENT: for every non-empty visual_only=false line, return 2-4 complete sentences when evidence supports it. One-sentence rewrites are allowed only for genuinely minimal evidence.\n"
             if require_multi_sentence
             else ""
         )
         return (
             "You are the final narrator voice for a YouTube manga/manhwa/comic recap video.\n"
             "You receive a consecutive chunk of the chapter's narration lines in order.\n"
-            "Your ONLY job is to make the existing lines flow as one continuous narrator voice.\n"
-            "You are NOT writing new narration. You are NOT a scriptwriter. You are an editor whose\n"
-            "job is to polish wording so each line connects cleanly to its neighbours.\n\n"
+            "Your job is to make the existing grouped beats flow as one continuous narrator voice.\n"
+            "You may tighten, expand, or reorder clauses inside each line, but you must keep the same beat facts and slot coverage.\n\n"
             "Return valid JSON only in this format:\n"
             "{\"rewrites\":[{\"index\":0,\"line\":\"...\"}]}\n\n"
-            "GROUNDING CONSTRAINTS (highest priority — violations cause rejection):\n"
+            "GROUNDING CONSTRAINTS (highest priority - violations cause rejection):\n"
             "- DO NOT introduce any proper noun (character name, place name, faction, title) that is not already in the same line's `current` text or in that line's `vision_dialogue` / `vision_caption` / `vision_action_beat` / `scene_summary` / `local_evidence`. If the original line says 'a pilot', do not promote them to a named character unless that name is in the local evidence for THAT line.\n"
             "- DO NOT swap which character is in a line. If the original line is about Character A, the rewrite is about Character A. Do not move Character B, Character C, or any other character into a line that did not name them.\n"
+            "- DO NOT make mentioned_absent/addressee-only characters act, watch, enter, attack, stand, react physically, or show emotion. They may only be mentioned, called out to, remembered, feared, referenced, or discussed.\n"
             "- DO NOT invent new events, motives, backstory, time labels, or causal claims. If the original says 'Character A stumbled upon Character B', do not add 'after fleeing the briefing' unless the local evidence for THAT line supports it.\n"
-            "- DO NOT reorder events across lines. The order of indices is the order the viewer will see. Each index keeps its own beat. If you think the chronology is wrong, leave it alone — that is not your job.\n"
+            "- DO NOT reorder events across lines. The order of indices is the order the viewer will see. Each index keeps its own beat. If you think the chronology is wrong, leave it alone - that is not your job.\n"
             "- DO NOT merge two lines into one or split one line into two. One input index → one output index.\n"
             "- If the original line is already accurate and you cannot improve it without breaking these rules, copy `current` to `line` unchanged.\n"
             "- If the original is genuinely too generic to flow (e.g. \"the pressure carries forward\"), rewrite ONLY from THAT line's local evidence. Never borrow facts from neighbouring lines or from chapter_summary to fill it in.\n\n"
@@ -2248,14 +2326,17 @@ class LLMRouter:
             "- Output EVERY supplied index exactly once, in the supplied order, using the same integer indices.\n"
             "- Skip lines flagged visual_only=true: keep their index but return an empty string for 'line'.\n"
             f"{multi_sentence_rule}"
-            "- Each non-empty line covers exactly one panel beat. Keep it focused and panel-scale.\n"
+            "- Each non-empty line covers exactly one grouped story beat. Keep it focused on that beat, but let related setup, reaction, and consequence live together naturally.\n"
             "- EMOTIONAL PACING: preserve the emotional register of the original line. If vision_action_beat or vision_dialogue signal a high-stakes moment (confrontation, betrayal, sacrifice, revelation), use shorter punchy sentences and active verbs. If the evidence shows a quiet intimate moment, allow longer rhythmic phrases.\n"
-            "- RELATIONSHIP TENSION: when consecutive lines place two lead characters in the same scene and the dynamic is unstable or shifting (wariness, curiosity, unspoken vulnerability, reluctant trust), do NOT smooth the tension into neutral description. Let the uncertainty show — use language that implies something unresolved rather than settling prematurely into warmth or hostility.\n"
+            "- RELATIONSHIP TENSION: when consecutive lines place two lead characters in the same scene and the dynamic is unstable or shifting (wariness, curiosity, unspoken vulnerability, reluctant trust), do NOT smooth the tension into neutral description. Let the uncertainty show - use language that implies something unresolved rather than settling prematurely into warmth or hostility.\n"
             "- KEY MOMENT PACING: for lines that represent a first meeting, a pivotal decision, or a turning point in a relationship, allow one extra sentence of pause or consequence rather than rushing to the next beat. These lines can exceed the 50-80 word target by up to 20 words when the evidence genuinely supports it.\n"
-            "- Each non-empty line should be 2-3 natural sentences. Use 1 sentence only for purely visual or transitional panels with very thin evidence.\n"
+            "- CAUSAL FLOW: whenever the evidence allows, make the line answer what changed, who caused it, who reacts, why it matters, and what tension carries into the next beat.\n"
+            "- FLASHBACK / TIMEFLOW: if the line's local evidence indicates a memory, past event, or time skip, signal it cleanly and make the return to the present equally clear when the evidence does.\n"
+            "- ABILITIES / POWER SYSTEMS: name the supported effect, cost, or limit when local evidence gives it; otherwise describe only the visible tactical consequence.\n"
+            "- Each non-empty line should usually be 2-4 natural sentences. Use 1 concise sentence only for genuinely thin or purely transitional beats.\n"
             "- If a `current` line is a single very short sentence (≤ 10 words) and the surrounding evidence supports elaboration, add 1-2 sentences using only words and facts in current/evidence/prev/next. Treat recurring vocabulary terms as already-established.\n"
-            "- If a `current` line is already 2-3 sentences that flow well, leave it unchanged — improving flow is the goal, not length for its own sake.\n"
-            "- Absolutely NEVER repeat the same sentence or near-duplicate of an adjacent line. If two adjacent lines describe the same moment, trim the later one to a short transitional clause that points forward — do not invent content.\n"
+            "- If a `current` line is already 2-3 sentences that flow well, leave it unchanged - improving flow is the goal, not length for its own sake.\n"
+            "- Absolutely NEVER repeat the same sentence or near-duplicate of an adjacent line. If two adjacent lines describe the same moment, trim the later one to a short transitional clause that points forward - do not invent content.\n"
             "- Use varied openings. Do not start more than two lines in a row with the same subject or the same verb.\n"
             "- Use natural connectors between panels (\"meanwhile\", \"that same instant\", \"elsewhere\", \"in the next moment\") only when the evidence supports the shift.\n"
             "- Name characters instead of using 'someone', 'a figure', 'another character', BUT only when that character is named in this line's evidence.\n"
@@ -2263,7 +2344,7 @@ class LLMRouter:
             "- No camera language, panel references, or viewer addresses.\n"
             "- No first-person narration, no second person (\"you\").\n"
             "- Keep tense consistent (present tense by default, or past tense if the chunk is clearly a flashback/recollection).\n"
-            "- Aim for 50-80 words per line. Do not exceed 100 words per line during cohesion.\n\n"
+            "- Aim for 45-110 words per line. Do not exceed about 125 words unless the supplied line already carries a dense exchange or reveal.\n\n"
             "Examples of FORBIDDEN edits (these will be rejected and the original line restored):\n"
             "  current: \"A pilot reports that the enemy is spreading out.\"\n"
             "  bad:     \"Character C reports that the enemy is spreading out, alarming Character D.\"  (invented Character C and Character D)\n"
@@ -2317,15 +2398,16 @@ class LLMRouter:
             "- Never invent events, motives, backstory, time labels, causal claims, characters, or locations not in evidence.\n"
             "- Never reorder events across lines.\n\n"
             "EXPANSION RULES:\n"
-            "- Each line covers exactly one panel. Your job is to make thin lines richer — not longer for its own sake.\n"
+            "- Each line covers one grouped story beat. Your job is to make thin lines richer and more causal - not longer for their own sake.\n"
             "- Rewrite ONLY lines that are blank, one sentence, under 40 words, or visibly generic. Lines already 60+ words that read naturally may stay unchanged.\n"
-            "- Add 1-2 sentences of grounded detail to each thin line. Do not add more than 2 unless the evidence is unusually rich.\n"
+            "- Add 1-3 sentences of grounded detail to each thin line. Do not add more than 3 unless the evidence is unusually rich.\n"
             "- If the current line contains generic bridge scaffolding (for example: immediate problem, next exchange, before anyone can settle, cannot fully interpret, harder to protect), replace those phrases with concrete evidence-grounded prose instead of preserving them.\n"
             "- Pull elaboration material from evidence (vision_action_beat, vision_dialogue, vision_caption, visual_cues), scene_summary, previous_line, next_line, and recurring world vocabulary.\n"
             "- Use chapter context only to clarify established world terms or consequences; do not use it to jump ahead in the plot.\n"
-            "- Add detail of one of these types: emotional valence, sensory detail, body language, character motivation, consequence, or implication.\n"
+            "- Make the rewrite answer as much as the evidence supports: what changed, who caused it, who reacts, why it matters, and what it sets up next.\n"
+            "- Add detail of one of these types: emotional valence, body language, character motivation, consequence, implication, flashback/timeline clarity, or supported ability effect.\n"
             "- Do NOT change which named characters appear, in what order, or what they do.\n"
-            "- Length target: 50-80 words per panel. Above 100 words loses single-panel focus.\n"
+            "- Length target: 45-110 words per beat. Above 120 words usually loses focus.\n"
             "- Reuse recurring world vocabulary freely as already-established context, but do not invent new vocabulary.\n"
             "- Skip an index if you cannot expand without violating grounding constraints.\n"
             "- Avoid template filler such as 'the next exchange', 'the pressure carries forward', or 'the situation tightens' unless the line's evidence says it concretely.\n\n"
@@ -2358,15 +2440,18 @@ class LLMRouter:
             "Rules:\n"
             "- Rewrite every supplied index exactly once.\n"
             "- Use local_evidence as the source of truth. It contains ordered panel action, dialogue, and captions for the same segment.\n"
-            "- For blank, visual-caption, one-sentence, or short lines, write 2 natural recap sentences when local_evidence supports it.\n"
+            "- Treat each index as one grouped story beat. Combine related setup, action, reaction, and consequence into a paragraph instead of listing each panel move.\n"
+            "- For blank, visual-caption, one-sentence, or short lines, write 2-4 natural recap sentences when local_evidence supports it.\n"
             "- Convert visible facts into story events. Bad: 'his expression is fearful'. Good: 'he hesitates because the room has already turned hostile'.\n"
             "- Do not mention panels, pages, frames, camera, foreground/background, floors, signs, clothing, hair, eyes, facial expressions, poses, or that something is visible/shown.\n"
             "- Avoid placeholder subjects like 'a person' or 'another person'. Use a stable role label such as the teacher, the red-haired student, the aggressor, the injured student, the bystander, or John Doe when locally supported.\n"
             "- Paraphrase dialogue as intent or consequence. Do not quote raw OCR unless the exact wording is essential.\n"
             "- Do not invent names, motives, relationships, flashbacks, or future events.\n"
+            "- If the beat is a flashback, memory, or time skip, signal that clearly only when local_evidence supports it.\n"
+            "- If a power or ability is active, describe the supported effect or tactical consequence without inventing extra rules.\n"
             "- Preserve chronology and keep each index focused on its own panel_start-panel_end range.\n"
             "- If local_evidence is empty, return an empty string for that index.\n"
-            "- Target 30-70 words per non-empty line. Avoid one-sentence caption fragments.\n\n"
+            "- Target 45-95 words per non-empty line. Avoid one-sentence caption fragments.\n\n"
             f"Project title: {project_title or '(unknown)'}\n"
             f"Chapter summary for continuity only: {chapter_summary or '(none)'}\n"
             f"Segments: {json.dumps(payload, ensure_ascii=False)}\n"
@@ -2399,6 +2484,7 @@ class LLMRouter:
             "- Rewrite EVERY supplied index exactly once, in order, using the same integer indices. Missing indices make the output unusable.\n"
             "- Preserve chronology and the local beat coverage for each index. Do not merge beats, skip beats, or borrow a later event into an earlier segment.\n"
             "- Use local_evidence as the source of truth. current/previous_line/next_line are continuity hints, not authority when they sound wrong.\n"
+            "- Treat each index as one grouped story beat paragraph, not a panel caption. Combine related setup, action, reaction, and consequence into one coherent recap beat.\n"
             "- Use only names supported by local_evidence or the supplied character roster. If a name is uncertain, use a stable role label grounded in the segment evidence.\n"
             "- Do not invent motives, backstory, relationships, powers, school rules, future events, or spoilers.\n"
             "- Remove malformed or accidental text completely. Never preserve fragments like 'John blocks are so exhausting.'\n"
@@ -2406,14 +2492,17 @@ class LLMRouter:
             "- Never mention panels, pages, frames, speech bubbles, captions, camera, close-ups, things being visible, things being shown, signs, buttons, clothing, hair, eyes, poses, or expressions as visual objects.\n"
             "- Convert visual evidence into story meaning. Bad: 'A sign is visible on the wall.' Good: 'The confrontation moves into a place where the character has less room to escape.'\n"
             "- Do not output generic bridge filler such as 'the situation escalates', 'the pressure rises', or 'the scene shifts' unless the sentence names the concrete cause.\n"
+            "- Every rewrite should make clear, whenever the evidence supports it, what changed, who caused it, how others react, why it matters, and what tension carries forward.\n"
             "- Use clean spoken English. No fragments. No repeated sentence starts. No first person. No direct address to the viewer.\n\n"
             "Style target:\n"
             "- Dramatic but faithful YouTube recap voice.\n"
-            "- Each non-empty segment should usually be 35-75 words and 2-3 sentences.\n"
-            "- Lead with cause and stakes, then action, then consequence.\n"
+            "- Each non-empty segment should usually be 45-110 words and 2-4 sentences.\n"
+            "- Lead with cause or change, then action, then consequence and stakes.\n"
             "- Keep the protagonist or viewpoint character as the emotional anchor when the local evidence supports one.\n"
             "- Let the script build according to the supplied chapter summary and ordered evidence, not a fixed template.\n"
             "- If a beat has weak evidence, write one conservative but narrative transition grounded in nearby context, not a literal caption.\n\n"
+            "- Make flashbacks, memories, nonlinear jumps, and time skips unmistakable when the evidence supports them.\n"
+            "- Explain powers or special abilities only to the degree supported by the evidence, focusing on effect, cost, or consequence rather than invented rules.\n\n"
             f"Project title: {project_title or '(unknown)'}\n"
             f"Chapter summary for continuity only: {chapter_summary or '(none)'}\n"
             f"Character roster: {json.dumps(character_roster, ensure_ascii=False)}\n"
@@ -2447,14 +2536,20 @@ class LLMRouter:
             "- Use each segment's local_evidence as the source of truth; current is only a weak draft that may contain bad wording.\n"
             "- Preserve the story arc implied by the chapter summary and the ordered segment evidence.\n"
             "- Do not invent facts, motives, relationships, names, power rules, or future events.\n"
+            "- Treat each segment as one grouped story beat paragraph, not as a panel caption. Combine related setup, action, reaction, and consequence into one coherent recap beat.\n"
+            "- Preserve supported power mechanics exactly as local evidence presents them. If a scene implies time-stop, aura control, speed, strength, healing, or another ability through dialogue/action/scene memory, narrate the effect and consequence without inventing extra rules.\n"
+            "- Flashbacks, memories, dreams, and time skips require explicit support from local evidence or scene memory. Visual color changes alone are not enough.\n"
             "- Use named characters only when supported by the segment evidence, current draft, or character roster. Use role labels for uncertain people.\n"
+            "- Prefer names over vague labels in fight/action scenes when the roster/evidence identifies the fighters. Keep pronouns clear by naming the attacker/defender whenever control of the fight changes.\n"
+            "- For fight scenes, preserve the tactical flow: opening move, reaction, counter, power effect, injury, retreat, interruption, or emotional turn. Do not summarize several distinct blows as one generic clash unless evidence is genuinely thin.\n"
             "- Never mention panels, pages, frames, speech bubbles, captions, close-ups, visible buttons/signs, camera, clothing, hair, eyes, poses, or expressions as visual objects.\n"
             "- Convert weak visual details into story function. Background signs, UI labels, room fixtures, or other non-story objects should become location flow or be omitted.\n"
             "- Do not preserve OCR fragments, equations, menu text, or incidental signs unless they matter to the story.\n"
+            "- Preserve meaningful isolated speech/thought bubbles and narration cards. A mostly blank segment with one clean bubble is not empty; paraphrase the bubble's story meaning and connect it to adjacent stakes.\n"
             "- Remove malformed text and duplicate beats. Never say the same punch/kick twice unless the evidence shows separate attacks.\n"
             "- Avoid generic filler: no 'the pressure rises', 'the situation escalates', 'the scene shifts', 'less room to back down', or similar empty glue.\n"
-            "- Use active verbs and concrete stakes. Make every segment answer: what changed, why does it matter, what pressure does it create next?\n"
-            "- Keep each segment 2-3 sentences and roughly 35-75 words unless evidence is genuinely thin.\n\n"
+            "- Use active verbs and concrete stakes. Make every segment answer: what changed, who caused it, who reacts, why does it matter, and what pressure does it create next?\n"
+            "- Keep each segment 2-4 sentences and roughly 45-110 words unless evidence is genuinely thin.\n\n"
             "General cleanup targets:\n"
             "- Replace raw caption/OCR lines with natural story setup when the text is incidental.\n"
             "- Omit background object descriptions unless they clarify where the characters are or what changes.\n"
@@ -2496,7 +2591,8 @@ class LLMRouter:
             "- Prefer paraphrase over direct quotation unless the exact quoted wording is essential.\n"
             "- Preserve concrete facts that are supported locally.\n\n"
             "- Eliminate visual-report phrasing like 'is shown', 'is depicted', 'is displayed', or 'is seen'. Rewrite it as story action or consequence.\n"
-            "- Eliminate vague filler like 'confusion takes over', 'magic erupts without warning', or 'consequences push the story forward'.\n\n"
+            "- Eliminate vague filler like 'confusion takes over', 'magic erupts without warning', or 'consequences push the story forward'.\n"
+            "- FORBIDDEN OPENERS that MUST be rewritten: 'The conversation reveals', 'The exchange starts with', 'The next line', 'A nearby response adds', 'By the end of the exchange', 'A character states', 'A voice says'. When you see these, identify the STORY EVENT in the quoted text (farewell, warning, offer, threat, decision, revelation) and rewrite as a narrative sentence describing that event. Example: 'The conversation reveals \"I don't think we'll be seeing each other again.\"' → 'She delivers a quiet farewell to Hiro, the words carrying the weight of a final parting.'\n\n"
             f"Project title: {project_title or '(unknown)'}\n"
             f"Chapter metadata: {json.dumps(chapter_metadata, ensure_ascii=False)}\n"
             f"Chapter summary: {chapter_summary or '(none)'}\n"
@@ -2564,7 +2660,8 @@ class LLMRouter:
             "- Prefer canonical character names from the story bible, character dictionary, protagonist hint, and allowed name list.\n"
             "- If a name is uncertain, use a natural role label instead of inventing a new proper name.\n"
             "- Never keep placeholder labels like Unknown man, Unknown woman, Unknown child, narrator voice, or chibi-style person in the final line.\n"
-            "- Each line should usually be one natural sentence, or two short sentences at most.\n"
+            "- Treat each segment as one grouped story beat. Combine related setup, action, reaction, and consequence instead of narrating isolated visual fragments.\n"
+            "- Each line should usually be 2-3 natural sentences. Use 1 concise sentence only when the evidence is genuinely thin or transitional.\n"
             "- For segments covering multiple panels or sitting between clearly narrated beats, write a short conservative bridge line instead of returning empty.\n"
             "- Do not return an empty string when the segment has reference images, trusted vision evidence, dialogue, captions, or neighboring context.\n"
             "- Reserve an empty string only when there is literally no image evidence and no textual evidence.\n"
@@ -2572,6 +2669,7 @@ class LLMRouter:
             "- If the images do not support a safe spoken line, return an empty string for that segment.\n"
             "- Remove visual-report phrasing like 'is shown', 'is depicted', 'is displayed', or 'is seen'. Rewrite with concrete story movement instead.\n"
             "- Remove vague filler like 'confusion takes over', 'magic erupts without warning', or 'consequences push the story forward'.\n"
+            "- If the beat contains a flashback, time skip, or supported ability use, make that clear in natural recap language without inventing extra lore or rules.\n"
             "- Never mention panels, pages, frames, viewers, or camera language.\n\n"
             f"Project title: {project_title or '(unknown)'}\n"
             f"Chapter metadata: {json.dumps(chapter_metadata, ensure_ascii=False)}\n"
@@ -2659,7 +2757,7 @@ class LLMRouter:
                 if aliases:
                     parts.append(f"(also: {', '.join(aliases)})")
                 if role:
-                    parts.append(f"— {role}")
+                    parts.append(f"- {role}")
                 char_entries.append(" ".join(parts))
             char_block = "\n".join(char_entries)
 
@@ -2732,7 +2830,8 @@ class LLMRouter:
             "with a real name or natural role label when the evidence supports it.\n"
             "- Remove speculative hedges like \"perhaps\", \"presumably\", or \"seemingly\".\n"
             "- Do not narrate raw sound effects by themselves. Translate them into the event they signal if the evidence supports it.\n"
-            "- Keep the wording compact and TTS-friendly, usually 8-22 words.\n"
+            "- Treat each line as a grouped story beat, not a tiny caption fragment.\n"
+            "- Keep the wording natural and TTS-friendly, usually 30-80 words across 1-3 sentences depending on how much evidence the beat contains.\n"
             "- Use previous_line and next_line only for flow; do not steal facts from neighboring slots.\n"
             "- If strict_line is already the best grounded version, stay close to it and simply make it sound smoother.\n"
             "- Never use first-person narration.\n"
@@ -2783,6 +2882,7 @@ class LLMRouter:
             "Critical rules:\n"
             "- Rewrite every supplied line.\n"
             "- Keep the SAME local story beat and the SAME segment alignment.\n"
+            "- Treat each line as one grouped story beat paragraph, not as a tiny caption.\n"
             "- Improve cadence, cohesion, and spoken flow without changing what happens.\n"
             "- If current_line is a duplicate, generic bridge, visual inventory, or stale scene-summary fallback, ignore it and rewrite from trusted local evidence.\n"
             "- Trusted local evidence order: vision_dialogue, vision_caption, vision_action_beat, ocr_text, visual_cues.\n"
@@ -2796,11 +2896,11 @@ class LLMRouter:
             "- Avoid panel-description language such as 'is shown', 'looks', 'stands', 'smiles', 'visible in the background', sound-effect wording, or camera framing.\n"
             "- Replace reported-speech constructions like 'asking', 'telling', 'calling out', or 'stating' with the event, pressure, or decision they create.\n"
             "- Never output inventory captions like 'figures on an escalator', 'young women relaxing', 'two mecha suits', or 'charges forward' unless rewritten into story consequence.\n"
-            "- Prefer cause, decision, pressure, consequence, or emotional turn over visual inventory.\n"
+            "- Prefer cause, decision, pressure, consequence, emotional turn, flashback clarity, or supported ability effect over visual inventory.\n"
             "- Preserve reliable names, setting terms, and concrete plot facts from the evidence.\n"
             "- Do not keep placeholder labels like Unknown man, Unknown woman, Unknown child, or narrator voice in the final line.\n"
             "- Do not invent motives, flashbacks, lore, or timeline shifts.\n"
-            "- Keep wording compact and TTS-friendly, usually 8-24 words.\n"
+            "- Keep wording natural and TTS-friendly, usually 40-95 words across 2-4 sentences when the evidence supports a full beat; thinner beats may stay shorter.\n"
             "- previous_line and next_line are only for flow; do not steal facts from neighboring segments.\n"
             "- If the current_line is already the best grounded narration, keep it close and just smooth the phrasing.\n"
             "- Never preserve a repeated environmental fallback line if the local evidence is about a character conflict, battle action, cockpit event, or dialogue exchange.\n"
@@ -2859,9 +2959,10 @@ class LLMRouter:
             "Critical rules:\n"
             "- Rewrite every supplied index.\n"
             "- Each returned line must stay aligned to the same segment and panel range.\n"
-            "- Each non-empty line must be 2-3 complete English sentences; use 3 sentences when panel_count is 3+.\n"
-            "- Sentence 1 should preserve or refine current_line when it is useful, or establish the local subject when current_line is blank/generic. Sentence 2 should add the next concrete local beat from vision_dialogue, vision_caption, vision_action_beat, ocr_fallback_text, or local_evidence. Sentence 3 names the consequence, emotional pressure, or transition when panel_count is 3+.\n"
-            "- Aim for 35-70 words per line. Do not return a thin one-sentence caption.\n"
+            "- Treat each segment as one grouped story beat. Collapse related setup, action, reaction, and consequence into a paragraph instead of listing each panel.\n"
+            "- Each non-empty line must usually be 2-4 complete English sentences; use sentence 4 only when the evidence genuinely supports a layered exchange, reveal, or aftermath.\n"
+            "- Sentence 1 should preserve or refine current_line when it is useful, or establish the local subject and change when current_line is blank/generic. Sentence 2 should add the key reaction, consequence, or dialogue meaning from vision_dialogue, vision_caption, vision_action_beat, ocr_fallback_text, or local_evidence. Sentence 3 should clarify stakes, emotional pressure, supported ability effect, flashback clarity, or what the beat hands to the next moment.\n"
+            "- Aim for 45-105 words per line. Do not return a thin one-sentence caption.\n"
             "- Do not invent plot points. Use scene_summary only as context, not as a source to copy.\n"
             "- Use ocr_fallback_text only when the vision fields are too sparse, and never repeat garbled OCR verbatim.\n"
             "- Do not copy generic bridge phrases like 'stays at the centre', 'next exchange takes shape', or 'pressure carries forward'. Replace them with concrete local story movement.\n"
@@ -2963,12 +3064,15 @@ class LLMRouter:
             f"- Return exactly {beat_count} beats unless the scene list clearly supports fewer.\n"
             "- Write in third-person English.\n"
             "- Keep beats chronological.\n"
-            "- Each beat must describe a STORY EVENT (who did what and why), not a visual description of a panel.\n"
+            "- Each beat must describe a STORY EVENT (who did what, what changed, and why it matters), not a visual description of a panel.\n"
             "- Bad: 'A man stands in a room looking worried.' Good: 'Character A discovers the storage room has been emptied overnight.'\n"
             "- Use real character names whenever they are reliable. Never write 'a young man' or 'someone' when a name is available in the character dictionary.\n"
             "- Preserve names from the supplied character dictionary.\n"
             "- Do not treat common OCR phrases as names. Examples: Por Favor, Please, Claro, De Novo, Olá, Sim, Não, Gracias, Obrigado.\n"
             "- Convert dialogue into story events instead of copying OCR fragments.\n"
+            "- Treat each beat like a recap paragraph anchor: it should make clear what changes, who causes it, who reacts, what the emotional or strategic stakes are, and what thread carries forward.\n"
+            "- When the chapter includes powers, special abilities, or fantasy systems, describe only the supported effect, limit, or tactical consequence.\n"
+            "- When the chapter shifts into a flashback, memory, dream, or time skip, make that timeline move explicit only when the supplied evidence supports it.\n"
             "- If a scene has weak or missing text, use surrounding scenes and captions conservatively; do not invent a new event, motive, or timeline label.\n"
             "- Do not call a scene a flashback, dream, memory, past trauma, regression, or rebirth unless that exact timeline idea is directly supported by the supplied text for that scene.\n"
             "- If a character dies and then later wakes up earlier in time, describe the death as happening live first; do not label it as a flashback unless the text explicitly says it is one.\n"

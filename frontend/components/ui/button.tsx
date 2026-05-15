@@ -6,7 +6,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 /**
- * Button — Liquid Memory + Notion blend.
+ * Button - Liquid Memory + Notion blend.
  *
  * • Default = mint accent with soft glow halo (the only "loud" element)
  * • Secondary = glass pill (Notion-style ghost with a hint of depth)

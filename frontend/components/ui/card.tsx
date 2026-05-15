@@ -3,15 +3,15 @@ import type { HTMLAttributes } from "react";
 import { cn } from "@/lib/utils";
 
 /**
- * Card — the liquid-glass surface every page composes against.
+ * Card - the liquid-glass surface every page composes against.
  * Uses the `.p-glass` primitive from globals.css so every Card gets the
  * top hairline highlight + layered shadow + backdrop blur, identical to
  * the timeline editor surfaces.
  *
  * Adjust padding via the `padded` prop:
- *   • md (default) = 24px — pages, sections
- *   • lg            = 32px — hero cards, primary content
- *   • sm            = 16px — tight metadata blocks
+ *   • md (default) = 24px - pages, sections
+ *   • lg            = 32px - hero cards, primary content
+ *   • sm            = 16px - tight metadata blocks
  */
 type Padding = "sm" | "md" | "lg" | "none";
 

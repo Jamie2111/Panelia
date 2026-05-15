@@ -6,7 +6,7 @@ from threading import Lock
 from typing import Iterable
 
 from app.schemas.project import ChapterMetadata
-from app.services.character_name_filters import looks_like_false_character_name
+from app.services.character_name_filters import is_valid_character_name_candidate, looks_like_false_character_name
 from app.services.ocr_cleaner import clean_ocr_text
 
 
@@ -46,7 +46,11 @@ class CharacterNameService:
             best_surface = surface_forms.get(key, Counter()).most_common(1)
             if not best_surface:
                 continue
-            if looks_like_false_character_name(key) or looks_like_false_character_name(best_surface[0][0]):
+            if (
+                looks_like_false_character_name(key)
+                or looks_like_false_character_name(best_surface[0][0])
+                or not is_valid_character_name_candidate(best_surface[0][0])
+            ):
                 continue
             character_dictionary[key] = best_surface[0][0]
 
@@ -88,6 +92,8 @@ class CharacterNameService:
             name = self._normalize_name(candidate)
             key = self._name_key(name)
             if not key or key in seen:
+                continue
+            if not is_valid_character_name_candidate(name):
                 continue
             seen.add(key)
             normalized.append(name)
@@ -159,7 +165,7 @@ class CharacterNameService:
         for name in names:
             normalized = self._normalize_name(name)
             key = self._name_key(normalized)
-            if not key or key in seen:
+            if not key or key in seen or not is_valid_character_name_candidate(normalized):
                 continue
             seen.add(key)
             ordered.append(normalized)
@@ -182,10 +188,10 @@ class CharacterNameService:
         if not tokens:
             return ""
         stop_tokens = {
-            "about", "after", "again", "am", "and", "apocalypse", "are", "be", "because", "before", "being", "customer",
+            "about", "after", "again", "am", "and", "apocalypse", "are", "be", "because", "before", "being", "break", "customer",
             "did", "do", "does", "dont", "fi", "for", "freeze", "from", "going", "google", "guys", "have", "help",
             "hello", "here", "hey", "hotel", "im", "i'm", "is", "just", "ko", "kofi", "link",
-            "manager", "money", "my", "name", "need", "next", "please", "questions", "really", "scans",
+            "manager", "money", "my", "name", "need", "next", "other", "please", "questions", "really", "run", "scans",
             "spreadsheet", "staff", "thanks", "that", "the", "their", "there", "they", "this", "truck",
             "trucks", "very", "what", "world", "you", "your", "official", "translation", "translations", "website",
             "trailer", "webtoon", "youtube", "reader", "viewpoint", "omniscient", "survive", "survival", "destroyed",
@@ -198,7 +204,7 @@ class CharacterNameService:
             "il", "mais", "une", "dans", "pois", "ele", "para", "que", "avec", "avez", "notre", "vida", "sua",
             "past", "crowd", "frozen", "global", "coming", "disaster", "shelter", "created", "an", "icy",
             "age", "through", "night", "saint", "claus",
-            "sorry", "wait", "okay", "yeah", "yep", "nope",
+            "sorry", "wait", "okay", "yeah", "yep", "nope", "stop", "idiot",
             "dead", "jle", "trle", "nati", "salur", "sauri",
         }
         if len(tokens) > 3:
@@ -219,7 +225,8 @@ class CharacterNameService:
             return ""
         if len(tokens) == 1 and len(tokens[0]) < 4:
             return ""
-        return " ".join(token.capitalize() for token in tokens)
+        normalized = " ".join(token.capitalize() for token in tokens)
+        return normalized if is_valid_character_name_candidate(normalized) else ""
 
     def _metadata_description_excerpt(self, description: object) -> str:
         if isinstance(description, dict):

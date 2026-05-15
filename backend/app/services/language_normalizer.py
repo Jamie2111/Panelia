@@ -49,8 +49,8 @@ class LanguageNormalizer:
     def _normalize_text(self, value: str, language: str) -> str:
         text = str(value or "").strip()
         text = text.replace("…", "...")
-        text = text.replace("—", ", ")
-        text = text.replace("–", ", ")
+        text = text.replace("-", ", ")
+        text = text.replace("-", ", ")
         if language in {"zh", "ja"}:
             text = text.replace("，", ", ").replace("。", ". ").replace("！", "! ").replace("？", "? ")
         elif language == "ko":

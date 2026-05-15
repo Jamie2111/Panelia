@@ -616,7 +616,7 @@ export default function PreviewPage() {
 
           <Card>
             <CardTitle className="text-base">Merge queue</CardTitle>
-            <CardDescription className="mt-1">Arrange clips in order — Panelia normalizes resolution before merging.</CardDescription>
+            <CardDescription className="mt-1">Arrange clips in order - Panelia normalizes resolution before merging.</CardDescription>
             <div className="mt-6 space-y-3">
               {queuedVideos.length ? (
                 queuedVideos.map((video, index) => (

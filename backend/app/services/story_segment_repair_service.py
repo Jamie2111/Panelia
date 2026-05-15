@@ -1,7 +1,7 @@
-"""DEPRECATED — see app/services/DEPRECATED.md.
+"""DEPRECATED - see app/services/DEPRECATED.md.
 
 StorySegmentRepairService patches weak narrations after the legacy cascade.
-The vision pipeline doesn't produce "weak" narrations to repair — bad panels
+The vision pipeline doesn't produce "weak" narrations to repair - bad panels
 get flagged for in-place regeneration in the UI instead. Retained for
 projects still on script_pipeline_version="legacy".
 """
@@ -277,7 +277,7 @@ class StorySegmentRepairService:
                     break
 
             # If this pass didn't improve anything, further passes will not
-            # either — break early to avoid wasting LLM budget.
+            # either - break early to avoid wasting LLM budget.
             if repaired_this_pass == 0:
                 break
 

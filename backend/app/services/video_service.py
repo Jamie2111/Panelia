@@ -305,7 +305,7 @@ class VideoRenderService:
           - Thin accent line (top 4 px)
           - Series title (large, white, centred)
           - Chapter info (medium, muted, centred)
-          - Character roster (small, spaced, centred) — max 5 names
+          - Character roster (small, spaced, centred) - max 5 names
           - Thin accent line (bottom 4 px)
         """
         w, h = video_config.width, video_config.height
@@ -320,7 +320,7 @@ class VideoRenderService:
         draw.rectangle([(0, 0), (w, bar_h)], fill=accent)
         draw.rectangle([(0, h - bar_h), (w, h)], fill=accent)
 
-        # Font helpers — fall back to default if system font not found
+        # Font helpers - fall back to default if system font not found
         def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
             for candidate in (
                 "/System/Library/Fonts/SFNS.ttf",
@@ -508,7 +508,7 @@ class VideoRenderService:
         # Build fade expression: alpha = opacity unless near start or end
         fade_in = wm.fade_in_seconds
         fade_out = wm.fade_out_seconds
-        total = f"(main_h/main_w*{w})"  # not used — use duration from video
+        total = f"(main_h/main_w*{w})"  # not used - use duration from video
         alpha = wm.opacity
         # FFmpeg enable expression for fade: linear ramp at boundaries
         enable_expr = (
@@ -656,7 +656,7 @@ class VideoRenderService:
                 audio_event = ordered_events[segment_index - 1]
             audio_start = timeline_seconds
 
-            # Build a chapter marker for each story segment — first sentence becomes the title
+            # Build a chapter marker for each story segment - first sentence becomes the title
             segment_text = str(story_segment.text or "").strip()
             marker_title = self._chapter_title_from_text(segment_text, segment_index)
             chapter_markers.append(ChapterMarker(
@@ -888,7 +888,7 @@ class VideoRenderService:
         """Build start/end poses for the Ken Burns effect.
 
         Cycles through 8 directional camera moves so adjacent panels always
-        feel varied. Zoom range kept subtle (1.0–1.04) to avoid cropping
+        feel varied. Zoom range kept subtle (1.0-1.04) to avoid cropping
         important panel content; pan magnitude ±3 % of frame so it reads as
         cinematic motion without feeling shaky.
         """
@@ -896,7 +896,7 @@ class VideoRenderService:
         sx, sy, ex, ey, zoom_in = move
 
         base_zoom = 1.0 + (sequence_seed % 3) * 0.002   # 1.000, 1.002, or 1.004
-        zoom_delta = 0.022 + (sequence_seed % 4) * 0.004  # 0.022–0.034
+        zoom_delta = 0.022 + (sequence_seed % 4) * 0.004  # 0.022-0.034
 
         if zoom_in:
             start_zoom = base_zoom
@@ -990,7 +990,7 @@ class VideoRenderService:
         """Generate procedural panel-transition whoosh SFX mixed into a single buffer.
 
         Each hold→hold transition gets a short (80 ms) band-filtered noise burst
-        with a quick rise-fall envelope — creates a subtle cinematic 'whoosh'
+        with a quick rise-fall envelope - creates a subtle cinematic 'whoosh'
         feeling at panel cuts.
         """
         sfx_buf = np.zeros(total_samples, dtype=np.float32)
@@ -1010,7 +1010,7 @@ class VideoRenderService:
         whoosh_samples = int(whoosh_dur * sample_rate)
         t = np.linspace(0, whoosh_dur, whoosh_samples, endpoint=False)
 
-        # Band-pass mask indices in FFT space for 700–3000 Hz
+        # Band-pass mask indices in FFT space for 700-3000 Hz
         freqs = np.fft.rfftfreq(whoosh_samples, d=1.0 / sample_rate)
         low_cut, high_cut = 700.0, 3000.0
 
@@ -1510,9 +1510,9 @@ class VideoRenderService:
 
           • If we have audio: target = audio + 80ms tail. Cap floor at
             0.45s (the minimum a panel can be on screen before the eye
-            registers anything). DROP the legacy 1.9s minimum — it was
+            registers anything). DROP the legacy 1.9s minimum - it was
             inserting up to 1.5s of silence after short panels.
-          • If we don't have audio (rare — preview before TTS), fall back
+          • If we don't have audio (rare - preview before TTS), fall back
             to a word-count heuristic that's also a touch tighter than
             before.
           • A user-set `manual_duration` (the inspector slider) wins over
@@ -1908,7 +1908,7 @@ class VideoRenderService:
     def _load_page_image(path: str) -> Image.Image:
         # Be tolerant of partially-written cache entries (rare crash mid-write).
         # If the file is truncated we delete it and re-raise so the caller's
-        # regenerate path takes over — better than aborting the whole render.
+        # regenerate path takes over - better than aborting the whole render.
         try:
             with Image.open(path) as image:
                 return image.convert("RGB")
@@ -1975,7 +1975,7 @@ class VideoRenderService:
 
     # ── Content-safety blur intensities ──────────────────────────────────
     # "borderline" panels (partial nudity, intimate scenes) get a moderate
-    # blur — the silhouette is still readable so the story beat works.
+    # blur - the silhouette is still readable so the story beat works.
     # "explicit" panels are usually skipped via panel.keep=False; this
     # heavier sigma is the fallback for when the user manually force-keeps
     # an explicit panel so nothing demonetizing ever ships unintentionally.

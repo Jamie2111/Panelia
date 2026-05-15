@@ -29,6 +29,7 @@ class PipelineContext:
             self.project_id,
             self.job_id,
             status=JobStatus.RUNNING.value,
+            progress=0,
             started_at=self.store._now().isoformat(),
             message=message,
         )
@@ -36,14 +37,16 @@ class PipelineContext:
 
     def progress(self, progress: float, message: str) -> None:
         self.ensure_not_cancelled()
+        current_job = self.store.get_job(self.project_id, self.job_id)
+        next_progress = max(float(int(max(float(progress), 0.0) + 0.9999)), float(current_job.progress or 0.0))
         self.store.update_job(
             self.project_id,
             self.job_id,
             status=JobStatus.RUNNING.value,
-            progress=progress,
+            progress=next_progress,
             message=message,
         )
-        self.store.update_stage_state(self.project_id, self.stage, StageStatus.RUNNING, progress=progress, message=message)
+        self.store.update_stage_state(self.project_id, self.stage, StageStatus.RUNNING, progress=next_progress, message=message)
 
     def complete(self, message: str) -> None:
         self.store.update_job(

@@ -20,7 +20,7 @@ export function useEditorHotkeys({ pageCount, onSave, currentPanels }: HotkeyOpt
 
       const meta = e.metaKey || e.ctrlKey;
 
-      // Cmd+Z / Cmd+Shift+Z — undo / redo
+      // Cmd+Z / Cmd+Shift+Z - undo / redo
       if (meta && e.key === "z") {
         e.preventDefault();
         if (e.shiftKey) store.redo();
@@ -28,7 +28,7 @@ export function useEditorHotkeys({ pageCount, onSave, currentPanels }: HotkeyOpt
         return;
       }
 
-      // Cmd+S — save
+      // Cmd+S - save
       if (meta && e.key === "s") {
         e.preventDefault();
         onSave();

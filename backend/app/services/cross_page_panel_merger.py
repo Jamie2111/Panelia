@@ -121,7 +121,7 @@ class CrossPagePanelMerger:
 
     def _bottom_edge_panels(self, panels: list[PanelBox], page_height: int) -> list[PanelBox]:
         edge_margin = max(int(page_height * self.settings.cross_page_merge_edge_ratio), 90)
-        # Exclude full-page/splash panels — their uniform top/bottom borders are
+        # Exclude full-page/splash panels - their uniform top/bottom borders are
         # visually similar across any two consecutive pages, which causes false
         # cross-page merges at our 0.65 similarity threshold.  A genuine cross-page
         # panel is always a partial-page region; it never spans nearly the full height.

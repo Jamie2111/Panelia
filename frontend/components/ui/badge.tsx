@@ -3,7 +3,7 @@ import type { HTMLAttributes, ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 /**
- * Badge — the universal status pill.
+ * Badge - the universal status pill.
  *
  * Tone variants map 1:1 to the .p-pill-* helpers in globals.css so
  * Badge looks identical to ConfidencePill and the in-component pills

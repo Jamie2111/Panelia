@@ -234,7 +234,7 @@ export default function CreateProjectPage() {
   return (
     <AppShell
       title="Create a new project"
-      description="Pull in a MangaDex or comix.to chapter, a ZIP, a PDF, or raw page images. Pick a narrator and soundtrack with live previews — then we run the rest."
+      description="Pull in a MangaDex or comix.to chapter, a ZIP, a PDF, or raw page images. Pick a narrator and soundtrack with live previews - then we run the rest."
     >
       <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
         <div className="space-y-6">
@@ -340,7 +340,7 @@ export default function CreateProjectPage() {
                   <UploadCloud className="mx-auto h-10 w-10 text-accent" />
                   <p className="mt-4 font-medium text-foreground">Drag and drop pages here</p>
                   <p className="mt-2 text-sm text-mutedForeground">
-                    ZIP · PDF · JPG · PNG · WEBP — or an entire folder.
+                    ZIP · PDF · JPG · PNG · WEBP - or an entire folder.
                   </p>
                   <label className="mt-6 inline-flex cursor-pointer items-center gap-2 rounded-full bg-accent px-4 py-2 text-sm font-medium text-accent-foreground shadow-[0_0_24px_-6px_rgb(var(--p-accent)/0.6)] transition-transform duration-fast hover:-translate-y-px">
                     Choose files

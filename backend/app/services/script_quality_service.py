@@ -1,7 +1,7 @@
-"""DEPRECATED — see app/services/DEPRECATED.md.
+"""DEPRECATED - see app/services/DEPRECATED.md.
 
 ScriptQualityService is a 2,200-line quality gate for the legacy narration
-cascade. The vision pipeline (PanelVisionNarrator) does not need it —
+cascade. The vision pipeline (PanelVisionNarrator) does not need it -
 panels that fail are flagged for in-place regeneration. Kept on disk for
 projects that still use script_pipeline_version="legacy".
 """
@@ -843,7 +843,7 @@ class ScriptQualityService:
             r"\b(?:post-storm era|useful recruits)\b",
             r"\bthe stakes (?:rise|grow|become)\b",
             r"\b(?:the|this) moment (?:signals|marks|represents) (?:a|the)\b",
-            # "perhaps" is a hedge — flag it as filler. But "seems", "appears", and "clearly"
+            # "perhaps" is a hedge - flag it as filler. But "seems", "appears", and "clearly"
             # appear legitimately in direct narration ("She seems exhausted"), so omit them.
             r"\bperhaps\b",
             # Story-pacing filler injected by LLMs that meta-narrates instead of narrates
@@ -1136,7 +1136,7 @@ class ScriptQualityService:
                     # Visual-only blank segment: no narration was produced on purpose;
                     # treat as low_information so it doesn't penalise usage rate.
                     contribution = "low_information"
-                    reason = "visual-only blank segment — narration intentionally omitted"
+                    reason = "visual-only blank segment - narration intentionally omitted"
                     is_meaningful_candidate = False
                 elif generated_visual_summary:
                     contribution = "low_information"
@@ -1151,7 +1151,7 @@ class ScriptQualityService:
                     if contribution != "redundant_near_duplicate":
                         overlap = len(candidate_tokens & text_tokens)
                         overlap_ratio = overlap / max(1, min(len(candidate_tokens), 12))
-                        # In panel mode narration is a paraphrase — even 1 shared content word
+                        # In panel mode narration is a paraphrase - even 1 shared content word
                         # is enough to count as used (vs. 2 for multi-panel segments).
                         # If there are no content tokens at all in the narration but the
                         # segment IS narrated (text not empty), treat as meaningfully used;
@@ -1488,7 +1488,7 @@ class ScriptQualityService:
             r"\bhandoff\b",
             r"\bthe paragraph\b",
         )
-        # Note: do NOT include _has_filler_meta_language here — filler_meta is already
+        # Note: do NOT include _has_filler_meta_language here - filler_meta is already
         # penalized separately in the global score and should not double-count as a vague scene.
         return any(re.search(pattern, lowered) for pattern in vague_patterns)
 
@@ -1604,7 +1604,7 @@ class ScriptQualityService:
 
         Using a window of 3 instead of just adjacent pairs catches cases where an
         identical recap sentence slips in after a bridging one-liner.  The 34%
-        Jaccard threshold is kept — below that the overlap is coincidental vocabulary,
+        Jaccard threshold is kept - below that the overlap is coincidental vocabulary,
         not an actual duplicate.
         """
         duplicate_count = 0
@@ -1739,7 +1739,7 @@ class ScriptQualityService:
             "perhaps", "presumably", "seemingly", "apparently", "appears to",
             "seems to", "maybe", "might be",
             # "as if" is idiomatic in narration ("she passes her belongings as if
-            # it's over") — do not flag it as speculation.
+            # it's over") - do not flag it as speculation.
         )
         return any(marker in lowered for marker in speculative_markers)
 

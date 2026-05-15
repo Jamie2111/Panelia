@@ -1,19 +1,19 @@
 """
-YouTubeBundleService — generates the "publish to YouTube" bundle.
+YouTubeBundleService - generates the "publish to YouTube" bundle.
 
 What this service produces after a project's video has rendered:
 
-  1. youtube_bundle/title.txt          — single best YouTube title (≤100 chars)
-  2. youtube_bundle/title_variants.json — three alternative titles ranked
-  3. youtube_bundle/description.md     — description with hook, summary,
+  1. youtube_bundle/title.txt          - single best YouTube title (≤100 chars)
+  2. youtube_bundle/title_variants.json - three alternative titles ranked
+  3. youtube_bundle/description.md     - description with hook, summary,
                                          chapters (if multiple), and a
                                          caption-friendly tags line
-  4. youtube_bundle/thumbnail_source.png — the panel image we selected
+  4. youtube_bundle/thumbnail_source.png - the panel image we selected
                                            as the visual base for the
                                            thumbnail
-  5. youtube_bundle/thumbnail.png      — viral-style thumbnail with text
+  5. youtube_bundle/thumbnail.png      - viral-style thumbnail with text
                                          overlay, 1280×720, ready to upload
-  6. youtube_bundle/manifest.json      — paths + metadata for the API
+  6. youtube_bundle/manifest.json      - paths + metadata for the API
 
 The whole bundle is intended to be drag-and-drop into YouTube Studio.
 Title goes in the title field, description.md content goes in the
@@ -23,7 +23,7 @@ Best-panel selection heuristic:
   • Skip the first 10% of panels (almost always title/credits boring)
   • Prefer panels whose vision narration matches "shocked", "revealed",
     "explodes", "appears", "kiss", "screams", "destroyed", "transforms"
-    etc. — the moments that pop on a thumbnail
+    etc. - the moments that pop on a thumbnail
   • Prefer larger original-image panels (more visual surface area)
   • Final tie-breaker: panel close to the climax (60-80% through the
     chapter)
@@ -76,6 +76,37 @@ _THUMBNAIL_KEYWORDS = (
     "dies", "monster", "giant", "huge", "massive", "tears", "blood",
     "weapon", "sword", "burning", "fire", "lightning",
 )
+
+
+def _normalize_chapter_label(raw: str | None) -> str:
+    """Coerce a chapter title into 'Chapters X-Y' or 'Chapter X' form.
+
+    Accepts whatever the upstream pipeline saved (often 'Combined chapters
+    1-10', 'chapter 4', 'Chapters 1 to 10', etc.) and returns a clean
+    label suitable for a YouTube title. Falls back to the input verbatim
+    if no number can be found, so series with non-numbered chapters
+    ('Epilogue', 'Side story') survive untouched.
+    """
+    if not raw:
+        return ""
+    text = str(raw).strip()
+    if not text:
+        return ""
+    # Range like "1-10", "1 to 10", "1 - 10" → "Chapters 1-10"
+    range_match = re.search(r"(\d+)\s*(?:-|-|-|to)\s*(\d+)", text, flags=re.IGNORECASE)
+    if range_match:
+        start, end = int(range_match.group(1)), int(range_match.group(2))
+        if start == end:
+            return f"Chapter {start}"
+        return f"Chapters {start}-{end}"
+    single_match = re.search(r"chapter\s*(\d+)", text, flags=re.IGNORECASE)
+    if single_match:
+        return f"Chapter {int(single_match.group(1))}"
+    bare_num = re.search(r"\b(\d+)\b", text)
+    if bare_num:
+        return f"Chapter {int(bare_num.group(1))}"
+    # No number? Strip dash separators and return as-is.
+    return text.replace("-", "-").replace("-", "-").strip()
 
 
 @dataclass
@@ -132,9 +163,9 @@ class YouTubeBundleService:
         """Generate the full bundle. Returns paths + metadata.
 
         New optional inputs power the YouTuber-grade additions:
-          • audio_manifest — used to compute chapter timestamps
-          • voice_config + video_config — used by the finishing renderer
-          • main_video_path — points at the rendered final.mp4 that we
+          • audio_manifest - used to compute chapter timestamps
+          • voice_config + video_config - used by the finishing renderer
+          • main_video_path - points at the rendered final.mp4 that we
             prepend the cold-open / append the outro to.
         Each is optional so legacy callers without finishing still work.
         """
@@ -192,10 +223,14 @@ class YouTubeBundleService:
                     offset_seconds += float(cold_open_plan.hold_seconds)
                 if preset.title_card_enabled:
                     offset_seconds += float(preset.title_card_duration_seconds)
-                if chapter_markers:
-                    description = self._inject_chapter_timestamps(
-                        description, chapter_markers, offset_seconds,
-                    )
+                # NOTE: chapter markers are still computed (used for video
+                # bookmarks + future Shorts splitting) but we no longer
+                # inject a "## Chapters" timestamp block into the
+                # description. The previous output bloated the description
+                # with low-quality auto-labels like "Hiro Covers Mouth" at
+                # 13:54 that read like a slow recap rather than a hook.
+                # Users who want timestamps can re-add them by hand from
+                # the bundle manifest in the publish studio.
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Cold-open / chapter-marker planning failed: %s", exc)
 
@@ -345,7 +380,7 @@ class YouTubeBundleService:
         """Append the YouTube chapter-timestamps block to a description.
 
         We slot it just after the first paragraph (the hook) and before
-        any bullet list / hashtag block — that's where every channel
+        any bullet list / hashtag block - that's where every channel
         with chapters puts theirs."""
         from app.services.video_finishing_service import (
             format_chapter_markers_for_description,
@@ -377,7 +412,7 @@ class YouTubeBundleService:
             return None
         # YouTube punishes the WHOLE video for a single demonetizing
         # thumbnail. Strictly exclude any panel flagged nsfw_* (borderline
-        # or explicit) or marked for blur — the thumbnail is the one
+        # or explicit) or marked for blur - the thumbnail is the one
         # surface that must be safe.
         def _is_safe_for_thumbnail(panel: dict[str, Any]) -> bool:
             if panel.get("content_blur"):
@@ -392,7 +427,7 @@ class YouTubeBundleService:
 
         safe_kept = [p for p in kept if _is_safe_for_thumbnail(p)]
         # If somehow every kept panel is flagged (very unusual), fall back
-        # to the full kept list rather than crashing — the panel will still
+        # to the full kept list rather than crashing - the panel will still
         # render through the blurred crop pipeline.
         if not safe_kept:
             safe_kept = kept
@@ -434,7 +469,7 @@ class YouTubeBundleService:
             except (TypeError, ValueError):
                 pass
 
-            # Bias toward 60–80% through the chapter (climax region)
+            # Bias toward 60-80% through the chapter (climax region)
             t = idx / max(1, total - 1)
             climax_score = max(0.0, 1.0 - abs(t - 0.72) * 3.0)
             score += climax_score * 2.0
@@ -622,7 +657,7 @@ class YouTubeBundleService:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("YouTubeBundleService LLM metadata failed: %s", exc)
 
-        # Heuristic fallback — always usable even without an API key.
+        # Heuristic fallback - always usable even without an API key.
         return self._fallback_metadata(
             project_name=project_name,
             chapter_title=chapter_title,
@@ -642,59 +677,78 @@ class YouTubeBundleService:
     ) -> tuple[str, list[str], str]:
         series = manga_title or project_name or "this chapter"
         chapter = chapter_title or "this chapter"
+        # The recap script we pass in is per-panel narration. The model
+        # tends to echo that verbatim into the description, which produces
+        # a slow Wikipedia-style synopsis ("The world is revealed as a
+        # barren wasteland..."). We pass it in only as background context
+        # and explicitly forbid the model from quoting or paraphrasing
+        # any single sentence of it.
+        chapter_label = _normalize_chapter_label(chapter_title) or "this chapter"
         prompt = f"""You are writing YouTube metadata for a manga / manhwa / comic recap video.
-Your goal: maximize click-through, watch-time, and comment engagement.
-You are a YouTuber with 10 years of experience in the manga-narration space.
+You have 10 years of experience as a manga-narration YouTuber. Your goal
+is click-through, retention, and comments, in that order.
 
 Series: {series}
-Chapter focus: {chapter}
-Thumbnail panel narration: "{thumb_narration}"
+Chapter focus: {chapter_label}
+Most striking panel in the chapter: "{thumb_narration}"
 
-Opening of the recap script:
+Background context, for understanding only. Do NOT quote, paraphrase, or
+echo any sentence from this block. It is what we narrate in the video,
+not what we sell in the description:
+---
 {opener[:1500]}
-
-Closing of the recap script:
+...
 {closer[:600]}
+---
 
-Produce a JSON object with EXACTLY these keys. The description must follow
-this exact structure with EXACTLY these sections in this order, no other
-sections, NO markdown headers, NO bullet points, NO "What happens" list,
-NO chapter timestamps (those are injected separately by the pipeline):
+OUTPUT FORMAT:
 
-  Line 1: A single-sentence hook ending with a question or stakes statement.
-          This is what shows above the "Show more" fold. Treat it like the
-          first sentence of a YouTube thumbnail. Under 110 characters.
+Return a JSON object with these three keys:
+- "title": EXACTLY the pattern "{{Series}} - {{Chapter label}}", e.g.
+  "DARLING in the FRANXX - Chapters 1-10" or "unOrdinary - Chapter 27".
+  Use a regular hyphen "-", never an em dash "-". No "Recap" or
+  "Explained" suffix. No emoji. No ALL CAPS.
+- "variants": three alternative titles testing three angles:
+    1. Question form ("Who really controls the Plantations?")
+    2. Character spotlight ("Zero Two's first mission - DARLING in the FRANXX")
+    3. Stakes statement ("Humanity's last weapon meets its match")
+  Each under 70 chars. No em dashes. No emoji.
+- "description": exactly this structure, plain text, NO markdown, NO
+  bullet points, NO chapter timestamps, NO "## What happens", NO
+  "in this video":
+
+  LINE 1: A single-sentence hook. Either a question OR a stakes
+          statement. Under 110 chars. Treat it like ad copy: it has
+          ONE job, to make the viewer click "Show more". GOOD:
+          "Hiro never wanted to pilot a Franxx. Then she walked in."
+          BAD: "The world is a barren wasteland scarred by humanity's
+          extraction of magma energy".
   (blank line)
-  Lines 3-5: 2-3 sentence story tease. Establish stakes and the central
-             tension. Do NOT spoil the ending. Do NOT recap beat-by-beat.
+  LINES 3-5: A 2-3 sentence story tease. State the central tension
+             and what's at stake for the protagonist. Do NOT recap
+             scene by scene. Do NOT list locations or world-building
+             details. Do NOT spoil the climax. Write like you would
+             pitch the chapter to a friend in an elevator.
   (blank line)
-  Line 7+: One sentence subscribe CTA written in voice, not corporate.
-           Examples: "Hit subscribe so you don't miss the next chapter."
-           or "If you want every new chapter delivered the day it drops,
-           subscribe."
+  LINE 7: One sentence subscribe CTA in your own voice. Examples:
+          "Subscribe so the next chapter hits your feed the day it drops."
+          "If chapter recaps are your thing, hit subscribe."
   (blank line)
-  Final line: Hashtag block, space-separated, 5-7 tags total. Always
-              include #manga #anime #mangarecap. Plus 2-4 series-specific
-              tags derived from the series name (one-word, no spaces).
+  LINE 9: Hashtag block, space-separated, 5-7 tags. Include #manga
+          #anime #mangarecap plus 2-4 series-specific tags (one word,
+          no spaces, derived from the series name).
 
-Constraints:
-  - Plain text only. No markdown headers (#, ##), no bullet lists (-, *),
-    no bold/italic markers (** __), no horizontal rules.
-  - No timestamps (the pipeline injects YouTube chapter timestamps).
-  - No "in this video we cover" / "today we look at" filler openers.
-  - No spoilers about the chapter's final beat in the hook.
-  - Total under 2000 characters.
+ABSOLUTE RULES:
+- Never use an em dash (-) or en dash (-) anywhere. Use a hyphen, period,
+  or comma instead.
+- Never reproduce a sentence from the background context.
+- Never use ALL CAPS for emphasis (except in tags or the series name if
+  the canonical title is styled that way, e.g. "DARLING in the FRANXX").
+- Total description under 1200 characters.
 
-Output format:
-{{
-  "title": "single best title, 50-70 chars, hook + stakes, no ALL-CAPS shouting, no spoilers, no clickbait emoji",
-  "variants": ["three alternative titles obeying the same constraints. each should test a different angle: question form, character spotlight, stakes statement"],
-  "description": "the full plain-text description as specified above"
-}}
-
-Return ONLY the JSON. No prose before or after."""
+Return ONLY the JSON. No prose before or after, no markdown fences."""
         # Disable Gemini 2.5 "thinking" budget so the whole token allowance
-        # goes to the visible answer — otherwise the JSON gets truncated
+        # goes to the visible answer - otherwise the JSON gets truncated
         # mid-string and parsing fails.
         gen_kwargs: dict[str, Any] = {
             "temperature": 0.7,
@@ -740,33 +794,37 @@ Return ONLY the JSON. No prose before or after."""
         opener: str,
     ) -> tuple[str, list[str], str]:
         series = (manga_title or project_name or "").strip()
-        chapter = (chapter_title or "").strip()
+        chapter = _normalize_chapter_label(chapter_title)
         base = series or "Manga"
-        chapter_suffix = f" — {chapter}" if chapter else ""
 
-        title = f"{base}{chapter_suffix} — Recap"[:TITLE_CHAR_BUDGET]
+        # Format: "Manga Name - Chapters X-Y" with a plain hyphen.
+        # No em dashes anywhere. No " - Recap" suffix.
+        title = f"{base} - {chapter}"[:TITLE_CHAR_BUDGET] if chapter else base[:TITLE_CHAR_BUDGET]
+        chapter_suffix = f" - {chapter}" if chapter else ""
         variants = [
-            f"{base}{chapter_suffix} — Quick Recap",
+            f"{base}{chapter_suffix}",
             f"Everything that happened in {base}{chapter_suffix}",
             f"{base} explained{chapter_suffix}",
         ]
-        # Take the first 2 sentences of the opener as a synopsis.
-        synopsis = ""
-        if opener:
-            sentences = re.split(r"(?<=[.!?])\s+", opener)
-            synopsis = " ".join(sentences[:3])[:600]
-
-        # Viral fallback: hook line + synopsis tease + CTA + hashtags.
-        # No markdown headers, no per-beat list, no "What happens" section.
-        hook = synopsis.split(". ")[0].strip().rstrip(".") if synopsis else "Every panel of the latest chapter, recapped in story order"
-        if len(hook) > 110:
-            hook = hook[:107].rstrip(", ;-") + "..."
-        tease = synopsis[len(hook):].strip().lstrip(". ") if synopsis else ""
-        if not tease:
-            tease = "Watch the full chapter unfold panel by panel, with every key moment captured in continuous narration."
-        cta = "Subscribe so you don't miss the next chapter the day it drops."
+        # Fallback description used when no LLM is configured. We
+        # deliberately do NOT echo the panel narration. The earlier
+        # fallback dumped 3 narration sentences which produced the
+        # "barren wasteland scarred by humanity..." Wikipedia-style
+        # synopsis that we want to avoid. Instead, write a generic but
+        # punchy stakes line keyed off the series name.
+        hook_base = f"Every key moment of {base}{chapter_suffix}, in story order, in one sitting"
+        hook = hook_base if len(hook_base) <= 110 else hook_base[:107].rstrip(", ;-") + "..."
+        tease = (
+            "Whether you missed the chapter or want a quick refresh before the next drop, "
+            "this recap covers the beats that actually move the story. "
+            "No filler, no padding, no spoilers in the title."
+        )
+        cta = "Subscribe so the next chapter recap hits your feed the day it drops."
         series_tag = re.sub(r"[^a-z0-9]", "", (manga_title or project_name or "manga").lower()) or "manga"
         hashtag_line = f"#manga #anime #mangarecap #{series_tag} #manhwa"
+        # Note: no trailing "." on hook before the newline. The hook above
+        # already ends with content (no period), and the previous version
+        # added one explicitly which produced "in one sitting.." on output.
         description = f"{hook}.\n\n{tease}\n\n{cta}\n\n{hashtag_line}"
         return title, variants, description
 
@@ -805,7 +863,7 @@ Return ONLY the JSON. No prose before or after."""
             # Cinematic vignette
             canvas = self._apply_vignette(canvas)
 
-            # Brand-accent corner glow — pulls from preset so every
+            # Brand-accent corner glow - pulls from preset so every
             # channel feels distinct at thumbnail glance.
             self._apply_corner_glow(canvas, color=(*accent_rgb, 180))
 
@@ -939,7 +997,7 @@ Return ONLY the JSON. No prose before or after."""
                     font=font if word != highlight_word else accent_font,
                     fill=color,
                 )
-                # advance x — use textbbox for accurate measurement
+                # advance x - use textbbox for accurate measurement
                 bbox = draw.textbbox((0, 0), word + " ", font=font)
                 x += bbox[2] - bbox[0]
             y += line_height

@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * TimelineEditor — the Resolve-inspired editing surface.
+ * TimelineEditor - the Resolve-inspired editing surface.
  *
  * Composes:
  *   ┌── Preview ─────────────────────────┐ ┌── Inspector ───┐
@@ -18,7 +18,7 @@
  * Keyboard: J/K/L scrub, Space play, I/O mark, ←→ nudge, ↑↓ select.
  * Click empty track area = seek. Click clip = select. Drag right edge = trim.
  *
- * Stateless from the consumer's POV — pass in panels, get a fully-wired
+ * Stateless from the consumer's POV - pass in panels, get a fully-wired
  * editor. Persistence (save edits back to backend) is the consumer's job.
  */
 
@@ -89,7 +89,7 @@ export function TimelineEditor({
     else if (playheadX > right - 64) el.scrollLeft = playheadX - el.clientWidth + 96;
   }, [state.playheadSec, state.pixelsPerSecond]);
 
-  // Save edits — derive durations/narrations diff from clip overrides.
+  // Save edits - derive durations/narrations diff from clip overrides.
   const handleSave = () => {
     if (!onSaveEdits) return;
     const edits: PanelEdits = { durations: {}, narrations: {} };

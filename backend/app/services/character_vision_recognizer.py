@@ -7,7 +7,7 @@ and non-English text.
 Key differences from CharacterClusterer:
 - Scans ALL kept panels, not just dialogue panels detected by Magi
 - Uses multimodal Gemini calls: the LLM SEES the actual art
-- Works on any language — Gemini reads the images directly
+- Works on any language - Gemini reads the images directly
 - No CLIP model to load; falls back gracefully if Gemini is unavailable
 """
 from __future__ import annotations
@@ -45,14 +45,14 @@ _IMAGE_MAX_PX = 640  # resize panels before encoding to keep request size manage
 # Colours within a group are interchangeable (manga art often renders black/dark-brown
 # similarly depending on panel shading).
 _HAIR_COLOR_GROUPS: dict[str, str] = {
-    # dark naturals — often look the same in manga ink/tone
+    # dark naturals - often look the same in manga ink/tone
     "black": "dark", "brown": "dark", "dark": "dark", "brunette": "dark",
     # light naturals
     "blonde": "light", "blond": "light", "golden": "light", "light": "light",
     # achromatic
     "white": "achromatic", "silver": "achromatic", "gray": "achromatic",
     "grey": "achromatic", "platinum": "achromatic",
-    # vibrant — unambiguous
+    # vibrant - unambiguous
     "red": "vibrant-red", "blue": "vibrant-blue", "green": "vibrant-green",
     "purple": "vibrant-purple", "pink": "vibrant-pink", "orange": "vibrant-orange",
 }
@@ -152,7 +152,7 @@ class GeminiCharacterRecognizer:
     ) -> dict[str, Any]:
         """Identify and cluster characters using Gemini Vision.
 
-        Compatible with :meth:`CharacterClusterer.cluster` — returns the same
+        Compatible with :meth:`CharacterClusterer.cluster` - returns the same
         ``{page_payloads, clusters, character_id_map, provider}`` shape.
 
         Args:
@@ -175,7 +175,7 @@ class GeminiCharacterRecognizer:
 
         cache = self._load_cache(cache_dir)
 
-        # Step 1 — per-batch panel scan (parallel when multiple batches)
+        # Step 1 - per-batch panel scan (parallel when multiple batches)
         raw_appearances: list[dict[str, Any]] = []
         batches = [kept[i : i + _BATCH_SIZE] for i in range(0, len(kept), _BATCH_SIZE)]
 
@@ -211,10 +211,10 @@ class GeminiCharacterRecognizer:
             logger.warning("GeminiCharacterRecognizer: no characters detected in any panel")
             return self._empty_result(page_payloads)
 
-        # Step 2 — cluster appearances by visual description similarity
+        # Step 2 - cluster appearances by visual description similarity
         clusters = self._cluster_appearances(raw_appearances)
 
-        # Step 3 — sort by appearance count (protagonist first)
+        # Step 3 - sort by appearance count (protagonist first)
         clusters.sort(key=lambda c: (-c["appearance_count"], c["cluster_id"]))
         for rank, cluster in enumerate(clusters):
             cluster["cluster_id"] = f"cluster-{rank + 1:03d}"
@@ -368,7 +368,7 @@ RULES:
 - Be specific: "short black hair" not just "dark hair"
 - The protagonist (main character) usually appears in the most panels.
 
-Return JSON only — no extra text:
+Return JSON only - no extra text:
 {{
   "panel_characters": [
     {{
@@ -563,7 +563,7 @@ If a panel has no clearly visible characters, return an empty characters list fo
             desc_lower,
         ):
             color_word = (match.group(1) or match.group(2) or "").lower()
-            # Strip compound modifiers — take last word ("dark-brown" → "brown")
+            # Strip compound modifiers - take last word ("dark-brown" → "brown")
             color_word = color_word.split("-")[-1]
             if color_word in _HAIR_COLOR_GROUPS:
                 return _HAIR_COLOR_GROUPS[color_word]

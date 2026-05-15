@@ -368,7 +368,7 @@ class PanelReconstructionEngine:
         x, y, width, height = [int(value) for value in bbox[:4]]
         # Probe a generous region around the seed. The seed may be just a
         # speech-bubble crop, so we scale probe distance with PAGE size,
-        # not just with the seed — otherwise tiny seeds can never recover
+        # not just with the seed - otherwise tiny seeds can never recover
         # the full panel they belong to. A real panel can occupy up to
         # ~half a page; capping probe at 45% of each page dimension keeps
         # us from probing into neighbouring panels in most layouts.
@@ -382,7 +382,7 @@ class PanelReconstructionEngine:
         if region.size == 0 or region.shape[0] < 8 or region.shape[1] < 8:
             return bbox
 
-        # Edge magnitude — robust to background color.
+        # Edge magnitude - robust to background color.
         gray = cv2.cvtColor(region, cv2.COLOR_RGB2GRAY) if region.ndim == 3 else region
         gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
         gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)

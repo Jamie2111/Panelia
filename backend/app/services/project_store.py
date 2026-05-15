@@ -43,7 +43,20 @@ from app.utils.files import ensure_dir, read_json, slugify, write_json
 logger = logging.getLogger(__name__)
 
 _LOW_SIGNAL_SCRIPT_FLAGS = {"corner_wedge", "side_void", "top_blank_band", "whitespace"}
-PANEL_CROP_VERSION = "tightcrop_v4"
+PANEL_CROP_VERSION = "tightcrop_v5"
+
+
+def _whole_progress(progress: object) -> int:
+    try:
+        value = float(progress or 0.0)
+    except Exception:
+        value = 0.0
+    value = max(0.0, min(100.0, value))
+    if value <= 0:
+        return 0
+    if value >= 100:
+        return 100
+    return int(value + 0.9999)
 
 
 class ProjectStore:
@@ -76,6 +89,9 @@ class ProjectStore:
 
     def _script_quality_path(self, project_id: str) -> Path:
         return self._project_dir(project_id) / "output" / "script_quality.json"
+
+    def _script_artifact_metadata_path(self, project_id: str) -> Path:
+        return self._project_dir(project_id) / "output" / "script_artifact.json"
 
     def _panel_quality_path(self, project_id: str) -> Path:
         return self._project_dir(project_id) / "output" / "panel_quality.json"
@@ -152,7 +168,86 @@ class ProjectStore:
         project_dir = self._project_dir(project_id)
         if not project_dir.exists():
             raise FileNotFoundError(f"Unknown project: {project_id}")
+        job_ids = self._job_ids_for_project(project_id)
+        self.purge_project_artifacts(project_id, job_ids=job_ids)
         shutil.rmtree(project_dir)
+
+    def _job_ids_for_project(self, project_id: str) -> set[str]:
+        jobs_dir = self._project_dir(project_id) / "jobs"
+        if not jobs_dir.exists():
+            return set()
+        return {path.stem for path in jobs_dir.glob("*.json") if path.is_file()}
+
+    def _delete_artifact_path(self, path: Path) -> bool:
+        if not path.exists() and not path.is_symlink():
+            return False
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
+        return True
+
+    def _project_artifact_dirs(self) -> tuple[Path, ...]:
+        return (
+            self.settings.training_data_dir / "annotations",
+            self.settings.training_data_dir / "images",
+            self.settings.ocr_training_data_dir / "annotations",
+            self.settings.ocr_training_data_dir / "images",
+            self.settings.data_dir / "previews",
+        )
+
+    def purge_project_artifacts(self, project_id: str, job_ids: Iterable[str] | None = None) -> dict[str, int]:
+        counts = {"project_artifacts": 0, "queue_artifacts": 0}
+        prefix = f"{project_id}_"
+        for directory in self._project_artifact_dirs():
+            if not directory.exists():
+                continue
+            for path in directory.glob(f"{prefix}*"):
+                if self._delete_artifact_path(path):
+                    counts["project_artifacts"] += 1
+
+        for job_id in job_ids or ():
+            for queue_name in ("cancel", "pause", "messages"):
+                queue_dir = self.settings.data_dir / "_queue" / queue_name
+                if not queue_dir.exists():
+                    continue
+                for path in queue_dir.glob(f"{job_id}*"):
+                    if self._delete_artifact_path(path):
+                        counts["queue_artifacts"] += 1
+        return counts
+
+    def purge_orphaned_artifacts(self) -> dict[str, int]:
+        active_project_ids = {
+            path.parent.name
+            for path in self.projects_root.glob("*/metadata.json")
+            if path.is_file()
+        }
+        active_job_ids = {
+            path.stem
+            for path in self.projects_root.glob("*/jobs/*.json")
+            if path.is_file()
+        }
+        counts = {"project_artifacts": 0, "queue_artifacts": 0}
+        project_artifact_pattern = re.compile(r"^(.+?)_(?:page|panel)_")
+
+        for directory in self._project_artifact_dirs():
+            if not directory.exists():
+                continue
+            for path in directory.iterdir():
+                match = project_artifact_pattern.match(path.name)
+                if match and match.group(1) not in active_project_ids:
+                    if self._delete_artifact_path(path):
+                        counts["project_artifacts"] += 1
+
+        for queue_name in ("cancel", "pause", "messages"):
+            queue_dir = self.settings.data_dir / "_queue" / queue_name
+            if not queue_dir.exists():
+                continue
+            for path in queue_dir.iterdir():
+                if path.stem not in active_job_ids:
+                    if self._delete_artifact_path(path):
+                        counts["queue_artifacts"] += 1
+        return counts
 
     def duplicate_project(
         self,
@@ -206,6 +301,13 @@ class ProjectStore:
                 progress=100,
                 message="Pages copied from the source project",
             )
+            if not panels:
+                stage_states[PipelineStage.PANEL_DETECTION] = StageState(
+                    stage=PipelineStage.PANEL_DETECTION,
+                    status=StageStatus.READY,
+                    progress=0,
+                    message="Pages copied. Run panel detection when you are ready.",
+                )
         if panels:
             stage_states[PipelineStage.PANEL_DETECTION] = StageState(
                 stage=PipelineStage.PANEL_DETECTION,
@@ -355,7 +457,6 @@ class ProjectStore:
         panels = self.sanitize_panel_boxes(project_id, self.load_panels(project_id))
         panels = self._enrich_panels_from_script_blocks(project_id, panels)
         panels = self._enrich_panels_from_quality_report(project_id, panels)
-        self._ensure_panel_previews(project_id, panels)
         audio_files = self.list_audio_files(project_id)
         videos = self.list_videos(project_id)
         jobs = self.list_jobs(project_id)
@@ -383,6 +484,7 @@ class ProjectStore:
             script_lines=self.load_script(project_id),
             script_story=self.load_script_story(project_id),
             story_segments=self.load_story_segments(project_id),
+            script_display_metadata=self.load_script_display_metadata(project_id, jobs=jobs),
             audio_files=audio_files,
             videos=videos,
             thumbnail_url=summary.thumbnail_url,
@@ -416,7 +518,7 @@ class ProjectStore:
         state["stage"] = stage.value
         state["status"] = status.value
         if progress is not None:
-            state["progress"] = round(progress, 2)
+            state["progress"] = _whole_progress(progress)
         if message is not None:
             state["message"] = message
         state["updated_at"] = self._now().isoformat()
@@ -579,6 +681,7 @@ class ProjectStore:
         *,
         strict_lines: list[str] | None = None,
         slot_evidence: list[dict[str, Any]] | None = None,
+        job_id: str | None = None,
     ) -> None:
         aligned_lines = self._align_script_lines(project_id, script_lines)
         aligned_strict_lines = self._align_script_lines(project_id, strict_lines) if strict_lines is not None else list(aligned_lines)
@@ -615,6 +718,7 @@ class ProjectStore:
                 "script_story": story_text,
             },
         )
+        self._write_script_artifact_metadata(project_id, job_id=job_id, script_mode="panel_lines")
         if mapped_panels is not None:
             write_json(
                 self._project_dir(project_id) / "output" / "panel_script_blocks.json",
@@ -638,10 +742,20 @@ class ProjectStore:
         story_segments: list[StorySegment | dict[str, Any]],
         *,
         story_block: str | None = None,
+        job_id: str | None = None,
     ) -> None:
+        input_segment_ids = [
+            str((segment.id if isinstance(segment, StorySegment) else segment.get("id", "")) or "").strip()
+            for segment in story_segments
+        ]
         normalized_segments = self._normalize_story_segments_payload(project_id, story_segments)
+        normalized_segment_ids = [segment.id for segment in normalized_segments]
         script_lines = [segment.text.strip() for segment in normalized_segments if segment.keep]
-        story_text = self._script_cleaner.clean_story_block(str(story_block or "").strip())
+        story_text = (
+            self._script_cleaner.clean_story_block(str(story_block or "").strip())
+            if input_segment_ids == normalized_segment_ids
+            else ""
+        )
         if not story_text:
             story_text = self._compose_story_from_lines(script_lines).strip()
 
@@ -668,31 +782,57 @@ class ProjectStore:
             story_text.strip() + ("\n" if story_text.strip() else ""),
             encoding="utf-8",
         )
+        self._write_script_artifact_metadata(project_id, job_id=job_id, script_mode="story_segments")
 
         panel_vision_records = read_json(output_dir / "panel_vision_final.json", default=[])
+        panel_evidence_records = self._script_evidence_records(project_id)
         quality_report = self._script_quality.analyze_story_segments(
             normalized_segments,
             panel_vision_records=panel_vision_records if isinstance(panel_vision_records, list) else None,
+            panel_evidence_records=panel_evidence_records if isinstance(panel_evidence_records, list) else None,
+            panels=self.load_panels(project_id),
         )
         write_json(self._script_quality_path(project_id), quality_report)
         self.update_project_metadata(project_id)
 
     def load_script_quality_report(self, project_id: str) -> dict[str, object]:
         report = read_json(self._script_quality_path(project_id), default=None)
-        if isinstance(report, dict):
+        if isinstance(report, dict) and int(report.get("analysis_version", 0) or 0) >= 3:
             return report
         project = self.get_project(project_id)
         story_segments = self.load_story_segments(project_id)
         panel_vision_records = read_json(self._project_dir(project_id) / "output" / "panel_vision_final.json", default=[])
+        panel_evidence_records = self._script_evidence_records(project_id)
         if story_segments:
             report = self._script_quality.analyze_story_segments(
                 story_segments,
                 panel_vision_records=panel_vision_records if isinstance(panel_vision_records, list) else None,
+                panel_evidence_records=panel_evidence_records if isinstance(panel_evidence_records, list) else None,
+                panels=self.load_panels(project_id),
             )
         else:
             report = self._script_quality.analyze(project.panels, project.script_lines)
         write_json(self._script_quality_path(project_id), report)
         return report
+
+    def _script_evidence_records(self, project_id: str) -> list[dict[str, object]]:
+        output_dir = self._project_dir(project_id) / "output"
+        records: list[dict[str, object]] = []
+        transcript = read_json(output_dir / "transcript.json", default={})
+        fragments = transcript.get("fragments", []) if isinstance(transcript, dict) else []
+        if isinstance(fragments, list):
+            records.extend([item for item in fragments if isinstance(item, dict) and bool(item.get("accepted", True))])
+        if records:
+            return records
+        panel_evidence_payload = read_json(output_dir / "panel_evidence.json", default={})
+        panel_evidence_records = (
+            panel_evidence_payload.get("panels", [])
+            if isinstance(panel_evidence_payload, dict)
+            else panel_evidence_payload
+        )
+        if isinstance(panel_evidence_records, list):
+            records.extend([item for item in panel_evidence_records if isinstance(item, dict)])
+        return records
 
     def load_panel_quality_report(self, project_id: str) -> dict[str, object]:
         report = read_json(self._panel_quality_path(project_id), default=None)
@@ -717,6 +857,10 @@ class ProjectStore:
                 for reason in item.get("reasons", [])
                 if str(reason).strip()
             ]
+            if "corner_wedge" in reasons and not bool(item.get("corner_wedge")):
+                corner_score = float(item.get("corner_wedge_score", 0.0) or 0.0)
+                if corner_score < 0.42:
+                    reasons = [reason for reason in reasons if reason != "corner_wedge"]
             risky_lookup[panel_id] = reasons
 
         enriched: list[PanelBox] = []
@@ -828,7 +972,16 @@ class ProjectStore:
                     suppression_reason=str(getattr(segment, "suppression_reason", "") or "").strip() or None,
                 )
             )
-        return normalized
+        chronological = sorted(
+            normalized,
+            key=lambda segment: (
+                segment.panel_start is None,
+                int(segment.panel_start or segment.order or 0),
+                int(segment.panel_end or segment.panel_start or segment.order or 0),
+                int(segment.order or 0),
+            ),
+        )
+        return [segment.model_copy(update={"order": index}) for index, segment in enumerate(chronological, start=1)]
 
     def load_script_story(self, project_id: str) -> str | None:
         manifest = read_json(self._script_manifest_path(project_id), default=None)
@@ -843,6 +996,80 @@ class ProjectStore:
         lines = self.load_script(project_id)
         story = self._compose_story_from_lines(lines)
         return story or None
+
+    def _write_script_artifact_metadata(
+        self,
+        project_id: str,
+        *,
+        job_id: str | None,
+        script_mode: str,
+    ) -> None:
+        output_dir = ensure_dir(self._project_dir(project_id) / "output")
+        now = self._now().isoformat()
+        write_json(
+            output_dir / "script_artifact.json",
+            {
+                "script_path": str(self._script_path(project_id).resolve()),
+                "script_manifest_path": str(self._script_manifest_path(project_id).resolve()),
+                "story_path": str((output_dir / "narration_story.txt").resolve()),
+                "job_id": job_id,
+                "script_mode": script_mode,
+                "created_at": now,
+            },
+        )
+
+    def load_script_display_metadata(self, project_id: str, *, jobs: list[JobRecord] | None = None) -> dict[str, Any]:
+        project_dir = self._project_dir(project_id)
+        output_dir = project_dir / "output"
+        script_path = self._script_path(project_id)
+        manifest_path = self._script_manifest_path(project_id)
+        story_path = output_dir / "narration_story.txt"
+        artifact = read_json(self._script_artifact_metadata_path(project_id), default={})
+        if not isinstance(artifact, dict):
+            artifact = {}
+
+        script_jobs = [
+            job
+            for job in (jobs if jobs is not None else self.list_jobs(project_id))
+            if job.stage == PipelineStage.SCRIPT_GENERATION
+        ]
+        latest_job = script_jobs[0] if script_jobs else None
+        latest_completed = next((job for job in script_jobs if job.status == JobStatus.COMPLETED), None)
+        latest_active = next((job for job in script_jobs if job.status in {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.PAUSED}), None)
+
+        created_at = str(artifact.get("created_at") or "").strip()
+        if not created_at:
+            candidates = [path for path in (manifest_path, script_path, story_path) if path.exists()]
+            if candidates:
+                created_at = datetime.fromtimestamp(max(path.stat().st_mtime for path in candidates)).isoformat()
+
+        displayed_script_path = str(manifest_path.resolve()) if manifest_path.exists() else str(script_path.resolve()) if script_path.exists() else None
+        displayed_job_id = str(artifact.get("job_id") or "").strip() or None
+        latest_completed_path = str(story_path.resolve()) if latest_completed and story_path.exists() else None
+
+        stale_reason = ""
+        is_stale = False
+        if latest_active and displayed_script_path:
+            active_created = latest_active.created_at.isoformat()
+            if not created_at or active_created > created_at:
+                is_stale = True
+                stale_reason = "script_generation_in_progress"
+        elif latest_completed and displayed_script_path:
+            if displayed_job_id and displayed_job_id != latest_completed.id:
+                is_stale = True
+                stale_reason = "newer_completed_job_available"
+
+        return {
+            "displayed_script_path": displayed_script_path,
+            "displayed_script_job_id": displayed_job_id,
+            "displayed_script_created_at": created_at or None,
+            "latest_job_id": latest_job.id if latest_job else None,
+            "latest_job_status": latest_job.status.value if latest_job else None,
+            "latest_completed_script_path": latest_completed_path,
+            "latest_completed_script_job_id": latest_completed.id if latest_completed else None,
+            "is_displaying_stale_script": is_stale,
+            "stale_reason": stale_reason,
+        }
 
     def reset_pipeline_from_stage(self, project_id: str, stage: PipelineStage) -> None:
         project_dir = self._project_dir(project_id)
@@ -1717,8 +1944,8 @@ class ProjectStore:
 
         step_x = max(2, min(10, width // 80))
         step_y = max(2, min(10, height // 80))
-        max_x_trim = max(step_x, int(width * 0.12))
-        max_y_trim = max(step_y, int(height * 0.12))
+        max_x_trim = max(step_x, int(width * 0.20))
+        max_y_trim = max(step_y, int(height * 0.20))
 
         def low_content_vertical(start: int, end: int) -> bool:
             strip = gray[:, start:end]
@@ -1753,20 +1980,22 @@ class ProjectStore:
         while bottom + step_y <= max_y_trim and low_content_horizontal(height - bottom - step_y, height - bottom):
             bottom += step_y
 
-        # If a thin halo remains because the black panel border sits just
-        # inside a white gutter, shave a tiny fixed amount. This gives the
-        # "slightly zoomed in" result without making a blind 10% crop the
-        # default for every image.
-        min_zoom_x = max(0, int(width * 0.008))
-        min_zoom_y = max(0, int(height * 0.008))
-        if left and left < min_zoom_x:
-            left = min_zoom_x
-        if right and right < min_zoom_x:
-            right = min_zoom_x
-        if top and top < min_zoom_y:
-            top = min_zoom_y
-        if bottom and bottom < min_zoom_y:
-            bottom = min_zoom_y
+        force_zoom_x = int(width * 0.035)
+        force_zoom_y = int(height * 0.035)
+        edge_is_bright = {
+            "left": low_content_vertical(0, min(max(step_x, force_zoom_x), width)),
+            "right": low_content_vertical(max(width - max(step_x, force_zoom_x), 0), width),
+            "top": low_content_horizontal(0, min(max(step_y, force_zoom_y), height)),
+            "bottom": low_content_horizontal(max(height - max(step_y, force_zoom_y), 0), height),
+        }
+        if edge_is_bright["left"]:
+            left = max(left, force_zoom_x)
+        if edge_is_bright["right"]:
+            right = max(right, force_zoom_x)
+        if edge_is_bright["top"]:
+            top = max(top, force_zoom_y)
+        if edge_is_bright["bottom"]:
+            bottom = max(bottom, force_zoom_y)
 
         if max(left, right, top, bottom) < max(2, int(min(width, height) * 0.006)):
             return rgb, empty_meta
@@ -1864,6 +2093,8 @@ class ProjectStore:
     def update_job(self, project_id: str, job_id: str, **updates: object) -> JobRecord:
         job = self.get_job(project_id, job_id)
         payload = job.model_dump(mode="json")
+        if "progress" in updates:
+            updates = {**updates, "progress": _whole_progress(updates.get("progress"))}
         payload.update(updates)
         write_json(self._job_path(project_id, job_id), payload)
         return self.get_job(project_id, job_id)

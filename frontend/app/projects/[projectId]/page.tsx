@@ -38,11 +38,11 @@ function baseResolution(width: number, height: number) {
  * Project overview page.
  *
  * Three vertical sections:
- *   1. Hero — project image, name (inline-editable), key metadata,
+ *   1. Hero - project image, name (inline-editable), key metadata,
  *      and the canonical PipelineBlock so users always see "what now".
- *   2. Operations — pipeline controls (rerun/cancel/rewind), and the
+ *   2. Operations - pipeline controls (rerun/cancel/rewind), and the
  *      auto-run toggle.
- *   3. Sidebar — vertical StageTimeline, active jobs list.
+ *   3. Sidebar - vertical StageTimeline, active jobs list.
  *
  * Everything pulls from the same liquid-glass primitives so the page
  * feels like one continuous workspace rather than a CRUD form.
@@ -75,7 +75,7 @@ export default function ProjectOverviewPage() {
         const fetched = await api.getYouTubeBundle(projectId);
         if (fetched) setBundle(fetched as PublishBundle);
       } catch {
-        /* non-fatal — bundle hasn't been generated yet */
+        /* non-fatal - bundle hasn't been generated yet */
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load project.");
@@ -206,16 +206,16 @@ export default function ProjectOverviewPage() {
       )}
     >
       <div className="space-y-6">
-        {/* While-you-were-away — only fires when state changed */}
+        {/* While-you-were-away - only fires when state changed */}
         <WhileYouWereAway project={project as any} />
 
-        {/* Pipeline block — answers "what's happening / what next" */}
+        {/* Pipeline block - answers "what's happening / what next" */}
         <PipelineBlock
           stageStates={project.stage_states}
           cost={estimateProjectCost(project as any)}
         />
 
-        {/* Publish bundle — appears once youtube_bundle stage completes */}
+        {/* Publish bundle - appears once youtube_bundle stage completes */}
         {project.stage_states.youtube_bundle?.status === "completed" || bundle ? (
           <PublishBundleCard bundle={bundle} />
         ) : null}

@@ -13,7 +13,7 @@ class CatalogService:
     def __init__(self, store: ProjectStore | None = None) -> None:
         self.store = store or ProjectStore()
         self.kokoro = KokoroTTSService()
-        # Edge TTS is lazy — constructed on first preview request to avoid
+        # Edge TTS is lazy - constructed on first preview request to avoid
         # the (cheap) import cost when the user never previews an Edge voice.
         self._edge: EdgeTTSService | None = None
         self.preview_dir = ensure_dir(self.store.settings.data_dir / "previews")
@@ -95,21 +95,21 @@ VOICE_OPTIONS = [
     # These sit at the top of the list because they sound notably more
     # human than the Kokoro voices below. They're served by the same free
     # endpoint Edge browser's Read-Aloud uses.
-    VoiceOption(id="edge_ava", lang_code="a", label="Ava (HD)", description="Warm, multilingual, the most human-sounding option.", quality_note="A+ overall — Azure Neural via free Edge endpoint.", style_tags=["natural", "warm", "human", "recommended"]),
-    VoiceOption(id="edge_andrew", lang_code="a", label="Andrew (HD)", description="Confident male narrator built for recaps.", quality_note="A overall — Azure Neural.", style_tags=["natural", "confident", "male"]),
-    VoiceOption(id="edge_emma", lang_code="a", label="Emma (HD)", description="Bright, energetic female narrator.", quality_note="A overall — Azure Neural.", style_tags=["natural", "energetic", "female"]),
-    VoiceOption(id="edge_brian", lang_code="a", label="Brian (HD)", description="Neutral male voice with smooth, even flow.", quality_note="A overall — Azure Neural.", style_tags=["natural", "neutral", "male"]),
-    VoiceOption(id="edge_jenny", lang_code="a", label="Jenny (HD)", description="Versatile casual female narrator.", quality_note="A overall — Azure Neural.", style_tags=["natural", "casual", "female"]),
-    VoiceOption(id="edge_aria", lang_code="a", label="Aria (HD)", description="Polished female news-style delivery.", quality_note="A- overall — Azure Neural.", style_tags=["natural", "polished", "female"]),
-    VoiceOption(id="edge_guy", lang_code="a", label="Guy (HD)", description="Steady mid-range male recap narrator.", quality_note="A- overall — Azure Neural.", style_tags=["natural", "steady", "male"]),
-    VoiceOption(id="edge_christopher", lang_code="a", label="Christopher (HD)", description="Deeper male voice for dramatic recaps.", quality_note="A- overall — Azure Neural.", style_tags=["natural", "dramatic", "male"]),
-    VoiceOption(id="edge_eric", lang_code="a", label="Eric (HD)", description="Bright male voice for fast-paced edits.", quality_note="A- overall — Azure Neural.", style_tags=["natural", "bright", "male"]),
-    VoiceOption(id="edge_michelle", lang_code="a", label="Michelle (HD)", description="Mature female storyteller.", quality_note="A- overall — Azure Neural.", style_tags=["natural", "storyteller", "female"]),
-    VoiceOption(id="edge_libby", lang_code="b", label="Libby (UK HD)", description="Crisp British female narrator.", quality_note="A overall — Azure Neural.", style_tags=["natural", "british", "female"]),
-    VoiceOption(id="edge_sonia", lang_code="b", label="Sonia (UK HD)", description="Warm British female narrator.", quality_note="A overall — Azure Neural.", style_tags=["natural", "british", "warm"]),
-    VoiceOption(id="edge_ryan", lang_code="b", label="Ryan (UK HD)", description="British male editorial narrator.", quality_note="A overall — Azure Neural.", style_tags=["natural", "british", "male"]),
-    VoiceOption(id="edge_nanami", lang_code="j", label="Nanami (JP HD)", description="Natural Japanese female narrator.", quality_note="A overall — Azure Neural.", style_tags=["natural", "japanese", "female"]),
-    VoiceOption(id="edge_keita", lang_code="j", label="Keita (JP HD)", description="Natural Japanese male narrator.", quality_note="A overall — Azure Neural.", style_tags=["natural", "japanese", "male"]),
+    VoiceOption(id="edge_ava", lang_code="a", label="Ava (HD)", description="Warm, multilingual, the most human-sounding option.", quality_note="A+ overall - Azure Neural via free Edge endpoint.", style_tags=["natural", "warm", "human", "recommended"]),
+    VoiceOption(id="edge_andrew", lang_code="a", label="Andrew (HD)", description="Confident male narrator built for recaps.", quality_note="A overall - Azure Neural.", style_tags=["natural", "confident", "male"]),
+    VoiceOption(id="edge_emma", lang_code="a", label="Emma (HD)", description="Bright, energetic female narrator.", quality_note="A overall - Azure Neural.", style_tags=["natural", "energetic", "female"]),
+    VoiceOption(id="edge_brian", lang_code="a", label="Brian (HD)", description="Neutral male voice with smooth, even flow.", quality_note="A overall - Azure Neural.", style_tags=["natural", "neutral", "male"]),
+    VoiceOption(id="edge_jenny", lang_code="a", label="Jenny (HD)", description="Versatile casual female narrator.", quality_note="A overall - Azure Neural.", style_tags=["natural", "casual", "female"]),
+    VoiceOption(id="edge_aria", lang_code="a", label="Aria (HD)", description="Polished female news-style delivery.", quality_note="A- overall - Azure Neural.", style_tags=["natural", "polished", "female"]),
+    VoiceOption(id="edge_guy", lang_code="a", label="Guy (HD)", description="Steady mid-range male recap narrator.", quality_note="A- overall - Azure Neural.", style_tags=["natural", "steady", "male"]),
+    VoiceOption(id="edge_christopher", lang_code="a", label="Christopher (HD)", description="Deeper male voice for dramatic recaps.", quality_note="A- overall - Azure Neural.", style_tags=["natural", "dramatic", "male"]),
+    VoiceOption(id="edge_eric", lang_code="a", label="Eric (HD)", description="Bright male voice for fast-paced edits.", quality_note="A- overall - Azure Neural.", style_tags=["natural", "bright", "male"]),
+    VoiceOption(id="edge_michelle", lang_code="a", label="Michelle (HD)", description="Mature female storyteller.", quality_note="A- overall - Azure Neural.", style_tags=["natural", "storyteller", "female"]),
+    VoiceOption(id="edge_libby", lang_code="b", label="Libby (UK HD)", description="Crisp British female narrator.", quality_note="A overall - Azure Neural.", style_tags=["natural", "british", "female"]),
+    VoiceOption(id="edge_sonia", lang_code="b", label="Sonia (UK HD)", description="Warm British female narrator.", quality_note="A overall - Azure Neural.", style_tags=["natural", "british", "warm"]),
+    VoiceOption(id="edge_ryan", lang_code="b", label="Ryan (UK HD)", description="British male editorial narrator.", quality_note="A overall - Azure Neural.", style_tags=["natural", "british", "male"]),
+    VoiceOption(id="edge_nanami", lang_code="j", label="Nanami (JP HD)", description="Natural Japanese female narrator.", quality_note="A overall - Azure Neural.", style_tags=["natural", "japanese", "female"]),
+    VoiceOption(id="edge_keita", lang_code="j", label="Keita (JP HD)", description="Natural Japanese male narrator.", quality_note="A overall - Azure Neural.", style_tags=["natural", "japanese", "male"]),
     # ── Kokoro (local fallback) ─────────────────────────────────────────
     VoiceOption(id="af_bella", lang_code="a", label="Bella", description="Warm and expressive storyteller.", quality_note="A- overall from the official Kokoro voice list.", style_tags=["warm", "clear", "storytelling"]),
     VoiceOption(id="af_nicole", lang_code="a", label="Nicole", description="Smooth and polished narrator for general recaps.", quality_note="B- overall.", style_tags=["balanced", "clean"]),

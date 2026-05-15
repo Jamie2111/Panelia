@@ -188,19 +188,63 @@ class ComixToService:
         return resolved_urls
 
     def _candidate_chapter_numbers(self, hash_id: str) -> list[float]:
-        chapter_indexes = self._get_json(f"{self.settings.comix_api_base}/manga/{hash_id}/chapter-indexes")
-        values: list[float] = []
-        for item in chapter_indexes:
-            try:
-                number = float(item.get("number"))
-            except (TypeError, ValueError):
-                continue
-            if number <= 0 or math.isnan(number) or math.isinf(number):
-                continue
-            values.append(number)
-        if not values:
-            raise ValueError("No readable chapter indexes were found for this comix.to title.")
-        return sorted(set(values))
+        # Try API first
+        try:
+            chapter_indexes = self._get_json(f"{self.settings.comix_api_base}/manga/{hash_id}/chapter-indexes")
+            values: list[float] = []
+            for item in chapter_indexes:
+                try:
+                    number = float(item.get("number"))
+                except (TypeError, ValueError):
+                    continue
+                if number <= 0 or math.isnan(number) or math.isinf(number):
+                    continue
+                values.append(number)
+            if values:
+                return sorted(set(values))
+        except Exception:
+            pass
+
+        # Fallback: Extract from HTML page
+        try:
+            values = self._get_chapter_numbers_from_html(hash_id)
+            if values:
+                return sorted(set(values))
+        except Exception:
+            pass
+
+        raise ValueError("No readable chapter indexes were found for this comix.to title.")
+
+    def _get_chapter_numbers_from_html(self, hash_id: str) -> list[float]:
+        """Extract chapter numbers from the manga's HTML page when API is unavailable."""
+        import re
+
+        url = f"https://comix.to/title/{hash_id}"
+        response = self.session.get(url, timeout=10)
+        response.raise_for_status()
+
+        # Extract the initial-data JSON from the HTML
+        match = re.search(r'"initial-data"\s*>\s*({.*?})\s*</script>', response.text, re.DOTALL)
+        if not match:
+            return []
+
+        try:
+            import json
+            data_str = match.group(1)
+            data = json.loads(data_str)
+
+            # Navigate to manga detail
+            queries = data.get("queries", {})
+            for key, value in queries.items():
+                if isinstance(value, dict) and "latestChapter" in value:
+                    latest = value.get("latestChapter", 0)
+                    if isinstance(latest, (int, float)) and latest > 0:
+                        # Generate chapter numbers from 1 to latestChapter
+                        return [float(i) for i in range(1, int(latest) + 1)]
+        except Exception:
+            pass
+
+        return []
 
     def _chapter_number_label(self, value: float) -> str:
         if float(value).is_integer():
@@ -261,7 +305,18 @@ class ComixToService:
             if not final_url or final_url.rstrip("/") == title_absolute.rstrip("/"):
                 continue
             resolved = self.parse_url(final_url)
-            chapter_payload = self._get_json(f"{self.settings.comix_api_base}/chapters/{resolved['chapter_id']}")
+
+            # Try to get chapter payload from API, fallback to minimal data if API fails
+            try:
+                chapter_payload = self._get_json(f"{self.settings.comix_api_base}/chapters/{resolved['chapter_id']}")
+            except Exception:
+                # API failed, use minimal fallback payload
+                chapter_payload = {
+                    "number": chapter_label,
+                    "language": "en",
+                    "images": [],
+                }
+
             chapter_key, chapter_value = parse_chapter_number(chapter_payload.get("number"))
             if chapter_key is None or chapter_value is None:
                 continue

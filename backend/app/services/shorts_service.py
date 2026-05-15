@@ -1,5 +1,5 @@
 """
-ShortsService — generate a 50-60 second vertical recap of a chapter for
+ShortsService - generate a 50-60 second vertical recap of a chapter for
 YouTube Shorts.
 
 Why Shorts matter for a manga-recap channel:
@@ -10,11 +10,11 @@ Why Shorts matter for a manga-recap channel:
     itself to a brand-new audience.
 
 What this service produces:
-  • `<project>/video/short.mp4` — vertical 1080×1920, ~55 seconds
-  • `<project>/youtube_bundle/short_description.md` — a short-specific
+  • `<project>/video/short.mp4` - vertical 1080×1920, ~55 seconds
+  • `<project>/youtube_bundle/short_description.md` - a short-specific
     description (different hashtag pack, no chapter markers, CTA to the
     full video)
-  • `<project>/youtube_bundle/short_title.txt` — a short-form title
+  • `<project>/youtube_bundle/short_title.txt` - a short-form title
     (under 60 chars, hook-only)
 
 How the Short is composed:
@@ -33,7 +33,7 @@ How the Short is composed:
 Implementation note:
   We render this as ONE FFmpeg command per panel + a final concat,
   rather than building yet another camera-plan system. That keeps the
-  code path independent of VideoRenderService's complexity — a Short
+  code path independent of VideoRenderService's complexity - a Short
   rendering can never break the main video render and vice versa.
 """
 
@@ -129,7 +129,7 @@ class ShortsService:
             shutil.rmtree(work_dir, ignore_errors=True)
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        # 1. TTS the hook line — short-specific so the Short can stand
+        # 1. TTS the hook line - short-specific so the Short can stand
         #    alone without the long-form cold-open audio.
         hook_text = self._make_hook(manga_title, chapter_title)
         plan.hook_line = hook_text
@@ -143,7 +143,7 @@ class ShortsService:
         clip_wavs: list[Path] = []
         for idx, clip in enumerate(plan.clips):
             src = narration_dir / f"panel_{kept_sorted.index({**{k: clip.__dict__.get(k.replace('_', '')) for k in []}}) + 1:03d}.wav"
-            # The above line is bogus — replace with a robust lookup by panel order:
+            # The above line is bogus - replace with a robust lookup by panel order:
             kept_index = next(
                 (i for i, p in enumerate(kept_sorted) if p.get("id") == clip.panel_id),
                 None,
@@ -153,7 +153,7 @@ class ShortsService:
             src = narration_dir / f"panel_{kept_index + 1:03d}.wav"
             dst = work_dir / f"clip_{idx:03d}.wav"
             if not src.exists():
-                # No audio for this panel — synthesize on the fly so the
+                # No audio for this panel - synthesize on the fly so the
                 # Short can still ship.
                 self._synth(clip.narration, dst, voice_config)
             else:
@@ -261,7 +261,7 @@ class ShortsService:
                 score += min((w * h) / 4_000_000.0, 1.5)
             except (TypeError, ValueError):
                 pass
-            # Skip flagged content — Shorts get even more scrutiny on
+            # Skip flagged content - Shorts get even more scrutiny on
             # mobile feeds than long-form videos.
             flags = panel.get("review_flags") or []
             if any(isinstance(f, str) and f.startswith("nsfw_") for f in flags):
@@ -314,7 +314,7 @@ class ShortsService:
     def _make_title(manga_title: str | None, chapter_title: str | None, hook: str) -> str:
         series = (manga_title or "Manga").strip()
         if chapter_title:
-            return f"{series} — {chapter_title} in 60s"[:60]
+            return f"{series} - {chapter_title} in 60s"[:60]
         return f"{series} chapter recap in 60s"[:60]
 
     @staticmethod
@@ -365,7 +365,7 @@ class ShortsService:
                 f":x=(w-text_w)/2:y=h*0.85"
             )
 
-        # Filter graph: two passes over the panel — one blurred fit-cover
+        # Filter graph: two passes over the panel - one blurred fit-cover
         # to fill the vertical canvas as a backdrop, one sharp panel
         # centered with subtle zoom.
         filter_complex = (
@@ -401,7 +401,7 @@ class ShortsService:
         self._run_ffmpeg(command)
 
     def _render_cta(self, output: Path, preset: ChannelPreset) -> None:
-        """Final 3-second CTA card — vertical, accent-colored."""
+        """Final 3-second CTA card - vertical, accent-colored."""
         accent_hex = _hex_to_ffmpeg(preset.accent_color)
         font_path = _pick_font()
         font_clause = f":fontfile={font_path}" if font_path else ""

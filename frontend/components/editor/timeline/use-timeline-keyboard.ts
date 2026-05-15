@@ -1,19 +1,19 @@
 "use client";
 
 /**
- * use-timeline-keyboard — Resolve / Premiere muscle-memory shortcuts.
+ * use-timeline-keyboard - Resolve / Premiere muscle-memory shortcuts.
  *
- *   J / K / L  — reverse / pause / forward (double-tap ramps speed)
- *   Space      — play/pause
- *   I / O      — set in-mark / out-mark at playhead
- *   ←  / →     — nudge playhead one frame (1/24s)
- *   Shift ←/→  — nudge playhead one second
- *   Up / Down  — select previous / next clip
- *   ⌘/Ctrl + + / -  — zoom in / out
- *   Esc        — clear marks
+ *   J / K / L  - reverse / pause / forward (double-tap ramps speed)
+ *   Space      - play/pause
+ *   I / O      - set in-mark / out-mark at playhead
+ *   ←  / →     - nudge playhead one frame (1/24s)
+ *   Shift ←/→  - nudge playhead one second
+ *   Up / Down  - select previous / next clip
+ *   ⌘/Ctrl + + / -  - zoom in / out
+ *   Esc        - clear marks
  *
  * Bind once at the editor root. Ignores keys when typing in an input,
- * textarea, or contentEditable — so inline narration editing never gets
+ * textarea, or contentEditable - so inline narration editing never gets
  * eaten by scrubbing shortcuts.
  */
 

@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * TimelineInspector — right-rail "this clip" panel (Resolve-style).
+ * TimelineInspector - right-rail "this clip" panel (Resolve-style).
  *
  * Shows the selected clip's editable properties. Designed to be the
  * single place where per-panel actions live, so the timeline itself
@@ -62,7 +62,7 @@ export function TimelineInspector({
             Page {clip.page} · Panel {clip.panel}
           </h3>
           <p className="text-xs text-[rgb(var(--p-muted))]">
-            #{clip.order} · source: {clip.source || "—"}
+            #{clip.order} · source: {clip.source || "-"}
           </p>
         </div>
         <div className="flex flex-col items-end gap-1">

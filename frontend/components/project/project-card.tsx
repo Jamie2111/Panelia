@@ -24,7 +24,7 @@ import { ProjectSummary, StageStatus } from "@/lib/types";
 import { toPipelineDisplay, shortStageLabel } from "@/lib/pipeline-messages";
 
 /**
- * ProjectCard — the entry surface for a project in the Studio grid.
+ * ProjectCard - the entry surface for a project in the Studio grid.
  *
  * Notion-influenced layout: cover image on the left, content on the right,
  * minimal divider, hover-reveal action row. Liquid-glass surface inherited
@@ -194,7 +194,7 @@ export function ProjectCard({
             </div>
           </div>
 
-          {/* Status sentence — replaces the percent + "Script Generation" badge */}
+          {/* Status sentence - replaces the percent + "Script Generation" badge */}
           <div className="flex items-center gap-2 flex-wrap">
             {activeDisplay ? (
               <Badge tone={toneFromDisplay(activeDisplay.tone)} dot pulse={activeDisplay.active}>

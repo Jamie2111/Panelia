@@ -1,4 +1,4 @@
-"""Page-level Gemini Vision analysis — inspired by pashpashpash/manga-reader.
+"""Page-level Gemini Vision analysis - inspired by pashpashpash/manga-reader.
 
 Sends batches of full manga pages (as images) to Gemini Vision, asking for
 story-event summaries per page.  The results fill the gap left by OCR failures
@@ -40,7 +40,7 @@ class PageVisionService:
     """Analyse full manga pages via Gemini Vision for story understanding."""
 
     # How many pages to send in a single Gemini request.
-    # Each page image is ~200-600 KB base64 — batches of 5 stay comfortably
+    # Each page image is ~200-600 KB base64 - batches of 5 stay comfortably
     # under the 4 MB inline-data limit for gemini-2.5-flash.
     DEFAULT_BATCH_SIZE = 5
     # Overlap between batches so the model can connect story events.
@@ -71,7 +71,7 @@ class PageVisionService:
         Results are cached in ``cache_dir / page_vision_cache.json``.
         """
         if not self.settings.gemini_api_key:
-            logger.info("Gemini API key not configured — skipping page vision analysis")
+            logger.info("Gemini API key not configured - skipping page vision analysis")
             return {}
         if not page_paths:
             return {}
@@ -249,7 +249,7 @@ class PageVisionService:
                     item["events"] = ordered_events[idx]
 
             logger.info(
-                "Page vision batch analysed pages %s — got %d/%d events",
+                "Page vision batch analysed pages %s - got %d/%d events",
                 page_numbers, len(by_page), len(batch),
             )
         except Exception as exc:

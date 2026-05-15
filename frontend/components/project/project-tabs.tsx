@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * DEPRECATED — project tabs are now rendered inline inside PageHeader
+ * DEPRECATED - project tabs are now rendered inline inside PageHeader
  * via the `views` prop. See `lib/project-views.ts#buildProjectViews`.
  *
  * This component is kept as a thin shim so EditorShell and any unknown

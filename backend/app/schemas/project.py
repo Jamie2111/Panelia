@@ -47,7 +47,7 @@ class PipelineStage(str, Enum):
     INGESTION = "ingestion"
     PANEL_DETECTION = "panel_detection"
     PANEL_REVIEW = "panel_review"
-    # ── Vision-pipeline path — these four are legacy ─────────────────────
+    # ── Vision-pipeline path - these four are legacy ─────────────────────
     # They run only when script_pipeline_version="legacy"/"vNext". In
     # "vision" mode they're auto-completed by auto_run.py so the UI can
     # collapse them.
@@ -59,7 +59,7 @@ class PipelineStage(str, Enum):
     SCRIPT_GENERATION = "script_generation"
     NARRATION_GENERATION = "narration_generation"
     VIDEO_RENDERING = "video_rendering"
-    # YouTube publish bundle: title, description, viral thumbnail — runs
+    # YouTube publish bundle: title, description, viral thumbnail - runs
     # last so the user can drag-and-drop the result into YouTube Studio.
     YOUTUBE_BUNDLE = "youtube_bundle"
 
@@ -127,7 +127,7 @@ class PanelBox(BaseModel):
     detection_locked: bool = False
 
     # Sanity bounds: coordinates and sizes beyond these indicate bad data
-    _MAX_COORD: ClassVar[int] = 65535   # ~4K resolution * 16 zoom — no real panel exceeds this
+    _MAX_COORD: ClassVar[int] = 65535   # ~4K resolution * 16 zoom - no real panel exceeds this
     _MAX_DIMENSION: ClassVar[int] = 32767
 
     @field_validator("x", "y", mode="before")
@@ -137,7 +137,7 @@ class PanelBox(BaseModel):
             v = int(round(value))
         else:
             v = int(value)
-        # Clamp to valid coordinate range — reject injected extreme values
+        # Clamp to valid coordinate range - reject injected extreme values
         return max(-cls._MAX_COORD, min(cls._MAX_COORD, v))
 
     @field_validator("width", "height", mode="before")
@@ -201,11 +201,11 @@ class VideoConfig(BaseModel):
     watermark: WatermarkConfig = Field(default_factory=WatermarkConfig)
     title_card_enabled: bool = False
     title_card_seconds: float = 3.0    # Duration of title card in seconds
-    title_card_accent_color: str = "#e11d48"  # Rose-600 — matches Panelia UI accent
+    title_card_accent_color: str = "#e11d48"  # Rose-600 - matches Panelia UI accent
 
 
 class NarrationMode(str, Enum):
-    PANEL = "panel"   # One narration line per kept panel — maximum alignment / control
+    PANEL = "panel"   # One narration line per kept panel - maximum alignment / control
 
 
 class PipelineConfig(BaseModel):
@@ -226,7 +226,7 @@ class PipelineConfig(BaseModel):
     @classmethod
     def _coerce_narration_mode(cls, v: object) -> object:
         # Legacy projects may have "story", "hybrid", or "vision_first" stored.
-        # All non-panel modes are retired — coerce them to panel silently.
+        # All non-panel modes are retired - coerce them to panel silently.
         if v not in (NarrationMode.PANEL, NarrationMode.PANEL.value):
             return NarrationMode.PANEL
         return v

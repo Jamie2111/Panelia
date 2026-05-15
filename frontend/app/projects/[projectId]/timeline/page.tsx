@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * /projects/:projectId/timeline — the new DaVinci-inspired editor route.
+ * /projects/:projectId/timeline - the new DaVinci-inspired editor route.
  *
  * Loads the project, hands the panels to <TimelineEditor>, and wires up:
  *   • Save → POST updated durations + narrations to the backend
@@ -53,7 +53,7 @@ export default function TimelinePage() {
     void load();
   }, [load]);
 
-  // Adaptive polling — every 5s while any active job is running.
+  // Adaptive polling - every 5s while any active job is running.
   React.useEffect(() => {
     if (!project) return;
     const hasActive = (project.active_jobs ?? []).some(
@@ -167,10 +167,10 @@ export default function TimelinePage() {
         </>
       )}
     >
-      {/* "While you were away" — only fires when state has changed. */}
+      {/* "While you were away" - only fires when state has changed. */}
       <WhileYouWereAway project={project} />
 
-      {/* Pipeline at a glance — sentences, not numbers. */}
+      {/* Pipeline at a glance - sentences, not numbers. */}
       <PipelineBlock
         stageStates={project.stage_states}
         cost={estimateProjectCost(project)}

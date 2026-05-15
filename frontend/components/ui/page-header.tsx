@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * PageHeader — the one hero header pattern used by every page in the app.
+ * PageHeader - the one hero header pattern used by every page in the app.
  *
  * Distilled from the timeline editor page so that the whole product
  * speaks the same visual language. Every page in the pipeline (project
@@ -23,7 +23,7 @@
  * already had this pattern) and removes the visual mode-switch when you
  * navigate between project sub-pages.
  *
- * The whole component is presentational — it owns no state, and any
+ * The whole component is presentational - it owns no state, and any
  * dynamic content (pills, links) comes in as props.
  */
 

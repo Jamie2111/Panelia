@@ -4,8 +4,8 @@
  * Converts opaque numeric pipeline state into the human-readable sentences
  * that the design language demands. The rule is simple:
  *
- *   "97% — Pass 1: repaired 15/399"  ❌
- *   "Polishing your script — about a minute left"  ✓
+ *   "97% - Pass 1: repaired 15/399"  ❌
+ *   "Polishing your script - about a minute left"  ✓
  *
  * Why this exists: percentages without context cause anxiety. Sentences
  * with a verb and a timeframe activate the same trust mechanism as a
@@ -23,11 +23,11 @@ import type {
 
 /** What the UI should show for a stage at a glance. */
 export interface PipelineDisplay {
-  /** A short past/present tense sentence — never a percentage. */
+  /** A short past/present tense sentence - never a percentage. */
   sentence: string;
-  /** Optional secondary line — only shown when expanded. */
+  /** Optional secondary line - only shown when expanded. */
   detail?: string;
-  /** Pill tone — "ok" | "warn" | "fail" | "info" | "accent" | "muted". */
+  /** Pill tone - "ok" | "warn" | "fail" | "info" | "accent" | "muted". */
   tone: "ok" | "warn" | "fail" | "info" | "accent" | "muted";
   /** True when stage is actively running (drives shimmer/breathe motion). */
   active: boolean;
@@ -48,7 +48,7 @@ const STAGE_LABELS: Record<PipelineStage, string> = {
 };
 
 /**
- * Friendly verb for each stage — what's _happening_ when it's running.
+ * Friendly verb for each stage - what's _happening_ when it's running.
  * Each entry is a present-tense gerund phrase you can drop after "We're".
  */
 const STAGE_RUNNING_VERBS: Record<PipelineStage, string> = {
@@ -81,7 +81,7 @@ const STAGE_DONE_VERBS: Record<PipelineStage, string> = {
 };
 
 /**
- * Stages that the vision pipeline doesn't run — they're auto-completed
+ * Stages that the vision pipeline doesn't run - they're auto-completed
  * by the backend with a "skipped" message. Hide them from the canonical
  * pipeline display so the user never has to think about them.
  */
@@ -118,7 +118,7 @@ function cap(s: string): string {
 
 /**
  * Roughly map a percent + stage to a human-readable time estimate.
- * We deliberately avoid false precision — users prefer "about a minute"
+ * We deliberately avoid false precision - users prefer "about a minute"
  * over "47 seconds" for trust reasons.
  */
 function estimateTimeLeft(stage: PipelineStage, progress: number): string {
@@ -146,7 +146,7 @@ function estimateTimeLeft(stage: PipelineStage, progress: number): string {
 /**
  * Turn a raw StageState into the sentence form the UI displays.
  *
- * This is the function every component should use — no other place in
+ * This is the function every component should use - no other place in
  * the codebase should format pipeline status text directly.
  */
 export function toPipelineDisplay(state: StageState): PipelineDisplay {
@@ -158,7 +158,7 @@ export function toPipelineDisplay(state: StageState): PipelineDisplay {
       const verb = STAGE_RUNNING_VERBS[stage] ?? `working on ${stageLabel}`;
       const timeLeft = estimateTimeLeft(stage, progress);
       return {
-        sentence: `${cap(verb)} — ${timeLeft}`,
+        sentence: `${cap(verb)} - ${timeLeft}`,
         detail: message || undefined,
         tone: "accent",
         active: true,
@@ -219,7 +219,7 @@ export function toPipelineDisplay(state: StageState): PipelineDisplay {
 /**
  * Pick the single most actionable stage from the full pipeline.
  * This drives the "what should I do next?" callout at the top of the
- * project page — the answer is always exactly one thing.
+ * project page - the answer is always exactly one thing.
  */
 export function pickFocusStage(
   states: Record<PipelineStage, StageState> | undefined,

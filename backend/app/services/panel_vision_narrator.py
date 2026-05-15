@@ -1,5 +1,5 @@
 """
-PanelVisionNarrator — Vision-grounded panel narration service.
+PanelVisionNarrator - Vision-grounded panel narration service.
 
 This is the SINGLE source of truth for generating panel narrations.
 Replaces the legacy cascade (script_generator → script_polisher →
@@ -9,7 +9,7 @@ script_quality_service → script_cleaner_service → script_narrative_polish
 Design principles:
   • Vision-first: every narration is generated with the panel IMAGE in context.
   • Sequential with continuity: each call carries the prior N narrations.
-  • One pass, one source: no polish/repair cascade — bad output gets
+  • One pass, one source: no polish/repair cascade - bad output gets
     regenerated per-panel by the user, never batch-polished.
   • Schema-stable: writes a single canonical script_manifest.json plus
     syncs panel.narration in panels.json. Nothing else.
@@ -90,14 +90,14 @@ class NarrationBatch:
 
 # ── The single narration prompt ───────────────────────────────────────────
 # This is the ONLY prompt in the whole pipeline. If output quality is bad,
-# we tune this — we don't add another service.
+# we tune this - we don't add another service.
 _NARRATION_PROMPT = """You are narrating a single panel from a sequential-art chapter
 (manga, manhwa, webtoon, or comic) for a YouTube recap video. You are ALSO
 classifying the panel for YouTube monetization safety.
 
 You can see the panel image. Look at it carefully.
 
-PART 1 — NARRATION (15-30 words):
+PART 1 - NARRATION (15-30 words):
 Describe the SPECIFIC visible action, expression, or moment in this panel.
 The narration will be read aloud over this exact panel.
 
@@ -106,18 +106,18 @@ GOOD narrations:
 • Use character names only when you can identify them with confidence
 • Flow naturally from the previous narration (continuity, not repetition)
 • Convey emotion when the panel shows emotion
-• Past or present tense — match the established voice
+• Past or present tense - match the established voice
 
 AVOID:
 • Generic filler ("a powerful moment unfolds", "tension rises")
 • Repeating the previous narration's wording with a tense change
 • Inventing details not visible in the panel
-• Describing what's about to happen — describe THIS panel only
+• Describing what's about to happen - describe THIS panel only
 
-PART 2 — CONTENT RATING (one of: "safe", "borderline", "explicit"):
+PART 2 - CONTENT RATING (one of: "safe", "borderline", "explicit"):
 Classify by YouTube's Advertiser-Friendly Content Guidelines.
 
-"safe" — render normally. Includes:
+"safe" - render normally. Includes:
   • Kissing, romantic embraces, hand-holding, hugging
   • Characters in swimwear or normal revealing clothes
   • Combat, fighting, action sequences, impact effects
@@ -126,7 +126,7 @@ Classify by YouTube's Advertiser-Friendly Content Guidelines.
   • Suggestive poses where characters are fully clothed
   → Be GENEROUS with "safe". Most romance and action belongs here.
 
-"borderline" — blur in the final video. Includes:
+"borderline" - blur in the final video. Includes:
   • Partial / implied nudity (silhouettes, covered nudity, side- or
     back-nudity NOT shown graphically)
   • Bed / intimate scenes past kissing (touching, undressing partially)
@@ -135,7 +135,7 @@ Classify by YouTube's Advertiser-Friendly Content Guidelines.
     covering most of a body
   • Stylized horror imagery that isn't viscera
 
-"explicit" — skip the panel entirely. Includes:
+"explicit" - skip the panel entirely. Includes:
   • Visible genitalia, exposed nipples, fully nude bodies shown directly
   • On-panel depiction of sex acts
   • Decapitations, dismemberment, exposed viscera, graphic body horror
@@ -210,7 +210,7 @@ class PanelVisionNarrator:
 
     def _select_vision_model(self) -> str:
         configured = (self.settings.gemini_model or "").strip()
-        # Retired or unavailable model identifiers — auto-upgrade to current.
+        # Retired or unavailable model identifiers - auto-upgrade to current.
         retired = {
             "gemini-2.0-flash",
             "gemini-2.0-flash-exp",
@@ -251,7 +251,7 @@ class PanelVisionNarrator:
 
         Panels MUST be supplied in visual reading order (sorted by page,
         then by panel-within-page). When `cast_block` is non-empty it is
-        prepended to every panel's prompt — that's how the cast bible
+        prepended to every panel's prompt - that's how the cast bible
         threads into character recognition.
         """
         started = time.perf_counter()
@@ -443,7 +443,7 @@ class PanelVisionNarrator:
             from google.generativeai.types import ThinkingConfig  # type: ignore
             gen_kwargs["thinking_config"] = ThinkingConfig(thinking_budget=0)
         except Exception:
-            # Older SDK versions don't expose ThinkingConfig — the larger
+            # Older SDK versions don't expose ThinkingConfig - the larger
             # token budget alone is enough to avoid truncation.
             pass
 
@@ -479,7 +479,7 @@ class PanelVisionNarrator:
         text = "".join(text_parts).strip()
         if text:
             return text
-        # No usable text — surface the finish_reason so the caller's
+        # No usable text - surface the finish_reason so the caller's
         # post-processor flags this panel for regeneration.
         if finish_reason and str(finish_reason) not in (
             "STOP", "FinishReason.STOP", "1",
@@ -518,7 +518,7 @@ class PanelVisionNarrator:
           4. Bare narration string (legacy / fallback model)
 
         On any parse failure we default to {rating: "safe"} so we never
-        block a panel because of malformed output — the user can always
+        block a panel because of malformed output - the user can always
         re-classify by re-running the panel.
         """
         import json as _json
@@ -555,7 +555,7 @@ class PanelVisionNarrator:
             except (_json.JSONDecodeError, ValueError):
                 # JSON broke (typically because the model put unescaped
                 # inner quotes inside the narration string). Fall through
-                # to the regex extractor — we'd rather salvage a good
+                # to the regex extractor - we'd rather salvage a good
                 # narration than throw the whole panel away.
                 pass
 
@@ -606,9 +606,9 @@ def write_narration_outputs(
     """Persist narration results to canonical project files.
 
     Writes:
-      • panels.json — each kept panel's narration field
-      • script_manifest.json — single source of truth for script_lines + segments
-      • script.txt — flat plaintext for quick inspection
+      • panels.json - each kept panel's narration field
+      • script_manifest.json - single source of truth for script_lines + segments
+      • script.txt - flat plaintext for quick inspection
     """
     # Build lookup
     result_by_id = {r.panel_id: r for r in results}
@@ -625,7 +625,7 @@ def write_narration_outputs(
             "panel_vision_narrator" if r.status == "ok" else f"vision_{r.status}"
         )
         # Drop any stale vision_* / nsfw_* flags from previous runs before
-        # re-applying — that keeps the UI in lockstep with the latest pass.
+        # re-applying - that keeps the UI in lockstep with the latest pass.
         flags = [
             f for f in (panel.get("review_flags") or [])
             if not (str(f).startswith("vision_") or str(f).startswith("nsfw_"))
@@ -663,7 +663,7 @@ def write_narration_outputs(
             if tag not in flags:
                 flags.append(tag)
         else:
-            # safe — clear any prior nsfw blur unless the user manually set it.
+            # safe - clear any prior nsfw blur unless the user manually set it.
             if not bool(panel.get("manual_keep")):
                 panel["content_blur"] = False
 

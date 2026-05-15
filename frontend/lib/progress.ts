@@ -14,8 +14,20 @@ type CountEstimate = {
   total: number;
 };
 
-function clampProgress(progress: number) {
-  return Math.max(0, Math.min(100, Math.round(progress)));
+function clampProgress(progress: number | string): number {
+  const parsed = typeof progress === "string" ? Number.parseFloat(progress) : progress;
+  const numeric = Number.isFinite(parsed) ? parsed : 0;
+  const clamped = Math.max(0, Math.min(100, numeric));
+  // Always return an integer to avoid decimals in progress displays
+  if (clamped <= 0) return 0;
+  if (clamped >= 100) return 100;
+  return Math.ceil(clamped);
+}
+
+export function formatProgressPercent(progress?: number | string | null): string {
+  const value = clampProgress(progress ?? 0);
+  // Ensure integer (no decimals)
+  return `${Math.round(value)}%`;
 }
 
 function parseTimestamp(value?: string | null) {
@@ -64,10 +76,11 @@ function estimateCountProgress(stage: PipelineStage, message?: string | null): C
 
   if (stage === "script_generation") {
     const scanMatch = parseCountPair(normalized, [
+      /panel\s+(\d+)\s*\/\s*(\d+)/,
       /page\s+(\d+)\s*\/\s*(\d+)/
     ]);
-    if (scanMatch && normalized.includes("page")) {
-      return { startProgress: 14, endProgress: 70, ...scanMatch };
+    if (scanMatch && (normalized.includes("panel") || normalized.includes("page"))) {
+      return { startProgress: 10, endProgress: 34, ...scanMatch };
     }
   }
 
@@ -245,28 +258,28 @@ function estimatePhaseFromMessage(project: ProjectWithProgress, stage: PipelineS
 
   if (stage === "script_generation") {
     if (normalized.includes("extracting dialogue and scene context")) {
-      return { startProgress: 12, endProgress: 74, expectedDurationMs: 7_000 + keptPanelCount * 260 };
+      return { startProgress: 10, endProgress: 12, expectedDurationMs: 7_000 + keptPanelCount * 260 };
     }
     if (normalized.includes("scanning panels for dialogue candidates")) {
-      return { startProgress: 14, endProgress: 46, expectedDurationMs: 5_000 + keptPanelCount * 120 };
+      return { startProgress: 10, endProgress: 34, expectedDurationMs: 5_000 + keptPanelCount * 120 };
     }
     if (normalized.includes("analyzing speaker and character layout") || normalized.includes("analysing speaker and character layout")) {
-      return { startProgress: 54, endProgress: 60, expectedDurationMs: 3_000 + keptPanelCount * 50 };
+      return { startProgress: 34, endProgress: 35, expectedDurationMs: 3_000 + keptPanelCount * 50 };
     }
     if (normalized.includes("linking recurring characters across dialogue panels")) {
-      return { startProgress: 60, endProgress: 64, expectedDurationMs: 2_500 + keptPanelCount * 40 };
+      return { startProgress: 35, endProgress: 36, expectedDurationMs: 2_500 + keptPanelCount * 40 };
     }
     if (normalized.includes("resolving character names and speakers")) {
-      return { startProgress: 64, endProgress: 68, expectedDurationMs: 2_000 + keptPanelCount * 35 };
+      return { startProgress: 36, endProgress: 37, expectedDurationMs: 2_000 + keptPanelCount * 35 };
     }
     if (normalized.includes("building panel-by-panel dialogue scenes")) {
-      return { startProgress: 68, endProgress: 70, expectedDurationMs: 2_000 + keptPanelCount * 25 };
+      return { startProgress: 37, endProgress: 38, expectedDurationMs: 2_000 + keptPanelCount * 25 };
     }
     if (normalized.includes("dialogue and scene context ready")) {
-      return { startProgress: 70, endProgress: 74, expectedDurationMs: 1_500 };
+      return { startProgress: 38, endProgress: 39, expectedDurationMs: 1_500 };
     }
     if (normalized.includes("reused cached dialogue extraction")) {
-      return { startProgress: 70, endProgress: 74, expectedDurationMs: 2_500 + keptPanelCount * 25 };
+      return { startProgress: 38, endProgress: 39, expectedDurationMs: 2_500 + keptPanelCount * 25 };
     }
     if (normalized.includes("generating story beats and narration lines")) {
       return { startProgress: 74, endProgress: 90, expectedDurationMs: 11_000 + keptPanelCount * 165 };
@@ -437,7 +450,7 @@ export function getStageProgressMeta(project: ProjectWithProgress, stage: Pipeli
   const jobProgress = Number(job?.progress ?? 0);
   const isRunning = job?.status === "running" || state?.status === "running";
   // Only treat a stage as "Queued" when there is an actual queued job record.
-  // A stage in "ready" state without a job just means it's ready to be started —
+  // A stage in "ready" state without a job just means it's ready to be started -
   // showing it as "Queued" causes the progress bar to misleadingly show unrelated
   // stages (e.g. "Script generation • 0%") after an adjacent stage fails.
   const isQueued = !isRunning && job?.status === "queued";

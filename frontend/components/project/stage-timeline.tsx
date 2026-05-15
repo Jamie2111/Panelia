@@ -43,7 +43,7 @@ function toneFor(status: StageStatus): BadgeTone {
 }
 
 /**
- * StageTimeline — vertical, glanceable pipeline state.
+ * StageTimeline - vertical, glanceable pipeline state.
  *
  * Replaces the percent + cryptic message layout with:
  *   • Status icon (color-coded)

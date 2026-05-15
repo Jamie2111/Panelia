@@ -38,7 +38,7 @@ class CharacterVisualProfiler:
     re-runs do not repeat the LLM calls.
     """
 
-    _IMAGE_MAX_PX = 512  # Smaller than narration images — just enough for faces
+    _IMAGE_MAX_PX = 512  # Smaller than narration images - just enough for faces
 
     def __init__(self, router: LLMRouter | None = None) -> None:
         self.router = router or LLMRouter()

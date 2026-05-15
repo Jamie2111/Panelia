@@ -1,20 +1,20 @@
 "use client";
 
 /**
- * use-timeline-state — central state for the Resolve-style timeline.
+ * use-timeline-state - central state for the Resolve-style timeline.
  *
  * What it owns:
- *   • clips           — ordered list of TimelineClip derived from panels
- *   • playheadSec     — current scrubber position in seconds
- *   • selectedClipId  — single-clip selection (the Inspector reads this)
- *   • inMarkSec / outMarkSec — I/O range for partial export & loop
- *   • pixelsPerSecond — zoom level (drives clip widths)
- *   • playing         — JKL/playback state
- *   • playbackRate    — JKL speed (J=-1, K=0, L=+1; double-tap = ±2)
+ *   • clips           - ordered list of TimelineClip derived from panels
+ *   • playheadSec     - current scrubber position in seconds
+ *   • selectedClipId  - single-clip selection (the Inspector reads this)
+ *   • inMarkSec / outMarkSec - I/O range for partial export & loop
+ *   • pixelsPerSecond - zoom level (drives clip widths)
+ *   • playing         - JKL/playback state
+ *   • playbackRate    - JKL speed (J=-1, K=0, L=+1; double-tap = ±2)
  *
  * What it doesn't own:
  *   • The audio engine itself (Web Audio is plugged in by the consumer).
- *   • Persistence — the consumer decides when to write back to panels.json.
+ *   • Persistence - the consumer decides when to write back to panels.json.
  *
  * Why a custom hook (not Zustand): this state is local to one editor
  * instance, doesn't need to survive route changes, and stays simple
@@ -130,7 +130,7 @@ export function useTimelineState({
   state: TimelineState;
   actions: TimelineActions;
 } {
-  // Rebuild clips whenever panels change. This is intentional —
+  // Rebuild clips whenever panels change. This is intentional -
   // panels.json is the source of truth; the timeline reflects it.
   const clips = React.useMemo(
     () => buildClipsFromPanels(panels, thumbnailBaseUrl),

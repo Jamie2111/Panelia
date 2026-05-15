@@ -1,10 +1,10 @@
 """
-Edge TTS service — Microsoft Azure Neural voices via the free public
+Edge TTS service - Microsoft Azure Neural voices via the free public
 endpoint that Edge browser uses for "Read aloud".
 
 Why this is the right "most human, free" TTS:
   • Zero API key required. No quota negotiation, no billing surface.
-  • Powered by Microsoft Azure Neural voice models — the same engines
+  • Powered by Microsoft Azure Neural voice models - the same engines
     Microsoft sells through Azure Speech ($16/million chars). Quality
     is on par with paid offerings; a notch below ElevenLabs but well
     above any other open-source option.
@@ -20,7 +20,7 @@ Failure mode policy:
     happens we fall back to Kokoro automatically (the existing engine
     stays installed). Callers don't see the difference beyond a voice
     swap.
-  • The fallback is wired in `app/services/generate_narration.py` —
+  • The fallback is wired in `app/services/generate_narration.py` -
     this module only handles its own happy/fail path.
 
 Implementation notes:
@@ -60,7 +60,7 @@ except ImportError:
 # ── Default voice mapping ─────────────────────────────────────────────────
 # Map our short voice IDs (e.g. "edge_ava") to the full Microsoft voice
 # string. We pick voices that consistently land high on YouTube recap
-# channel A/B tests — natural cadence, can do drama without sounding
+# channel A/B tests - natural cadence, can do drama without sounding
 # theatrical, not over-processed.
 EDGE_VOICE_MAP: dict[str, str] = {
     # ── English (US) ────────────────────────────────────────────────────
@@ -259,7 +259,7 @@ class EdgeTTSService:
     def _resample(audio: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
         if source_rate == target_rate:
             return audio
-        # Lightweight linear resample — Edge TTS already outputs 24kHz mono,
+        # Lightweight linear resample - Edge TTS already outputs 24kHz mono,
         # so this path is exercised only for unexpected source rates. Good
         # enough that we don't pull in scipy/librosa just for fallback.
         ratio = target_rate / float(source_rate)
@@ -307,7 +307,7 @@ class EdgeTTSService:
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(coro)
-        # We're inside a running loop — spin a worker.
+        # We're inside a running loop - spin a worker.
         import threading
         result_box: dict[str, Any] = {}
 

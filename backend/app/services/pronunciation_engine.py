@@ -66,7 +66,7 @@ _PINYIN_FINALS: dict[str, str] = {
     "un": "wun",
 }
 
-# Full-syllable overrides — for cases where the compositional approach
+# Full-syllable overrides - for cases where the compositional approach
 # doesn't produce the best result.  These take priority.
 _PINYIN_OVERRIDES: dict[str, str] = {
     # Zh- initials

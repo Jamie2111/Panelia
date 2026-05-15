@@ -48,7 +48,7 @@ def generate_narration(
     voice_clone = VoiceCloneService()
     mastering = AudioMasteringService()
 
-    # Engine selection — Edge TTS handles every voice id we registered in
+    # Engine selection - Edge TTS handles every voice id we registered in
     # the catalog under the `edge_*` namespace; everything else still goes
     # through Kokoro. Kokoro is lazily constructed so projects that never
     # touch a Kokoro voice don't load its torch dependencies.

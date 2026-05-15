@@ -1,4 +1,4 @@
-"""Channel preset endpoints — global branding the user edits once."""
+"""Channel preset endpoints - global branding the user edits once."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/channel", tags=["channel"])
 
 
 class ChannelPresetPayload(BaseModel):
-    """Loose patch shape — every field is optional so the UI can PATCH
+    """Loose patch shape - every field is optional so the UI can PATCH
     one value at a time without re-sending the whole preset."""
     channel_name: str | None = None
     tagline: str | None = None

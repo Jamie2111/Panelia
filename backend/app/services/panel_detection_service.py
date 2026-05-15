@@ -1,5 +1,5 @@
 """
-panel_detector.py — Hybrid manga/manhwa/comic panel detector.
+panel_detector.py - Hybrid manga/manhwa/comic panel detector.
 
 Two-stage architecture:
   Stage 1: AI detection via Magi model (if available)
@@ -12,7 +12,7 @@ Handles:
   • any language
 
 Guarantees:
-  • NEVER returns zero panels — worst case returns the full page
+  • NEVER returns zero panels - worst case returns the full page
   • Dynamic thresholds based on page dimensions
   • Correct reading-order sorting per format
   • Debug visualisation output when enabled
@@ -681,7 +681,7 @@ class PanelDetector:
         """
         Strategy D: Row/column content-signal analysis.
 
-        For borderless panels — detects content bands by scanning
+        For borderless panels - detects content bands by scanning
         horizontal rows for ink density, then groups consecutive
         content rows into panel regions.
         """
@@ -796,7 +796,7 @@ class PanelDetector:
         """
         Specialised detection for tall vertical webtoon pages.
 
-        Pass 0: Whitespace gutter detection — scan for horizontal bands
+        Pass 0: Whitespace gutter detection - scan for horizontal bands
                 of near-white pixels and split the strip at those gaps.
                 This handles most modern manhwa/webtoon where panels are
                 separated by white margins rather than black borders.
@@ -876,7 +876,7 @@ class PanelDetector:
     ) -> list[DetectedPanel]:
         """
         Split a webtoon strip into panels by finding horizontal white-space
-        gutters — rows where almost all pixels are near-white.
+        gutters - rows where almost all pixels are near-white.
 
         This handles the standard manhwa/webtoon format where individual
         scenes/panels are separated by a few rows of white (or near-white)
@@ -1217,7 +1217,7 @@ class PanelDetector:
         dropped.
 
         Thresholds were calibrated against 332 real panels from a
-        manhwa test corpus — 32/32 junk caught, 0 false positives.
+        manhwa test corpus - 32/32 junk caught, 0 false positives.
         """
         if not panels:
             return panels
@@ -1312,7 +1312,7 @@ class PanelDetector:
 
             kept.append(panel)
 
-        # Safety: never return empty — keep largest panel
+        # Safety: never return empty - keep largest panel
         if not kept and panels:
             kept = [max(panels, key=lambda p: p.area)]
 
@@ -1369,7 +1369,7 @@ class PanelDetector:
         page_h: int,
     ) -> list[DetectedPanel]:
         """
-        Remove panels that cover the entire page — unless they're
+        Remove panels that cover the entire page - unless they're
         the only panel (splash page preservation).
         """
         cfg = self.config
@@ -2883,7 +2883,7 @@ class PanelDetectorAdapter:
                 new_w = max(new_x2 - new_x, 1)
                 new_h = max(new_y2 - new_y, 1)
 
-                # Don't refine if we'd shrink by more than 40% — that
+                # Don't refine if we'd shrink by more than 40% - that
                 # suggests the panel is legitimately sparse.
                 if new_w * new_h >= w * h * 0.60:
                     pb = dict(pb)

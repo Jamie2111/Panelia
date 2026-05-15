@@ -1,5 +1,5 @@
 /**
- * project-views — the canonical list of project sub-pages and how they
+ * project-views - the canonical list of project sub-pages and how they
  * render in the page-header view-switcher.
  *
  * Used by every project page so the navigation feels identical no matter
@@ -18,7 +18,7 @@ interface ProjectView {
 }
 
 /**
- * The default canonical view list. We deliberately keep it short — only
+ * The default canonical view list. We deliberately keep it short - only
  * the surfaces a user opens during a real edit pass:
  *   Overview · Panels · Narration · Timeline · Preview
  *

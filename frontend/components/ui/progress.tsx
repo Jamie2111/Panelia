@@ -9,8 +9,8 @@ function wholeProgress(value: number) {
 }
 
 /**
- * Progress — slim bar with a soft accent fill + glow.
- * When `shimmer` is true, the fill gets a slow shimmering sweep — used
+ * Progress - slim bar with a soft accent fill + glow.
+ * When `shimmer` is true, the fill gets a slow shimmering sweep - used
  * for active stages where we want to convey "this is moving" without
  * relying on a percentage number.
  */

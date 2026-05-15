@@ -1,12 +1,12 @@
 """
-CastBibleService — generate a "cast bible" once per project so the vision
+CastBibleService - generate a "cast bible" once per project so the vision
 narrator can refer to characters by name in every panel.
 
 Problem this solves:
   Without character context, the vision narrator says "a uniformed
-  woman with pink hair holds a lollipop" — accurate but cold. With a
+  woman with pink hair holds a lollipop" - accurate but cold. With a
   cast bible the same panel becomes "Zero Two casually licks a
-  lollipop while sneaking through Plantation 13" — actually useful
+  lollipop while sneaking through Plantation 13" - actually useful
   for a YouTube recap.
 
 How it works:
@@ -14,7 +14,7 @@ How it works:
      question: "Given this manga/manhwa/comic title and chapter, list
      the likely cast as JSON: [{name, role, visual_description}]".
      For popular series (Darling, One Piece, Solo Leveling, Bleach,
-     etc.) the model already knows the cast from its training data —
+     etc.) the model already knows the cast from its training data -
      for ~$0.0003 in tokens we get a reliable bible.
   2. The bible is cached per project at output/cast_bible.json so we
      don't pay for it on retries.
@@ -102,7 +102,7 @@ who are likely to appear in this chapter. For each entry:
     "name": "the canonical English name (e.g. 'Zero Two', 'Levi Ackerman')",
     "role": "one short phrase, e.g. 'pistil pilot of Strelizia'",
     "visual_description": "the distinctive visible features the model
-      should use to identify them in a panel — hair color, eye color,
+      should use to identify them in a panel - hair color, eye color,
       clothing, horns, scars, etc. Keep under 25 words."
   }}
 
@@ -110,7 +110,7 @@ Rules:
   • Only include characters you can verify from the series; do NOT invent.
   • Cap the list at 12 most-likely-relevant characters for this chapter.
   • If the series is too obscure or you don't have confident knowledge of
-    it, return {{"cast": []}} — empty is better than wrong.
+    it, return {{"cast": []}} - empty is better than wrong.
   • Return ONLY the JSON object. No prose, no code fences."""
 
 
@@ -188,7 +188,7 @@ class CastBibleService:
     def _build_via_llm(self, *, manga_title: str, chapter_title: str) -> CastBible:
         model = self._gemini()
         if model is None:
-            logger.info("Cast bible LLM unavailable — returning empty bible.")
+            logger.info("Cast bible LLM unavailable - returning empty bible.")
             return CastBible(manga_title=manga_title, chapter_title=chapter_title, source="fallback")
 
         prompt = _BIBLE_PROMPT.format(
@@ -271,8 +271,8 @@ class CastBibleService:
         for m in bible.members:
             piece = f"  • {m.name}"
             if m.visual_description:
-                piece += f" — {m.visual_description}"
+                piece += f" - {m.visual_description}"
             elif m.role:
-                piece += f" — {m.role}"
+                piece += f" - {m.role}"
             lines.append(piece)
         return "\n".join(lines)

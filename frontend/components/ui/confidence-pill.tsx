@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * ConfidencePill — ambient feedback for a panel's narration.
+ * ConfidencePill - ambient feedback for a panel's narration.
  *
  * Looks at panel.narration_source + panel.review_flags and produces a
  * single, glanceable indicator the user can scan dozens of at a time.
@@ -31,13 +31,13 @@ export type Confidence =
 interface Resolved {
   level: Confidence;
   label: string;
-  /** Short reason — shown on hover via title attribute. */
+  /** Short reason - shown on hover via title attribute. */
   reason?: string;
 }
 
 /**
  * Resolve a panel into its confidence state using narration_source +
- * review_flags + content_rating. This is the single source of truth —
+ * review_flags + content_rating. This is the single source of truth -
  * every UI surface that displays panel confidence should go through here.
  */
 export function resolveConfidence(
@@ -67,7 +67,7 @@ export function resolveConfidence(
       reason:
         (panel.content_rating_reason as string | null | undefined) ||
         nsfwFlag ||
-        "Flagged as explicit — excluded from the final video.",
+        "Flagged as explicit - excluded from the final video.",
     };
   }
   if (panel.content_rating === "borderline" || (nsfwFlag && nsfwFlag.includes("borderline"))) {
@@ -77,7 +77,7 @@ export function resolveConfidence(
       reason:
         (panel.content_rating_reason as string | null | undefined) ||
         nsfwFlag ||
-        "Flagged as borderline — the final video will blur this panel.",
+        "Flagged as borderline - the final video will blur this panel.",
     };
   }
 
@@ -146,7 +146,7 @@ interface ConfidencePillProps {
     | "keep"
   >;
   className?: string;
-  /** Hide the dot ornament — useful in dense lists. */
+  /** Hide the dot ornament - useful in dense lists. */
   compact?: boolean;
 }
 
@@ -158,7 +158,7 @@ export function ConfidencePill({ panel, className, compact }: ConfidencePillProp
       case "warn":       return "p-pill p-pill-warn";
       case "fail":       return "p-pill p-pill-fail";
       case "manual":     return "p-pill p-pill-info";
-      // Both NSFW states render rose — the action ("Will blur" vs "Skipped")
+      // Both NSFW states render rose - the action ("Will blur" vs "Skipped")
       // is in the label text, the color signals "this is monetization
       // risk territory" regardless.
       case "nsfw-blur":

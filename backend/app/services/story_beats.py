@@ -47,7 +47,7 @@ class StoryBeatService:
                 warning="No usable scene text was available for story beat extraction.",
             )
 
-        beat_count = max(5, min(36, len(payload)))
+        beat_count = max(5, min(24, round(len(payload) * 0.55)))
         if self.router.available_providers():
             try:
                 result = asyncio.run(

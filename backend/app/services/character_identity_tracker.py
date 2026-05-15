@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from app.services.character_name_filters import is_valid_character_name_candidate
 from app.services.embedding_encoder import EmbeddingEncoder
 
 
@@ -96,10 +97,11 @@ class CharacterIdentityTracker:
                 role_hint=str(cluster.get("role_hint") or memory.get("role") or "").strip(),
                 signature=signature,
             )
+            display_name = refined_name or narration_reference or description
             characters[stable_id] = {
                 **memory,
                 "name": refined_name or memory.get("name"),
-                "display_name": refined_name or str(memory.get("display_name") or stable_id).strip(),
+                "display_name": display_name,
                 "description": description,
                 "narration_reference": narration_reference,
                 "identity_signature": {
@@ -257,4 +259,10 @@ class CharacterIdentityTracker:
             return False
         if cleaned.startswith("Character_") or cleaned.startswith("Stranger"):
             return False
-        return bool(re.search(r"[A-Z][a-z]+", cleaned) or re.search(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]", cleaned))
+        return bool(
+            is_valid_character_name_candidate(cleaned)
+            and (
+                re.search(r"[A-Z][a-z]+", cleaned)
+                or re.search(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]", cleaned)
+            )
+        )

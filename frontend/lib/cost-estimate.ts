@@ -2,7 +2,7 @@
  * cost-estimate.ts
  *
  * Single source of truth for "how much will this project cost to complete?"
- * The numbers are kept conservative and slightly pessimistic — better to
+ * The numbers are kept conservative and slightly pessimistic - better to
  * show $0.18 and bill the user $0.05 than the inverse.
  *
  * Cost components we track:
@@ -120,17 +120,17 @@ export function estimateProjectCost(
     {
       label: "Voice (Kokoro, local)",
       usd: ttsRemaining,
-      note: "Local synthesis — free",
+      note: "Local synthesis - free",
     },
     {
       label: "Music",
       usd: musicRemaining,
-      note: "Built-in tracks — free",
+      note: "Built-in tracks - free",
     },
     {
       label: "Render",
       usd: renderRemaining,
-      note: "Local FFmpeg — free",
+      note: "Local FFmpeg - free",
     },
   ];
 
@@ -150,10 +150,10 @@ export function formatUsd(n: number): string {
 
 function formatCostSentence(remaining: number, full: number): string {
   if (remaining <= 0) {
-    return `Already paid — full run would have cost about ${formatUsd(full)}.`;
+    return `Already paid - full run would have cost about ${formatUsd(full)}.`;
   }
   if (remaining < 0.05) {
-    return `About ${formatUsd(remaining)} to finish — basically free.`;
+    return `About ${formatUsd(remaining)} to finish - basically free.`;
   }
   if (remaining < 1) {
     return `About ${formatUsd(remaining)} in API calls to finish.`;

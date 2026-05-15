@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from app.core.config import get_settings
 from app.schemas.project import PanelBox
 
 
@@ -17,6 +18,7 @@ class PanelQualityService:
     _WEBTOON_ASPECT_RATIO: float = 2.2
 
     def analyze(self, project_dir: Path, panels: list[PanelBox]) -> dict[str, Any]:
+        settings = get_settings()
         ordered = sorted(panels, key=lambda item: item.order)
         if not ordered:
             return {
@@ -60,11 +62,16 @@ class PanelQualityService:
             full_page_like = panel.width >= page_width * 0.9 and panel.height >= page_height * 0.72
             composite_like = self._looks_like_composite_panel(crop, panel.width, panel.height, page_width, page_height)
             content_score = self._content_score(crop)
-            suspicious_skip = (not panel.keep) and panel.auto_skipped and content_score >= 0.24
+            suspicious_skip = (
+                (not panel.keep)
+                and panel.auto_skipped
+                and content_score >= 0.24
+                and not (panel.skip_reason or "").startswith(("duplicate", "continuation"))
+            )
 
             # Whitespace threshold: webtoon panels should be fully inked; manga
             # pages have white gutters, wide margins, and full-page splash art
-            # whose page-border crops are 40-65% white by construction — use a
+            # whose page-border crops are 40-65% white by construction - use a
             # high threshold so only genuinely blank panels are flagged.
             whitespace_threshold = 0.22 if is_webtoon else 0.65
 
@@ -76,7 +83,8 @@ class PanelQualityService:
                 reasons.append("top_blank_band")
             if self._looks_like_side_void(blank_stats):
                 reasons.append("side_void")
-            if self._looks_like_corner_wedge(blank_stats):
+            corner_wedge = self._looks_like_corner_wedge(blank_stats)
+            if corner_wedge:
                 reasons.append("corner_wedge")
             # For traditional manga, full-page panels are normal (splash art,
             # chapter openers, color inserts).  Only flag them for webtoon where
@@ -101,6 +109,8 @@ class PanelQualityService:
                         "auto_skipped": panel.auto_skipped,
                         "whitespace_ratio": round(float(whitespace), 3),
                         "border_blank_ratio": round(float(blank_stats["border_blank_ratio"]), 3),
+                        "corner_wedge": bool(corner_wedge),
+                        "corner_wedge_score": round(float(blank_stats.get("corner_wedge_score", 0.0)), 3),
                         "content_score": round(float(content_score), 3),
                         "reasons": reasons,
                     }
@@ -121,11 +131,11 @@ class PanelQualityService:
                 "full_page_like": max(1, round(total_panels * 0.02)),
                 "composite_like": max(2, round(total_panels * 0.05)),
                 "suspicious_auto_skip": max(2, round(total_panels * 0.05)),
-                "score": 72,
+                "score": settings.panel_quality_score_webtoon,
             }
         else:
             # Traditional manga / comic: full-page splash art is intentional;
-            # white gutters are part of the art style — use relaxed scoring.
+            # white gutters are part of the art style - use relaxed scoring.
             quality_score -= round((whitespace_count / max(total_panels, 1)) * 20)
             quality_score -= round((composite_count / max(total_panels, 1)) * 28)
             quality_score -= round((suspicious_skip_count / max(total_panels, 1)) * 34)
@@ -136,7 +146,7 @@ class PanelQualityService:
                 "full_page_like": total_panels + 1,  # never blocks for manga
                 "composite_like": max(2, round(total_panels * 0.05)),
                 "suspicious_auto_skip": max(2, round(total_panels * 0.05)),
-                "score": 55,
+                "score": settings.panel_quality_score_manga,
             }
 
         quality_score = max(0, min(100, quality_score))
@@ -292,6 +302,7 @@ class PanelQualityService:
                 "left_band_blank_ratio": 0.0,
                 "right_band_blank_ratio": 0.0,
                 "corner_blank_ratio": 0.0,
+                "corner_wedge_score": 0.0,
             }
 
         labels_count, labels = cv2.connectedComponents(blank_mask)
@@ -303,6 +314,7 @@ class PanelQualityService:
                 "left_band_blank_ratio": 0.0,
                 "right_band_blank_ratio": 0.0,
                 "corner_blank_ratio": 0.0,
+                "corner_wedge_score": 0.0,
             }
 
         border_labels = set()
@@ -325,6 +337,7 @@ class PanelQualityService:
             float(np.mean(border_blank[-band_y:, :band_x])),
             float(np.mean(border_blank[-band_y:, -band_x:])),
         )
+        corner_wedge_score = self._corner_wedge_geometry_score(border_blank)
         return {
             "border_blank_ratio": float(np.mean(border_blank)),
             "top_band_blank_ratio": float(np.mean(border_blank[:band_y, :])),
@@ -332,7 +345,45 @@ class PanelQualityService:
             "left_band_blank_ratio": float(np.mean(border_blank[:, :band_x])),
             "right_band_blank_ratio": float(np.mean(border_blank[:, -band_x:])),
             "corner_blank_ratio": corner_blank_ratio,
+            "corner_wedge_score": corner_wedge_score,
         }
+
+    def _corner_wedge_geometry_score(self, border_blank: np.ndarray) -> float:
+        height, width = border_blank.shape[:2]
+        size = max(24, min(int(min(width, height) * 0.20), 96))
+        if size * 2 > min(width, height):
+            size = max(12, min(width, height) // 2)
+        if size < 12:
+            return 0.0
+
+        def oriented_corner(region: np.ndarray, *, flip_y: bool = False, flip_x: bool = False) -> np.ndarray:
+            corner = region
+            if flip_y:
+                corner = np.flipud(corner)
+            if flip_x:
+                corner = np.fliplr(corner)
+            return corner.astype(np.float32)
+
+        corners = [
+            oriented_corner(border_blank[:size, :size]),
+            oriented_corner(border_blank[:size, -size:], flip_x=True),
+            oriented_corner(border_blank[-size:, :size], flip_y=True),
+            oriented_corner(border_blank[-size:, -size:], flip_y=True, flip_x=True),
+        ]
+        scores: list[float] = []
+        edge = max(3, size // 5)
+        inner_start = max(edge + 1, int(size * 0.58))
+        for corner in corners:
+            edge_top = float(np.mean(corner[:edge, :]))
+            edge_left = float(np.mean(corner[:, :edge]))
+            inner = float(np.mean(corner[inner_start:, inner_start:]))
+            fill = float(np.mean(corner))
+            diagonal_drop = min(edge_top, edge_left) - inner
+            if min(edge_top, edge_left) < 0.70 or fill < 0.24:
+                scores.append(0.0)
+                continue
+            scores.append(max(0.0, diagonal_drop))
+        return float(max(scores, default=0.0))
 
     def _looks_like_top_blank_band(
         self,
@@ -357,7 +408,11 @@ class PanelQualityService:
         )
 
     def _looks_like_corner_wedge(self, blank_stats: dict[str, float]) -> bool:
-        return blank_stats["border_blank_ratio"] >= 0.05 and blank_stats["corner_blank_ratio"] >= 0.42
+        return (
+            blank_stats["border_blank_ratio"] >= 0.035
+            and blank_stats["corner_blank_ratio"] >= 0.30
+            and blank_stats.get("corner_wedge_score", 0.0) >= 0.42
+        )
 
     def _grayscale(self, crop: np.ndarray) -> np.ndarray:
         if crop.ndim == 2:

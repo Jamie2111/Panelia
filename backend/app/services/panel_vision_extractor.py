@@ -13,7 +13,7 @@ from multiprocessing import cpu_count
 from app.core.config import get_settings
 from app.pipeline.image_loader import ImageLoader
 from app.schemas.project import CanonicalCharacterRecord, ChapterMetadata, PanelBox, PanelVisionRecord
-from app.services.character_name_filters import normalize_name_key
+from app.services.character_name_filters import is_valid_character_name_candidate, normalize_name_key
 from app.services.llm_router import LLMRouter
 from app.services.panel_evidence_extractor import panel_evidence_by_id
 from app.utils.files import ensure_dir, read_json, write_json
@@ -233,6 +233,16 @@ class PanelVisionExtractor:
                     explicit_names=item.get("character_names", []) or [],
                     alias_map=alias_map,
                 )
+                character_roles = self._resolve_character_roles(
+                    raw_roles=item.get("character_roles"),
+                    action_beat=action_beat,
+                    dialogue=dialogue,
+                    caption=caption,
+                    speaker=speaker,
+                    visible_names=character_names,
+                    canonical_characters=normalized_characters,
+                    alias_map=alias_map,
+                )
                 records.append(
                     PanelVisionRecord(
                         panel_id=panel.id,
@@ -246,6 +256,7 @@ class PanelVisionExtractor:
                         scene_change=bool(item.get("scene_change")),
                         confidence=float(item.get("confidence") or 0.0),
                         character_names=character_names,
+                        character_roles=character_roles,
                     )
                 )
 
@@ -375,18 +386,18 @@ class PanelVisionExtractor:
         names: list[str] = []
         for raw in explicit_names:
             value = self._canonicalize_name(str(raw).strip(), alias_map) or str(raw).strip()
-            if value:
+            if value and is_valid_character_name_candidate(value, allow_stable_label=True):
                 names.append(value)
-        if speaker and speaker not in {"unknown", "narrator"}:
+        if speaker and speaker not in {"unknown", "narrator"} and is_valid_character_name_candidate(speaker, allow_stable_label=True):
             names.append(speaker)
-        haystack = " ".join(part for part in (action_beat, dialogue, caption) if part).casefold()
+        action_haystack = str(action_beat or "").casefold()
         for character in canonical_characters:
             candidate_names = [character.name, *character.aliases]
             for candidate in candidate_names:
                 normalized = str(candidate or "").strip()
                 if not normalized:
                     continue
-                if re.search(rf"\b{re.escape(normalized.casefold())}\b", haystack):
+                if re.search(rf"\b{re.escape(normalized.casefold())}\b", action_haystack):
                     names.append(character.name)
                     break
         deduped: list[str] = []
@@ -397,6 +408,71 @@ class PanelVisionExtractor:
                 seen.add(key)
                 deduped.append(name)
         return deduped[:8]
+
+    def _resolve_character_roles(
+        self,
+        *,
+        raw_roles: Any,
+        action_beat: str,
+        dialogue: str,
+        caption: str,
+        speaker: str,
+        visible_names: list[str],
+        canonical_characters: list[CanonicalCharacterRecord],
+        alias_map: dict[str, str],
+    ) -> dict[str, list[str]]:
+        allowed = {
+            "visible_present",
+            "speaker",
+            "addressee",
+            "mentioned_absent",
+            "flashback_present",
+            "memory_present",
+            "imagined_present",
+            "uncertain",
+        }
+        roles: dict[str, list[str]] = {}
+
+        def add(name: str, role: str) -> None:
+            canonical = self._canonicalize_name(str(name).strip(), alias_map) or str(name).strip()
+            if role not in allowed or not is_valid_character_name_candidate(canonical, allow_stable_label=True):
+                return
+            bucket = roles.setdefault(canonical, [])
+            if role not in bucket:
+                bucket.append(role)
+
+        if isinstance(raw_roles, dict):
+            for raw_name, raw_values in raw_roles.items():
+                values = raw_values if isinstance(raw_values, list) else [raw_values]
+                for value in values:
+                    add(str(raw_name), str(value or "").strip())
+
+        for name in visible_names:
+            add(name, "visible_present")
+        if speaker and speaker not in {"", "unknown", "narrator", "off-screen speaker", "unseen speaker"}:
+            add(speaker, "speaker")
+            add(speaker, "visible_present")
+
+        dialogue_text = " ".join(part for part in (dialogue, caption) if part)
+        action_key = normalize_name_key(action_beat)
+        dialogue_key = normalize_name_key(dialogue_text)
+        for character in canonical_characters:
+            names = [character.name, *character.aliases]
+            canonical_name = str(character.name or "").strip()
+            if not canonical_name:
+                continue
+            for candidate in names:
+                candidate_key = normalize_name_key(candidate)
+                if not candidate_key:
+                    continue
+                if candidate_key in action_key:
+                    add(canonical_name, "visible_present")
+                    break
+                if candidate_key in dialogue_key and canonical_name not in roles:
+                    add(canonical_name, "mentioned_absent")
+                    break
+
+        return {name: value[:4] for name, value in roles.items()}
 
     def _panel_evidence_hint(self, evidence: dict[str, Any] | None) -> str:
         if not isinstance(evidence, dict):

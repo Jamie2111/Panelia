@@ -45,7 +45,7 @@ class PageIngestionService:
         saved_paths: list[str] = []
         for index, upload in enumerate(files, start=1):
             original_name = Path(upload.filename or f"upload-{index}")
-            # Only keep the suffix — the stem is replaced with a UUID
+            # Only keep the suffix - the stem is replaced with a UUID
             suffix = original_name.suffix.lower()
             if suffix not in self._ALLOWED_UPLOAD_EXTENSIONS:
                 suffix = ".bin"

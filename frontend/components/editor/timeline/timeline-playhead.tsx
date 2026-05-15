@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * TimelinePlayhead — vertical line + grabbable handle marking current time.
+ * TimelinePlayhead - vertical line + grabbable handle marking current time.
  * Renders over all tracks; drag to scrub.
  */
 
@@ -13,7 +13,7 @@ interface TimelinePlayheadProps {
   pixelsPerSecond: number;
   /** Called as user drags the playhead handle. */
   onSeek: (sec: number) => void;
-  /** Height of the playhead line — defaults to full container. */
+  /** Height of the playhead line - defaults to full container. */
   className?: string;
 }
 

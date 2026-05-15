@@ -3,7 +3,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 /**
- * Input — translucent glass with an accent focus ring.
+ * Input - translucent glass with an accent focus ring.
  * Notion-style: nearly invisible at rest, lights up on focus.
  */
 export const Input = React.forwardRef<
