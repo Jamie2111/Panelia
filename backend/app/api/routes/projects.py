@@ -819,6 +819,46 @@ def regenerate_panel_vision(project_id: str, payload: PanelRewriteRequest):
     )
 
 
+class YouTubeBundleThumbnailTextPayload(BaseModel):
+    """Patch payload for `POST /{project_id}/youtube-bundle/thumbnail`."""
+    variant_index: int = Field(ge=0)
+    overlay_text: str = Field(default="", max_length=80)
+
+
+@router.post("/{project_id}/youtube-bundle/thumbnail")
+def regenerate_youtube_bundle_thumbnail(
+    project_id: str,
+    payload: YouTubeBundleThumbnailTextPayload,
+):
+    """Rerender one thumbnail variant with new overlay text.
+
+    Used by the publish studio's "Thumbnail text" input: as the user
+    types into the field for the active variant, we debounce and call
+    this endpoint to repaint that one variant's PNG in place. The URL
+    stays stable, only the file changes.
+    """
+    from app.services.youtube_bundle_service import YouTubeBundleService
+
+    if not store.project_exists(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    project_dir = store._project_dir(project_id)
+
+    try:
+        YouTubeBundleService().regenerate_variant_thumbnail(
+            project_dir=project_dir,
+            variant_index=payload.variant_index,
+            overlay_text=payload.overlay_text,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except IndexError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Thumbnail regenerate failed: {exc}")
+
+    return get_youtube_bundle(project_id)
+
+
 class YouTubeBundleEditPayload(BaseModel):
     """Patch payload for `PUT /{project_id}/youtube-bundle`.
 
@@ -936,6 +976,7 @@ def get_youtube_bundle(project_id: str):
             "style_id": (v.get("style_id") if isinstance(v, dict) else None) or f"v{idx + 1}",
             "style_label": (v.get("style_label") if isinstance(v, dict) else None) or f"Variant {idx + 1}",
             "url": _media(v.get("path") if isinstance(v, dict) else v),
+            "overlay_text": (v.get("overlay_text") if isinstance(v, dict) else "") or "",
         }
         for idx, v in enumerate(raw_variants)
     ]

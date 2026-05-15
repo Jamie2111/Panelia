@@ -278,6 +278,10 @@ class YouTubeBundleService:
                     "style_label": variant_labels[v_idx] if v_idx < len(variant_labels) else f"Variant {v_idx + 1}",
                     "path": str(v_path.relative_to(project_dir)),
                     "source_panel_id": str(v_panel.get("id") or ""),
+                    # The text painted on top of the panel. Tracked here
+                    # so the publish studio can show what's currently set
+                    # and let the user edit it per-variant.
+                    "overlay_text": self._shorten_for_overlay(title),
                 })
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Thumbnail variant %d failed: %s", v_idx, exc)
@@ -724,11 +728,13 @@ Return a JSON object with these three keys:
           BAD: "The world is a barren wasteland scarred by humanity's
           extraction of magma energy".
   (blank line)
-  LINES 3-5: A 2-3 sentence story tease. State the central tension
-             and what's at stake for the protagonist. Do NOT recap
-             scene by scene. Do NOT list locations or world-building
-             details. Do NOT spoil the climax. Write like you would
-             pitch the chapter to a friend in an elevator.
+  LINES 3-5: A 2-3 sentence story synopsis. This is the elevator
+             pitch for THIS chapter (or this chapter range): name the
+             protagonist if it makes sense, set the central conflict,
+             state what's at stake. It should read like the back-cover
+             blurb of a book - intriguing, specific, not a recap. Do
+             NOT list scene-by-scene beats. Do NOT spoil the climax.
+             Do NOT echo the panel narration from the context block.
   (blank line)
   LINE 7: One sentence subscribe CTA in your own voice. Examples:
           "Subscribe so the next chapter hits your feed the day it drops."
@@ -807,26 +813,134 @@ Return ONLY the JSON. No prose before or after, no markdown fences."""
             f"{base} explained{chapter_suffix}",
         ]
         # Fallback description used when no LLM is configured. We
-        # deliberately do NOT echo the panel narration. The earlier
-        # fallback dumped 3 narration sentences which produced the
-        # "barren wasteland scarred by humanity..." Wikipedia-style
-        # synopsis that we want to avoid. Instead, write a generic but
-        # punchy stakes line keyed off the series name.
+        # deliberately do NOT echo per-panel narration. Instead, we
+        # extract a short setting/synopsis from the opener block using
+        # a light scrubber that strips per-panel directorial language
+        # ("A close-up of...", "The camera pans...") and keeps the
+        # first 1-2 plot sentences.
         hook_base = f"Every key moment of {base}{chapter_suffix}, in story order, in one sitting"
         hook = hook_base if len(hook_base) <= 110 else hook_base[:107].rstrip(", ;-") + "..."
-        tease = (
-            "Whether you missed the chapter or want a quick refresh before the next drop, "
-            "this recap covers the beats that actually move the story. "
-            "No filler, no padding, no spoilers in the title."
-        )
+
+        synopsis = self._extract_short_synopsis(opener, base=base) if opener else ""
+        if not synopsis:
+            synopsis = (
+                f"Follow {base} through the moments that actually move the story, "
+                "not the filler between them. Recap pace, no spoilers in the title."
+            )
+
         cta = "Subscribe so the next chapter recap hits your feed the day it drops."
         series_tag = re.sub(r"[^a-z0-9]", "", (manga_title or project_name or "manga").lower()) or "manga"
         hashtag_line = f"#manga #anime #mangarecap #{series_tag} #manhwa"
-        # Note: no trailing "." on hook before the newline. The hook above
-        # already ends with content (no period), and the previous version
-        # added one explicitly which produced "in one sitting.." on output.
-        description = f"{hook}.\n\n{tease}\n\n{cta}\n\n{hashtag_line}"
+        # Structure: hook line, blank, synopsis, blank, CTA, blank, hashtags.
+        description = f"{hook}.\n\n{synopsis}\n\n{cta}\n\n{hashtag_line}"
         return title, variants, description
+
+    @staticmethod
+    def _extract_short_synopsis(opener: str, *, base: str = "") -> str:
+        """Pick a 1-2 sentence synopsis-style line from the opener.
+
+        Filters out per-panel directorial language (camera moves,
+        close-ups, "A panel shows..."). Keeps the first sentence(s)
+        that read like plot text. Caps at ~280 chars so the description
+        stays scannable.
+        """
+        # Sentences that scream "panel narration":
+        bad_starts = (
+            "a close-up", "close-up", "the camera", "a panel", "this panel",
+            "an overhead", "a side view", "a wide shot", "a medium shot",
+            "the panel", "in the panel", "we see ", "a shot of",
+        )
+        sentences = re.split(r"(?<=[.!?])\s+", opener.strip())
+        keepers: list[str] = []
+        for sentence in sentences:
+            s = sentence.strip()
+            if not s or len(s) < 12:
+                continue
+            lower = s.lower()
+            if any(lower.startswith(prefix) for prefix in bad_starts):
+                continue
+            keepers.append(s)
+            if sum(len(x) for x in keepers) >= 240:
+                break
+            if len(keepers) >= 2:
+                break
+        if not keepers:
+            return ""
+        synopsis = " ".join(keepers)
+        if len(synopsis) > 280:
+            synopsis = synopsis[:277].rstrip(", ;-") + "..."
+        return synopsis
+
+    # ── Public: regenerate a single variant's overlay text ──────────────
+
+    def regenerate_variant_thumbnail(
+        self,
+        *,
+        project_dir: Path,
+        variant_index: int,
+        overlay_text: str,
+        title_for_fallback: str = "",
+    ) -> dict[str, Any]:
+        """Rerender just one thumbnail variant with a new overlay text.
+
+        Reads the existing bundle manifest, locates the variant's source
+        thumbnail PNG (a copy of the original panel image, before any
+        styling), reruns `_compose_thumbnail` on it with the new text,
+        and writes the result back to the same `variants/variant_N.png`
+        path so URLs stay stable. Returns the updated variant dict so
+        the caller can echo it to the client.
+        """
+        from app.services.channel_preset_service import ChannelPresetService
+
+        bundle_dir = project_dir / "youtube_bundle"
+        manifest_path = bundle_dir / "manifest.json"
+        if not manifest_path.exists():
+            raise FileNotFoundError("No bundle manifest. Generate the bundle first.")
+
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        variants = manifest.get("thumbnail_variants") or []
+        if not (0 <= variant_index < len(variants)):
+            raise IndexError(f"variant_index {variant_index} is out of range (have {len(variants)} variants)")
+
+        entry = dict(variants[variant_index]) if isinstance(variants[variant_index], dict) else {}
+        rel_thumb = entry.get("path") or ""
+        thumb_path = project_dir / rel_thumb
+        # The source image we composite onto lives next to the variants
+        # dir as thumbnail_source_v{idx}.png (written by _copy_thumbnail_source
+        # with the suffix arg). Falls back to the global thumbnail_source.
+        source_candidates = [
+            bundle_dir / "variants" / f"thumbnail_source_v{variant_index}.png",
+            bundle_dir / f"thumbnail_source_v{variant_index}.png",
+            bundle_dir / "thumbnail_source.png",
+        ]
+        source_path = next((p for p in source_candidates if p.exists()), None)
+        if source_path is None:
+            raise FileNotFoundError(
+                f"No source image found for variant {variant_index}. "
+                f"Re-run the bundle stage to regenerate sources.",
+            )
+
+        thumb_path.parent.mkdir(parents=True, exist_ok=True)
+        preset = ChannelPresetService(self.settings).load()
+        self._compose_thumbnail(
+            base_image=source_path,
+            title=title_for_fallback or manifest.get("title") or "",
+            output_path=thumb_path,
+            preset=preset,
+            overlay_text=overlay_text,
+        )
+
+        # Update manifest with the new overlay text so it round-trips.
+        entry["overlay_text"] = overlay_text
+        variants[variant_index] = entry
+        manifest["thumbnail_variants"] = variants
+        # If this is the chosen variant, keep the canonical thumbnail
+        # in sync so the drag-to-Studio download reflects the edit.
+        chosen_idx = int(manifest.get("chosen_thumbnail_index") or 0)
+        if chosen_idx == variant_index:
+            manifest["thumbnail_path"] = rel_thumb
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        return entry
 
     # ── Thumbnail composition ────────────────────────────────────────────
 
@@ -837,9 +951,18 @@ Return ONLY the JSON. No prose before or after, no markdown fences."""
         title: str,
         output_path: Path,
         preset: Any = None,
+        overlay_text: str | None = None,
     ) -> Path:
         """Render the final thumbnail with channel-preset branding.
-        Preset is optional so legacy callers without a preset still work."""
+
+        `overlay_text` is the bold text painted on top of the panel.
+        If None, we derive it from `title` (the YouTube video title) by
+        chopping it to fit. If a non-None string is passed (even empty),
+        it overrides the derived value: the empty string suppresses the
+        overlay entirely, anything else is used verbatim.
+
+        Preset is optional so legacy callers without a preset still work.
+        """
         from app.services.channel_preset_service import ChannelPreset, ChannelPresetService
         if preset is None:
             try:
@@ -868,8 +991,16 @@ Return ONLY the JSON. No prose before or after, no markdown fences."""
             self._apply_corner_glow(canvas, color=(*accent_rgb, 180))
 
             # Title overlay using preset accent for the highlight word.
-            short_title = self._shorten_for_overlay(title)
-            self._draw_thumbnail_text(canvas, short_title, accent_rgb=accent_rgb)
+            # Custom overlay text override path: caller can pass an
+            # explicit override string per-variant (this is what the
+            # publish studio uses when the user types into the
+            # "Thumbnail text" input).
+            if overlay_text is None:
+                resolved_overlay = self._shorten_for_overlay(title)
+            else:
+                resolved_overlay = overlay_text.strip()
+            if resolved_overlay:
+                self._draw_thumbnail_text(canvas, resolved_overlay, accent_rgb=accent_rgb)
 
             # Channel watermark in bottom-right (small).
             if watermark_text:

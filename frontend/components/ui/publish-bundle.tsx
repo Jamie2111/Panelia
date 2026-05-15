@@ -29,6 +29,7 @@ export interface PublishBundleThumbnailVariant {
   style_id: string;
   style_label: string;
   url: string | null;
+  overlay_text?: string;
 }
 
 export interface PublishBundle {
@@ -91,6 +92,9 @@ export function PublishBundleCard({
   const [draftTitle, setDraftTitle] = React.useState<string>("");
   const [draftDescription, setDraftDescription] = React.useState<string>("");
   const [chosenIndex, setChosenIndex] = React.useState<number>(0);
+  const [overlayDraft, setOverlayDraft] = React.useState<string>("");
+  // Cache buster so the <img> re-fetches the same URL after a regen.
+  const [thumbCacheKey, setThumbCacheKey] = React.useState<number>(0);
   const [savingField, setSavingField] = React.useState<string | null>(null);
   const [saveError, setSaveError] = React.useState<string | null>(null);
   const [showAltTitles, setShowAltTitles] = React.useState(false);
@@ -101,6 +105,16 @@ export function PublishBundleCard({
     setDraftDescription(bundle.description ?? "");
     setChosenIndex(bundle.chosen_thumbnail_index ?? 0);
   }, [bundle?.project_id, bundle?.title, bundle?.description, bundle?.chosen_thumbnail_index]);
+
+  // Whenever the chosen variant changes (or its overlay text on the
+  // server changes), reseed the overlay-text input from the variant.
+  // Wrapped in useEffect because the active variant comes from
+  // `bundle.thumbnail_variants[chosenIndex]` which can shift after a
+  // save round-trip.
+  const activeVariant = (bundle?.thumbnail_variants ?? [])[chosenIndex];
+  React.useEffect(() => {
+    setOverlayDraft(activeVariant?.overlay_text ?? "");
+  }, [activeVariant?.index, activeVariant?.overlay_text]);
 
   if (loading) {
     return (
@@ -130,10 +144,17 @@ export function PublishBundleCard({
   const activeThumbUrl = (() => {
     if (variants.length > 0) {
       const v = variants[Math.min(chosenIndex, variants.length - 1)];
-      return withMediaPrefix(v?.url ?? null, mediaPrefix);
+      const base = withMediaPrefix(v?.url ?? null, mediaPrefix);
+      // Append the cache-buster so the browser refetches after a regen
+      // even though the URL itself is unchanged on disk.
+      return base && thumbCacheKey ? `${base}?t=${thumbCacheKey}` : base;
     }
     return withMediaPrefix(bundle.thumbnail_url, mediaPrefix);
   })();
+  function variantThumbUrl(v: PublishBundleThumbnailVariant): string | null {
+    const base = withMediaPrefix(v.url, mediaPrefix);
+    return base && thumbCacheKey ? `${base}?t=${thumbCacheKey}` : base;
+  }
 
   async function persist(patch: { title?: string; description?: string; chosen_thumbnail_index?: number }, field: string) {
     setSavingField(field);
@@ -172,6 +193,33 @@ export function PublishBundleCard({
     setChosenIndex(idx);
     void persist({ chosen_thumbnail_index: idx }, "thumbnail");
   }
+
+  // Debounced regenerate for the active variant's overlay text. When
+  // the user types in the "Thumbnail text" input, after 800 ms of quiet
+  // we re-render just that one variant's PNG with the new text. Cache
+  // key bumps so the <img> reloads even though the URL is unchanged.
+  React.useEffect(() => {
+    if (!activeVariant) return;
+    const current = activeVariant.overlay_text ?? "";
+    if (overlayDraft === current) return;
+    const handle = window.setTimeout(async () => {
+      setSavingField("thumbnail text");
+      setSaveError(null);
+      try {
+        await api.regenerateThumbnailText(projectId, {
+          variant_index: activeVariant.index,
+          overlay_text: overlayDraft,
+        });
+        setThumbCacheKey(Date.now());
+      } catch (err) {
+        setSaveError(err instanceof Error ? err.message : "Regenerate failed");
+      } finally {
+        setSavingField(null);
+      }
+    }, 800);
+    return () => window.clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlayDraft]);
 
   return (
     <Card padded="md" className={`p-edge-ok ${className ?? ""}`}>
@@ -218,6 +266,26 @@ export function PublishBundleCard({
             </p>
           ) : null}
 
+          {/* Editable overlay text for the active variant */}
+          {variants.length > 0 ? (
+            <div className="mt-3">
+              <label className="text-[10px] uppercase tracking-track text-mutedForeground">
+                Thumbnail text
+              </label>
+              <input
+                type="text"
+                value={overlayDraft}
+                onChange={(e) => setOverlayDraft(e.target.value)}
+                maxLength={60}
+                placeholder="Big text on the thumbnail. Leave blank to remove."
+                className="mt-1 w-full rounded-2xl border border-white/[0.10] bg-white/[0.04] px-3 py-2 text-sm font-medium text-foreground outline-none transition-colors focus:border-accent/60 focus:bg-white/[0.06]"
+              />
+              <p className="mt-1 text-[10px] text-mutedForeground">
+                {overlayDraft.length} / 60. Edits the highlighted overlay on the chosen variant.
+              </p>
+            </div>
+          ) : null}
+
           {/* Variant carousel */}
           {variants.length > 1 ? (
             <div className="mt-3">
@@ -226,7 +294,7 @@ export function PublishBundleCard({
               </p>
               <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
                 {variants.map((variant) => {
-                  const vUrl = withMediaPrefix(variant.url, mediaPrefix);
+                  const vUrl = variantThumbUrl(variant);
                   const active = variant.index === chosenIndex;
                   return (
                     <button

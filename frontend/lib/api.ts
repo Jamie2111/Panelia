@@ -162,6 +162,7 @@ export const api = {
         style_id: string;
         style_label: string;
         url: string | null;
+        overlay_text?: string;
       }>;
       chosen_thumbnail_index?: number;
       bundle_dir: string | null;
@@ -188,6 +189,7 @@ export const api = {
         style_id: string;
         style_label: string;
         url: string | null;
+        overlay_text?: string;
       }>;
       chosen_thumbnail_index?: number;
       bundle_dir: string | null;
@@ -195,6 +197,32 @@ export const api = {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
+    }),
+  regenerateThumbnailText: (
+    projectId: string,
+    payload: { variant_index: number; overlay_text: string },
+  ) =>
+    request<{
+      project_id: string;
+      title: string | null;
+      title_variants: string[];
+      description: string | null;
+      thumbnail_url: string | null;
+      thumbnail_source_url: string | null;
+      thumbnail_source_panel_id: string | null;
+      thumbnail_variants?: Array<{
+        index: number;
+        style_id: string;
+        style_label: string;
+        url: string | null;
+        overlay_text?: string;
+      }>;
+      chosen_thumbnail_index?: number;
+      bundle_dir: string | null;
+    }>(`/projects/${projectId}/youtube-bundle/thumbnail`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     }),
   uploadVideoThumbnail: async (projectId: string, file: File) => {
     const form = new FormData();
