@@ -10,12 +10,13 @@
  */
 
 import * as React from "react";
-import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import { api } from "@/lib/api";
 import { buildMediaUrl } from "@/lib/utils";
-import type { PipelineStage, ProjectDetail } from "@/lib/types";
+import type { ProjectDetail } from "@/lib/types";
 
+import { AppShell } from "@/components/project/app-shell";
+import { Badge } from "@/components/ui/badge";
 import { PipelineBlock } from "@/components/ui/pipeline-block";
 import { WhileYouWereAway } from "@/components/ui/while-you-were-away";
 import {
@@ -23,12 +24,12 @@ import {
   type PanelEdits,
 } from "@/components/editor/timeline/timeline-editor";
 import { estimateProjectCost } from "@/lib/cost-estimate";
+import { buildProjectViews } from "@/lib/project-views";
 
 const POLL_INTERVAL_MS = 5_000;
 
 export default function TimelinePage() {
   const params = useParams<{ projectId: string }>();
-  const router = useRouter();
   const projectId = params?.projectId;
 
   const [project, setProject] = React.useState<ProjectDetail | null>(null);
@@ -64,22 +65,29 @@ export default function TimelinePage() {
   }, [project, load]);
 
   if (!projectId) {
-    return <main className="p-8">Missing project id.</main>;
+    return (
+      <AppShell title="Timeline" description="Missing project id." />
+    );
   }
   if (loadError) {
     return (
-      <main className="p-8">
-        <p className="text-[rgb(var(--p-fail))]">Could not load project: {loadError}</p>
-      </main>
+      <AppShell
+        title="Timeline"
+        description="Panelia couldn't load the timeline for this project."
+      >
+        <div className="p-glass p-edge-fail px-6 py-5">
+          <p className="text-sm text-fail">Could not load project: {loadError}</p>
+        </div>
+      </AppShell>
     );
   }
   if (!project) {
     return (
-      <main className="p-8">
-        <div className="p-glass px-6 py-10 max-w-md mx-auto text-center">
-          <p className="text-[rgb(var(--p-muted))]">Loading project…</p>
+      <AppShell title="Timeline" description="Loading project details and panel data…">
+        <div className="p-glass px-6 py-10 max-w-md mx-auto text-center text-mutedForeground text-sm">
+          Loading project…
         </div>
-      </main>
+      </AppShell>
     );
   }
 
@@ -143,61 +151,23 @@ export default function TimelinePage() {
   };
 
   return (
-    <main className="mx-auto max-w-[1680px] px-6 md:px-12 py-10 space-y-6">
-      {/* Hero header — title in display weight on accent gradient,
-          breadcrumb + meta sit above and below for hierarchy. */}
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div className="min-w-0">
-          <Link
-            href="/"
-            className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--p-hint))] hover:text-[rgb(var(--p-accent))] transition-colors duration-[var(--p-fast)] inline-flex items-center gap-1"
-          >
-            <span aria-hidden>←</span> All projects
-          </Link>
-          <h1
-            className="mt-2 text-3xl md:text-5xl font-semibold leading-tight tracking-tight"
-            style={{
-              backgroundImage:
-                "linear-gradient(180deg, rgb(var(--p-text)) 0%, rgb(var(--p-muted)) 110%)",
-              WebkitBackgroundClip: "text",
-              backgroundClip: "text",
-              color: "transparent",
-            }}
-          >
-            {project.name}
-          </h1>
-          <p className="mt-2 text-sm text-[rgb(var(--p-muted))] flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span className="p-pill">
-              {project.kept_panel_count}/{project.panel_count} panels kept
-            </span>
-            {savedAt && (
-              <span className="p-pill p-pill-ok">
-                saved {new Date(savedAt).toLocaleTimeString()}
-              </span>
-            )}
-            {saving && (
-              <span className="p-pill p-pill-info">
-                <span className="inline-block h-1.5 w-1.5 rounded-full bg-current p-anim-breathe" />
-                saving…
-              </span>
-            )}
-            {regenStatus && (
-              <span className="p-pill p-pill-accent">{regenStatus}</span>
-            )}
-          </p>
-        </div>
-        <nav className="flex items-center gap-2" aria-label="Other views">
-          <Link href={`/projects/${project.id}/narration`} className="p-btn-ghost">
-            Narration
-          </Link>
-          <Link href={`/projects/${project.id}/editor`} className="p-btn-ghost">
-            Panels
-          </Link>
-        </nav>
-      </header>
-
-      {/* "While you were away" — only shows when state has changed since
-          the user's last view. */}
+    <AppShell
+      title={project.name}
+      projectId={project.id}
+      breadcrumb={{ href: "/", label: "All projects" }}
+      views={buildProjectViews(project.id, "/timeline")}
+      meta={(
+        <>
+          <Badge>{project.kept_panel_count}/{project.panel_count} panels kept</Badge>
+          {savedAt && (
+            <Badge tone="ok">saved {new Date(savedAt).toLocaleTimeString()}</Badge>
+          )}
+          {saving && <Badge tone="info" dot pulse>saving…</Badge>}
+          {regenStatus && <Badge tone="accent">{regenStatus}</Badge>}
+        </>
+      )}
+    >
+      {/* "While you were away" — only fires when state has changed. */}
       <WhileYouWereAway project={project} />
 
       {/* Pipeline at a glance — sentences, not numbers. */}
@@ -214,6 +184,6 @@ export default function TimelinePage() {
         onRegeneratePanel={handleRegenerate}
         onSaveEdits={handleSaveEdits}
       />
-    </main>
+    </AppShell>
   );
 }

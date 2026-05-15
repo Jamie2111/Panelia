@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { ArrowRight, LoaderCircle, RefreshCw, RotateCcw, Save, Users } from "lucide-react";
 
 import { AppShell } from "@/components/project/app-shell";
+import { buildProjectViews } from "@/lib/project-views";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
@@ -298,9 +299,11 @@ export default function CharacterReviewPage() {
 
   return (
     <AppShell
-      title="Character Review"
-      description={`Review recurring character groups for ${project.chapter_metadata.manga_title || project.name} and carry cleaner names into the script.`}
+      title={project.name}
+      description={`Characters · ${project.chapter_metadata.manga_title || "Sequential-art project"}`}
       projectId={projectId}
+      breadcrumb={{ href: `/projects/${project.id}`, label: "Overview" }}
+      views={buildProjectViews(projectId, "/editor")}
     >
       <div className="space-y-6">
         <Card>

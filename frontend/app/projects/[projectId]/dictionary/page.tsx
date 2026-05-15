@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { BookOpen, LoaderCircle, RefreshCw } from "lucide-react";
 
 import { AppShell } from "@/components/project/app-shell";
+import { buildProjectViews } from "@/lib/project-views";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
@@ -54,9 +55,11 @@ export default function CharacterDictionaryPage() {
 
   return (
     <AppShell
-      title="Character Dictionary"
+      title="Dictionary"
       description="Names the script and narration stages can reuse consistently."
       projectId={projectId}
+      breadcrumb={{ href: `/projects/${projectId}`, label: "Overview" }}
+      views={buildProjectViews(projectId, "/editor")}
     >
       {loading ? (
         <div className="flex items-center gap-2 text-sm text-mutedForeground">

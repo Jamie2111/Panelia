@@ -3,20 +3,23 @@ import Link from "next/link";
 import { Film, LayoutDashboard, PenSquare, Sparkles } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { ProjectTabs } from "./project-tabs";
+import { PageHeader, type PageHeaderViewLink } from "@/components/ui/page-header";
 
 /**
  * AppShell — the persistent chrome around every page.
  *
- * Notion-style top bar (compact, sticky, blurred) + ambient orbs from
- * globals.css drifting behind everything. The shell never carries content
- * of its own — page content lives in `children`.
+ * Top bar (compact, sticky, blurred) is unchanged. The page-content
+ * heading is now driven by props that map 1:1 to PageHeader, so every
+ * page in the app uses the same hero pattern the timeline editor
+ * established. Pages can also pass `hero` to slot in a fully custom
+ * header — useful for the timeline page which already had its own
+ * rich header before this refactor.
  */
 
 const navigation = [
   { href: "/", label: "Studio", icon: LayoutDashboard },
   { href: "/projects/new", label: "Create", icon: Sparkles },
-  { href: "/exports", label: "Exports", icon: Film }
+  { href: "/exports", label: "Exports", icon: Film },
 ] as const;
 
 export function AppShell({
@@ -25,12 +28,25 @@ export function AppShell({
   projectId,
   children,
   contentClassName,
+  // ── Hero customization ─────────────────────────────────────────────
+  hero,
+  breadcrumb,
+  meta,
+  views,
+  actions,
 }: {
-  title: string;
-  description?: string;
+  title: ReactNode;
+  description?: ReactNode;
   projectId?: string;
-  children: ReactNode;
+  children?: ReactNode;
   contentClassName?: string;
+  /** Replace the auto-generated PageHeader with arbitrary markup. */
+  hero?: ReactNode;
+  /** Forwarded to PageHeader. */
+  breadcrumb?: { href: string; label: string };
+  meta?: ReactNode;
+  views?: PageHeaderViewLink[];
+  actions?: ReactNode;
 }) {
   return (
     <div className="min-h-screen text-foreground">
@@ -71,37 +87,20 @@ export function AppShell({
 
       <main
         className={cn(
-          "mx-auto max-w-[1680px] px-6 lg:px-10 py-8 lg:py-10",
-          contentClassName
+          "mx-auto max-w-[1680px] px-6 lg:px-10 py-8 lg:py-10 space-y-6",
+          contentClassName,
         )}
       >
-        {/* Page heading — display weight, gradient text, generous margin */}
-        <div className="mb-2">
-          <h1
-            className="font-display text-3xl md:text-[40px] leading-tight tracking-tight"
-            style={{
-              backgroundImage:
-                "linear-gradient(180deg, rgb(var(--p-text)) 0%, rgb(var(--p-muted)) 110%)",
-              WebkitBackgroundClip: "text",
-              backgroundClip: "text",
-              color: "transparent",
-            }}
-          >
-            {title}
-          </h1>
-          {description && (
-            <p className="mt-2 max-w-2xl text-sm text-mutedForeground leading-relaxed">
-              {description}
-            </p>
-          )}
-        </div>
-
-        {projectId && (
-          <div className="mt-6 mb-7">
-            <ProjectTabs projectId={projectId} />
-          </div>
+        {hero ?? (
+          <PageHeader
+            breadcrumb={breadcrumb}
+            title={title}
+            subtitle={description}
+            meta={meta}
+            views={projectId ? views : undefined}
+            actions={actions}
+          />
         )}
-        {!projectId && <div className="mb-7" />}
 
         {children}
       </main>

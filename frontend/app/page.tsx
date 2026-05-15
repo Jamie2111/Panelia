@@ -193,43 +193,29 @@ function DashboardContent() {
     <AppShell
       title="Studio"
       description="Import chapters, detect panels, generate narration, render recap videos."
-    >
-      {/* Top action row */}
-      <div className="flex flex-wrap items-center gap-3">
+      meta={(
+        <>
+          <span className="p-pill">{projects.length} projects</span>
+          <span className={`p-pill ${runningJobs > 0 ? "p-pill-accent" : ""}`}>
+            <span className={`inline-block h-1.5 w-1.5 rounded-full bg-current ${runningJobs > 0 ? "p-anim-breathe" : "opacity-60"}`} />
+            {runningJobs} running
+          </span>
+          <span className="p-pill p-pill-ok">{completedVideos} rendered</span>
+        </>
+      )}
+      actions={(
         <Link href="/projects/new">
           <Button>
             <Plus className="h-4 w-4" />
             New project
           </Button>
         </Link>
-        <div className="p-pill !py-2 flex items-center gap-4">
-          <span>{projects.length} projects</span>
-          <span className="h-3 w-px bg-white/[0.10]" />
-          <span className={runningJobs > 0 ? "text-accent" : "text-mutedForeground"}>
-            {runningJobs} running
-          </span>
-          <span className="h-3 w-px bg-white/[0.10]" />
-          <span>{completedVideos} rendered</span>
-        </div>
-      </div>
+      )}
+    >
 
-      {/* Section heading */}
-      <div className="mt-8 flex items-end justify-between gap-3">
-        <div>
-          <h2 className="font-display text-xl md:text-2xl tracking-tightish">Projects</h2>
-          <p className="mt-1 text-sm text-mutedForeground">
-            Live status refreshes automatically — faster while work is active.
-            {refreshing ? " Updating now…" : ""}
-          </p>
-        </div>
-        <Button variant="ghost" onClick={() => load()} disabled={loading || refreshing}>
-          <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
-          Refresh
-        </Button>
-      </div>
-
-      {/* Filter pills */}
-      <div className="mt-3 flex flex-wrap gap-1">
+      {/* Filter pills + refresh */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex flex-wrap gap-1">
         {([
           { key: "all", label: "All" },
           { key: "active", label: "Active" },
@@ -249,10 +235,15 @@ function DashboardContent() {
             {f.label}
           </button>
         ))}
+        </div>
+        <Button variant="ghost" onClick={() => load()} disabled={loading || refreshing}>
+          <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+          {refreshing ? "Updating…" : "Refresh"}
+        </Button>
       </div>
 
       {batchCreated > 1 ? (
-        <Card padded="md" className="mt-4 p-edge-ok">
+        <Card padded="md" className="p-edge-ok">
           <p className="text-sm">
             Created {batchCreated} projects from your URL list. They&apos;ll continue through the pipeline automatically.
           </p>
@@ -260,7 +251,7 @@ function DashboardContent() {
       ) : null}
 
       {trainingStatus ? (
-        <Card padded="md" className="mt-4">
+        <Card padded="md">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0 space-y-2">
               <CardTitle>
@@ -322,16 +313,16 @@ function DashboardContent() {
       ) : null}
 
       {loading ? (
-        <Card padded="lg" className="mt-6 flex items-center gap-3">
+        <Card padded="lg" className="flex items-center gap-3">
           <LoaderCircle className="h-4 w-4 animate-spin text-accent" />
           <span className="text-sm text-mutedForeground">Loading your studio projects…</span>
         </Card>
       ) : error ? (
-        <Card padded="lg" className="mt-6 p-edge-fail">
+        <Card padded="lg" className="p-edge-fail">
           <p className="text-sm text-fail">{error}</p>
         </Card>
       ) : filteredProjects.length ? (
-        <div className="mt-6 grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
           {filteredProjects.map((project) => (
             <ProjectCard
               key={project.id}
@@ -345,7 +336,7 @@ function DashboardContent() {
           ))}
         </div>
       ) : (
-        <Card padded="lg" className="mt-6">
+        <Card padded="lg" >
           <CardTitle>No projects yet</CardTitle>
           <CardDescription className="mt-2">
             Create your first project to import pages, detect panels, and start building your recap.

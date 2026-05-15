@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Download, LoaderCircle, Lock, Pencil, RefreshCcw, ScanSearch, Scissors, Unlock, UploadCloud, X } from "lucide-react";
 
 import { AppShell } from "@/components/project/app-shell";
+import { buildProjectViews } from "@/lib/project-views";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
@@ -871,9 +872,11 @@ export default function NarrationPage() {
 
   return (
     <AppShell
-      title="Narration editor"
-      description="Generate a recap script, tune the narrator and soundtrack with live previews, then regenerate audio or video when the voiceover settings change."
+      title={project?.name || "Narration"}
+      description={project?.chapter_metadata?.manga_title ? `${project.chapter_metadata.manga_title} · narration` : "Generate a recap script, tune the narrator and soundtrack with live previews."}
       projectId={projectId}
+      breadcrumb={{ href: project ? `/projects/${project.id}` : "/", label: project ? "Overview" : "All projects" }}
+      views={buildProjectViews(projectId, "/narration")}
     >
       {error ? (
         <Card className="mb-6 p-edge-fail">

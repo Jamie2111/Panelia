@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { LoaderCircle, RefreshCw, RotateCcw, Save, ScanFace } from "lucide-react";
 
 import { AppShell } from "@/components/project/app-shell";
+import { buildProjectViews } from "@/lib/project-views";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
@@ -107,9 +108,11 @@ export default function CharacterPortraitsPage() {
 
   return (
     <AppShell
-      title="Character Portraits"
+      title="Portraits"
       description="Canonical character records gathered before panel vision and script generation."
       projectId={projectId}
+      breadcrumb={{ href: `/projects/${projectId}`, label: "Overview" }}
+      views={buildProjectViews(projectId, "/editor")}
     >
       {loading ? (
         <div className="flex items-center gap-2 text-sm text-mutedForeground">

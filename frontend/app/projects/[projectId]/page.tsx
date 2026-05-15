@@ -15,6 +15,7 @@ import { PipelineBlock } from "@/components/ui/pipeline-block";
 import { WhileYouWereAway } from "@/components/ui/while-you-were-away";
 import { PublishBundleCard, type PublishBundle } from "@/components/ui/publish-bundle";
 import { api } from "@/lib/api";
+import { buildProjectViews } from "@/lib/project-views";
 import { formatProgressPercent, getStageProgressMeta } from "@/lib/progress";
 import { shortStageLabel, toPipelineDisplay } from "@/lib/pipeline-messages";
 import { estimateProjectCost } from "@/lib/cost-estimate";
@@ -187,8 +188,22 @@ export default function ProjectOverviewPage() {
   return (
     <AppShell
       title={project.name}
-      description={`Created ${formatRelativeDate(project.created_at)} · ${project.chapter_metadata.manga_title || "Sequential-art project"}`}
+      description={`${project.chapter_metadata.manga_title || "Sequential-art project"} · created ${formatRelativeDate(project.created_at)}`}
       projectId={projectId}
+      breadcrumb={{ href: "/", label: "All projects" }}
+      views={buildProjectViews(projectId, "")}
+      meta={(
+        <>
+          <Badge>{project.page_count} pages</Badge>
+          <Badge>{project.kept_panel_count} panels</Badge>
+          {project.latest_video ? <Badge tone="info">Rendered</Badge> : null}
+          {project.active_jobs.length ? (
+            <Badge tone="accent" dot pulse>
+              {project.active_jobs.length} running
+            </Badge>
+          ) : null}
+        </>
+      )}
     >
       <div className="space-y-6">
         {/* While-you-were-away — only fires when state changed */}

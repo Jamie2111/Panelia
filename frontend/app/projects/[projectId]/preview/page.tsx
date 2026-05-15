@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Download, LoaderCircle, Plus, X } from "lucide-react";
 
 import { AppShell } from "@/components/project/app-shell";
+import { buildProjectViews } from "@/lib/project-views";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
@@ -346,9 +347,11 @@ export default function PreviewPage() {
 
   return (
     <AppShell
-      title="Preview and exports"
-      description="Review the latest rendered video, re-render after panel or narration edits, and merge completed cuts into a longer recap."
+      title={project.name}
+      description={`Preview · ${project.chapter_metadata.manga_title || "Sequential-art project"}`}
       projectId={projectId}
+      breadcrumb={{ href: `/projects/${project.id}`, label: "Overview" }}
+      views={buildProjectViews(projectId, "/preview")}
     >
       {error ? (
         <Card className="mb-6 border-fail/[0.25] bg-fail/[0.08]">
