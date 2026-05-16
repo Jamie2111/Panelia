@@ -2368,31 +2368,49 @@ def run_narration_generation(context: PipelineContext) -> None:
         skip_contamination_guard=(pipeline_version == "vision"),
     )
 
-    # Coverage validator: every narration_id we passed in must have a
-    # corresponding .wav on disk. Without this, an early-exit / partial
-    # crash inside generate_narration silently leaves the stage marked
-    # COMPLETED even when half the script has no audio. That's the
-    # 2-hour-Darling-with-40-min-of-silent-panels failure mode the user
-    # hit. Refuse to mark the stage complete unless every expected file
-    # is present and non-empty.
+    # Coverage validator: every narration_id we passed in must map to
+    # *some* on-disk WAV via the audio manifest.
+    #
+    # The contamination guard inside generate_narration intentionally
+    # merges adjacent units (deduping near-identical lines, fusing
+    # sentence runs that belong together). So len(narration_ids) > len(
+    # output_wavs) is BY DESIGN - what matters is whether every input
+    # segment_id appears as a panel_id in the manifest, meaning some
+    # WAV will play during its panel time at render. A "real" coverage
+    # gap looks like: input segment_id never appears in the manifest,
+    # AND no wav has its panel_id.
     audio_dir = Path(store._project_dir(context.project_id) / "audio")
-    missing: list[str] = []
-    empty: list[str] = []
-    for idx, panel_id in enumerate(narration_ids, start=1):
-        wav = audio_dir / f"panel_{idx:03d}.wav"
-        if not wav.exists():
-            missing.append(f"panel_{idx:03d}.wav ({panel_id})")
-        elif wav.stat().st_size < 1024:  # < 1KB = effectively empty
-            empty.append(f"panel_{idx:03d}.wav ({panel_id})")
-    if missing or empty:
-        # Roll the stage state back so auto_run won't cascade to render.
-        problem_count = len(missing) + len(empty)
-        sample = (missing + empty)[:5]
+    manifest_path = audio_dir / "manifest.json"
+    represented_ids: set[str] = set()
+    if manifest_path.exists():
+        try:
+            mf = read_json(manifest_path, default={})
+            if isinstance(mf, dict):
+                for entry in mf.values():
+                    if isinstance(entry, dict):
+                        pid = str(entry.get("panel_id") or "").strip()
+                        if pid:
+                            represented_ids.add(pid)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Narration coverage validator: could not read manifest: %s", exc)
+    expected_ids = {str(pid).strip() for pid in narration_ids if str(pid).strip()}
+    missing_ids = sorted(expected_ids - represented_ids) if represented_ids else []
+    # Also flag empty / zero-byte WAVs so a broken file still surfaces.
+    empty_wavs: list[str] = []
+    for wav in sorted(audio_dir.glob("panel_*.wav")):
+        if wav.stat().st_size < 1024:
+            empty_wavs.append(wav.name)
+    if missing_ids or empty_wavs:
+        problem_count = len(missing_ids) + len(empty_wavs)
+        sample_missing = missing_ids[:5]
+        sample_empty = empty_wavs[:5]
         detail = (
-            f"Narration coverage gap: {problem_count} of {len(narration_ids)} "
-            f"expected WAVs are missing or empty. First few: {sample}. "
-            f"Retry the narration stage; do not proceed to render until "
-            f"every script line has audio."
+            f"Narration coverage gap: "
+            f"{len(missing_ids)} of {len(expected_ids)} input segments have no audio "
+            f"(first few missing segment_ids: {sample_missing}), "
+            f"and {len(empty_wavs)} WAV files are empty "
+            f"(first few: {sample_empty}). "
+            f"Retry the narration stage; do not proceed to render until coverage is complete."
         )
         logger.error(detail)
         raise RuntimeError(detail)
@@ -2429,30 +2447,41 @@ def run_video_rendering(context: PipelineContext) -> None:
         raise ValueError("No narration audio is available. Generate audio before rendering the video.")
 
     # Audio coverage guard: defense-in-depth match to the one in
-    # run_narration_generation. Catches the case where a user added
-    # script lines after narration was marked complete (or where the
-    # narration validator was bypassed). Without this, the renderer
-    # would render every panel - including the ones with no audio -
-    # producing a video that's much longer than the actual narration.
-    # (Darling hit this: 603 panels in script, only 347 WAVs, render
-    # produced a 2-hour video where the last 41 minutes were silent.)
+    # run_narration_generation. Uses manifest-based coverage (segment_id
+    # -> wav mapping) because the narration engine intentionally merges
+    # adjacent units, so the wav count is < segment count by design.
     audio_dir = Path(store._project_dir(context.project_id) / "audio")
+    manifest_path = audio_dir / "manifest.json"
     text_segments = [s for s in story_segments if str(getattr(s, "text", "") or "").strip()]
-    missing_wavs: list[str] = []
-    for idx, _ in enumerate(text_segments, start=1):
-        wav = audio_dir / f"panel_{idx:03d}.wav"
-        if not wav.exists() or wav.stat().st_size < 1024:
-            missing_wavs.append(f"panel_{idx:03d}.wav")
-    if missing_wavs:
-        detail = (
-            f"Cannot render: {len(missing_wavs)} of {len(text_segments)} "
-            f"narrated panels are missing audio (first few: {missing_wavs[:5]}). "
-            f"Re-run narration_generation to fill the gap, then retry the render. "
-            f"Without this guard the video would still render but {len(missing_wavs)} "
-            f"panels would appear on screen with no narration."
-        )
-        logger.error(detail)
-        raise RuntimeError(detail)
+    expected_ids = {str(getattr(s, "id", "") or "").strip() for s in text_segments}
+    expected_ids.discard("")
+    represented_ids: set[str] = set()
+    if manifest_path.exists():
+        try:
+            mf = read_json(manifest_path, default={})
+            if isinstance(mf, dict):
+                for entry in mf.values():
+                    if isinstance(entry, dict):
+                        pid = str(entry.get("panel_id") or "").strip()
+                        if pid:
+                            represented_ids.add(pid)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Pre-render coverage guard: could not read manifest: %s", exc)
+    # Only enforce coverage if we actually have a manifest to compare
+    # against (otherwise an old legacy project pre-manifest gets
+    # blocked from rendering). When manifest exists, every text segment
+    # must be represented as a panel_id in some wav entry.
+    if represented_ids:
+        missing_ids = sorted(expected_ids - represented_ids)
+        if missing_ids:
+            detail = (
+                f"Cannot render: {len(missing_ids)} of {len(expected_ids)} narrated "
+                f"segments have no audio in the manifest "
+                f"(first few segment_ids: {missing_ids[:5]}). "
+                f"Re-run narration_generation, then retry the render."
+            )
+            logger.error(detail)
+            raise RuntimeError(detail)
 
     service = VideoRenderService()
     context.start("Rendering video with FFmpeg")

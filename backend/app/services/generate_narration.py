@@ -58,13 +58,39 @@ def generate_narration(
     if progress_callback:
         progress_callback(3, "Checking narration contamination")
     artifact_path = output_dir.parent / "output" / "enhanced_narration.json"
-    guard_result = guard.prepare(
-        script,
-        panel_ids=panel_ids,
-        supported_character_names=supported_character_names,
-        world_terms=world_terms,
-        source_artifact_status="in_progress",
-    )
+    # When the contamination guard is being bypassed (vision-mode projects
+    # whose narrations are already clean per-panel descriptions), do NOT
+    # actually run guard.prepare(): its internal merge step combines
+    # adjacent short sentences and collapses 1:1 panel->wav mapping the
+    # video renderer relies on. Symptom: 581 input panels -> 347 merged
+    # units -> 347 wavs -> renderer maps wavs 1..347 to the first 347
+    # panels and leaves panels 348..603 silent. Bypassing the guard
+    # entirely keeps the 1:1 mapping intact.
+    if skip_contamination_guard:
+        from app.services.narration_contamination_guard import NarrationGuardResult
+        guard_result = NarrationGuardResult(
+            script_lines=list(script),
+            panel_ids=list(panel_ids) if panel_ids is not None else None,
+            report={
+                "analysis_version": "narration_contamination_guard_bypassed_v1",
+                "input_units": len([s for s in script if str(s or "").strip()]),
+                "output_units": len([s for s in script if str(s or "").strip()]),
+                "quarantined_units": 0,
+                "contamination_remaining": 0,
+                "merged_units": 0,
+                "near_duplicate_units": 0,
+                "script_ready": True,
+                "note": "Guard skipped: vision pipeline produces clean per-panel narration; merging would break renderer's panel->wav mapping.",
+            },
+        )
+    else:
+        guard_result = guard.prepare(
+            script,
+            panel_ids=panel_ids,
+            supported_character_names=supported_character_names,
+            world_terms=world_terms,
+            source_artifact_status="in_progress",
+        )
     write_json(
         artifact_path,
         {
