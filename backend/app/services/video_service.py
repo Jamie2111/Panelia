@@ -244,39 +244,16 @@ class VideoRenderService:
                 if progress_callback:
                     progress_callback(99, "Applied watermark")
 
-        # ── Channel text watermark ──────────────────────────────────────
-        # If the channel preset has a watermark text ("@handle") and
-        # watermark_enabled, render it as a transparent PNG and overlay
-        # it on the video at low opacity in the bottom-right. This
-        # replaces the per-thumbnail watermark that used to live on
-        # every PNG (now gone - thumbnails are too small for it to do
-        # anything useful). On the video itself, a soft handle in the
-        # corner is the channel-branding contract.
-        try:
-            from app.services.channel_preset_service import ChannelPresetService
-            channel_preset = ChannelPresetService(self.settings).load()
-        except Exception:
-            channel_preset = None
-        channel_wm_text = (
-            (getattr(channel_preset, "watermark_text", "") or "").strip()
-            if channel_preset and getattr(channel_preset, "watermark_enabled", False)
-            else ""
-        )
-        if channel_wm_text:
-            try:
-                wm_png = output_dir / "_channel_watermark.png"
-                self._render_channel_watermark_png(channel_wm_text, wm_png, video_config)
-                if wm_png.exists():
-                    wm_text_out = output_dir / f"{output_name}_chwm.{video_config.output_format.value}"
-                    if progress_callback:
-                        progress_callback(99, "Applying channel watermark")
-                    self._apply_channel_watermark(output_path, wm_png, wm_text_out, video_config)
-                    output_path.unlink(missing_ok=True)
-                    output_path = wm_text_out
-                    if progress_callback:
-                        progress_callback(99, "Applied channel watermark")
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Channel watermark overlay failed: %s", exc)
+        # NOTE: The dedicated channel-watermark re-encode pass used to live
+        # here. It re-encoded the entire final video (2 hours @ 1080p for
+        # Darling-sized projects) just to draw the @handle in one corner.
+        # Even with h264_videotoolbox that step ran ~7-8 minutes; with the
+        # original libx264 path it was 80+ minutes. The watermark is now
+        # baked into each per-panel clip during the cheap render pass (see
+        # _render_panel_clip + _resolve_channel_watermark), so this stage
+        # is gone entirely. Title card + intro thumbnail clips are NOT
+        # overlaid (~3s at the very start without the corner @handle);
+        # the watermark appears from the first narrated panel onward.
 
         # Safety net: every encoder path in this file is supposed to pass
         # `-movflags +faststart`, but if any future remux step forgets to do
@@ -510,6 +487,37 @@ class VideoRenderService:
         ]
         self._run_ffmpeg(command)
 
+    def _resolve_channel_watermark(
+        self, video_config: "VideoConfig"
+    ) -> tuple[Path, str] | None:
+        """Return (cached PNG path, channel handle text) for the corner
+        watermark, or None if it's disabled / not configured.
+
+        The PNG is rendered once per (text, video height) and cached under
+        `_video_cache/channel_watermarks/`. The per-panel ffmpeg filter
+        chain then overlays it as a tiny extra input — practically free
+        compared to the old dedicated re-encode pass that took 80+ min
+        on a 2-hour video.
+        """
+        try:
+            from app.services.channel_preset_service import ChannelPresetService
+            preset = ChannelPresetService(self.settings).load()
+        except Exception:
+            return None
+        if not preset or not getattr(preset, "watermark_enabled", False):
+            return None
+        text = (getattr(preset, "watermark_text", "") or "").strip()
+        if not text:
+            return None
+        cache_dir = ensure_dir(self._shared_video_cache / "channel_watermarks")
+        key = hashlib.sha1(f"{text}|{video_config.height}".encode("utf-8")).hexdigest()[:12]
+        png_path = cache_dir / f"{key}.png"
+        if not png_path.exists():
+            tmp = cache_dir / f"{key}.tmp.png"
+            self._render_channel_watermark_png(text, tmp, video_config)
+            tmp.replace(png_path)
+        return png_path, text
+
     @staticmethod
     def _render_channel_watermark_png(
         text: str,
@@ -570,70 +578,9 @@ class VideoRenderService:
         )
         canvas.save(output_path, "PNG", optimize=True)
 
-    def _apply_channel_watermark(
-        self,
-        video_path: Path,
-        wm_png: Path,
-        output_path: Path,
-        video_config: "VideoConfig",
-    ) -> None:
-        """Overlay the channel-handle PNG bottom-right at low opacity.
-
-        Hard-coded to bottom-right + ~30% opacity + small margin -
-        these are the channel-branding defaults. The per-project
-        image watermark (`_apply_watermark`) still takes its config
-        from `video_config.watermark` for users who want a custom logo.
-        """
-        output_path.unlink(missing_ok=True)
-        w = video_config.width
-        h = video_config.height
-        margin = max(12, int(min(w, h) * 0.018))
-        # Right-aligned, ~22% of canvas width so a 14-char handle reads
-        # cleanly without dominating the frame.
-        wm_width = max(120, int(w * 0.18))
-        opacity = 0.32
-
-        filter_complex = (
-            f"[1:v]scale={wm_width}:-1,format=rgba,"
-            f"colorchannelmixer=aa={opacity}[wm];"
-            f"[0:v][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto"
-        )
-
-        # Apple Silicon hardware encode where available - the watermark
-        # overlay is a re-encode of the full final video (2 hours @ 1080p
-        # for Darling) and libx264 veryfast tops out around 10 fps which
-        # took ~90 minutes. h264_videotoolbox runs the same overlay in
-        # ~6-8 minutes at the same visual quality.
-        is_apple = bool(getattr(self.settings, "ffmpeg_binary", "") and Path("/opt/homebrew/bin/ffmpeg").exists())
-        video_codec_args: list[str]
-        if is_apple:
-            video_codec_args = [
-                "-c:v", "h264_videotoolbox",
-                "-b:v", "14M",
-                "-maxrate", "18M",
-                "-pix_fmt", "yuv420p",
-            ]
-        else:
-            video_codec_args = [
-                "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-crf", "18",
-                "-pix_fmt", "yuv420p",
-            ]
-
-        command = [
-            self.settings.ffmpeg_binary,
-            "-y",
-            "-i", str(video_path),
-            "-i", str(wm_png),
-            "-filter_complex", filter_complex,
-            "-map", "0:a?",
-            "-c:a", "copy",
-            *video_codec_args,
-            "-movflags", "+faststart",
-            str(output_path),
-        ]
-        self._run_ffmpeg(command)
+    # _apply_channel_watermark was removed in favor of baking the channel
+    # @handle into each per-panel clip during the cheap encode pass. See
+    # _resolve_channel_watermark + _render_panel_clip for the new path.
 
     def _apply_watermark(
         self,
@@ -1385,10 +1332,25 @@ class VideoRenderService:
             max_card_height / max(card_height, 1),
             1.0,
         )
+        # Channel watermark — baked into each per-panel clip during the
+        # cheap render pass, replacing the old dedicated _apply_channel_watermark
+        # step that re-encoded the entire 2-hour final video just for a
+        # corner overlay (~80 min on libx264, ~7 min even with videotoolbox).
+        # Per-clip overlay adds negligible time because the encoder runs
+        # either way.
+        channel_wm = self._resolve_channel_watermark(video_config)
+        channel_wm_path: Path | None = channel_wm[0] if channel_wm else None
+        channel_wm_text: str = channel_wm[1] if channel_wm else ""
+
         cache_payload = {
             "image_hash": self._file_content_hash(asset.image_path),
             "card_hash": self._file_content_hash(asset.card_path),
             "render_strategy": "fullscreen_cover_v2" if self._panel_layout_is_fullscreen(video_config) else "card_layout_v2_bgplate",
+            # Watermark text + height go into the cache key so changing the
+            # @handle or output resolution invalidates only the affected
+            # clips. When disabled, the field is omitted to preserve the
+            # existing cache hash for projects that never used it.
+            **({"channel_watermark": channel_wm_text} if channel_wm_text else {}),
             "duration": round(duration, 3),
             "panel_layout": getattr(video_config.panel_layout, "value", str(video_config.panel_layout)),
             "caption_start": round(caption_start, 3),
@@ -1476,13 +1438,13 @@ class VideoRenderService:
                 ]
             )
         output_label = "[base]"
+        next_input_index = 1 if fullscreen_layout else 2
         if caption_events:
             overlay_cache_dir = ensure_dir(self._shared_video_cache / "caption_overlays")
-            overlay_input_index = 1 if fullscreen_layout else 2
             for event_index, (start_seconds, end_seconds, chunk) in enumerate(caption_events, start=0):
                 overlay_path = self._prepare_subtitle_overlay_image(
                     overlay_cache_dir,
-                    f"{asset.panel_id}_{overlay_input_index + event_index}",
+                    f"{asset.panel_id}_{next_input_index + event_index}",
                     chunk,
                     video_config,
                 )
@@ -1499,12 +1461,44 @@ class VideoRenderService:
                     ]
                 )
                 previous_label = output_label
-                input_index = overlay_input_index + event_index
+                input_index = next_input_index + event_index
                 output_label = f"[cap{input_index}]"
                 enable_expr = f"between(t\\,{start_seconds:.3f}\\,{end_seconds:.3f})"
                 filter_steps.append(
                     f"{previous_label}[{input_index}:v]overlay=x=0:y=0:format=auto:enable='{enable_expr}'{output_label}"
                 )
+            next_input_index += len(caption_events)
+
+        # Channel handle watermark, baked in here so the dedicated full-video
+        # re-encode pass goes away entirely. Same opacity/margin/scale rules
+        # the old _apply_channel_watermark used.
+        if channel_wm_path is not None:
+            wm_width = max(120, int(video_config.width * 0.18))
+            margin = max(12, int(min(video_config.width, video_config.height) * 0.018))
+            opacity = 0.32
+            command.extend(
+                [
+                    "-loop",
+                    "1",
+                    "-framerate",
+                    str(video_config.fps),
+                    "-t",
+                    duration_expr,
+                    "-i",
+                    str(channel_wm_path),
+                ]
+            )
+            wm_input_index = next_input_index
+            previous_label = output_label
+            output_label = f"[chwm{wm_input_index}]"
+            filter_steps.append(
+                f"[{wm_input_index}:v]scale={wm_width}:-1,format=rgba,"
+                f"colorchannelmixer=aa={opacity}[chwmsrc{wm_input_index}];"
+                f"{previous_label}[chwmsrc{wm_input_index}]overlay="
+                f"W-w-{margin}:H-h-{margin}:format=auto{output_label}"
+            )
+            next_input_index += 1
+
         filter_complex = ";".join(filter_steps)
         command.extend(
             [
