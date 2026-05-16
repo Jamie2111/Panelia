@@ -427,7 +427,23 @@ class ProjectStore:
             kept_panel_count=sum(1 for panel in panels if panel.keep),
             thumbnail_url=self._relative_media_url(thumbnail_path) if thumbnail_path.exists() else None,
             video_thumbnail_url=self._relative_media_url(video_thumbnail_path) if video_thumbnail_path.exists() else None,
-            active_jobs=[job for job in jobs if job.status in {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.PAUSED}],
+            # Filter out "zombie" jobs whose stage is already completed
+            # but whose status is still QUEUED/RUNNING in the job log.
+            # This happens after worker crashes that leave entries marked
+            # "running" with no actual process, and after worker restarts
+            # that re-queue old jobs as "Recovered after worker restart".
+            # Surfacing those as active_jobs makes the Preview page show
+            # a permanent "Rendering..." overlay on a video that's been
+            # done for hours. Treat a job as zombie if its stage's
+            # state is already `completed`.
+            active_jobs=[
+                job for job in jobs
+                if job.status in {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.PAUSED}
+                and not (
+                    job.stage in stage_states
+                    and getattr(stage_states[job.stage], "status", None) == StageStatus.COMPLETED
+                )
+            ],
             latest_video=videos[-1] if videos else None,
             voice_config=VoiceConfig.model_validate(metadata.get("voice_config", {})),
             video_config=VideoConfig.model_validate(metadata.get("video_config", {})),
