@@ -1686,28 +1686,36 @@ class VideoRenderService:
     def _panel_time(self, script_line: str, audio_duration: float, manual_duration: float | None) -> float:
         """Compute the on-screen time for one panel.
 
-        Goal: each panel's display duration matches its narration audio
-        plus a small tail so the whole video feels like one continuous
-        read-through with no dead air. Concretely:
+        Audio is the source of truth when available: the visual must
+        stay on the panel for at least as long as the audio takes to
+        read aloud. Anything shorter means the next panel's narration
+        starts while the previous panel is still visible (and worse:
+        the audio track keeps reading the previous panel's narration
+        while the visual advances - that's the "audio doesn't line up
+        with the panels" symptom).
 
-          • If we have audio: target = audio + 80ms tail. Cap floor at
-            0.45s (the minimum a panel can be on screen before the eye
-            registers anything). DROP the legacy 1.9s minimum - it was
-            inserting up to 1.5s of silence after short panels.
-          • If we don't have audio (rare - preview before TTS), fall back
-            to a word-count heuristic that's also a touch tighter than
-            before.
-          • A user-set `manual_duration` (the inspector slider) wins over
-            any heuristic, since that's an explicit override.
+        Resolution order:
+          1. If we have audio, use it + 80 ms tail. This wins even
+             when a stale `manual_duration` exists - those values get
+             auto-computed once at script time and don't get refreshed
+             when narration is re-rendered with a different TTS voice
+             (Kokoro -> Edge produces longer reads).
+          2. If we don't have audio but a `manual_duration` is set
+             (user dragged the inspector slider, OR an old auto-value
+             is still around), honor it.
+          3. Last resort: word-count heuristic.
+
+        Floor: 0.45 s - any panel briefer than that registers as a
+        flicker rather than a panel.
         """
-        words = len([word for word in script_line.split() if word.strip()])
-        heuristic = max(1.5, words * 0.32) if words else 1.2
-        if manual_duration is not None:
-            return round(max(float(manual_duration), 0.45), 2)
-        if audio_duration:
-            tail = 0.08  # ~one frame plus a hair of breath before the next clip starts
+        if audio_duration and audio_duration > 0.01:
+            tail = 0.08
             target = float(audio_duration) + tail
             return round(max(target, 0.45), 2)
+        if manual_duration is not None:
+            return round(max(float(manual_duration), 0.45), 2)
+        words = len([word for word in script_line.split() if word.strip()])
+        heuristic = max(1.5, words * 0.32) if words else 1.2
         return round(heuristic, 2)
 
     def _same_page_transition_duration(

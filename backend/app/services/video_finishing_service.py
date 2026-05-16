@@ -377,37 +377,90 @@ class VideoFinishingService:
             text = text.split("\n", 1)[0].strip()
             # Belt-and-suspenders: strip any SFX the model snuck in.
             text = strip_panel_sfx(text)
-            if 4 <= len(text.split()) <= 28:
+            # Truncate over-long responses to the first sentence rather
+            # than rejecting them - even a 35-word hook is better than
+            # the generic fallback.
+            words = text.split()
+            if len(words) > 28:
+                first_sent = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0]
+                text = first_sent if len(first_sent.split()) <= 28 else " ".join(words[:18]).rstrip(",;:") + "..."
+            if len(text.split()) >= 4:
                 return text
+            logger.warning("Cold-open teaser LLM returned too-short text: %r", text)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Cold-open teaser LLM failed: %s", exc)
-        return self._fallback_teaser(clean_climax)
+        return self._fallback_teaser(clean_climax, full_script=full_script, series_name=manga_title)
 
     @staticmethod
-    def _fallback_teaser(climax_narration: str) -> str:
+    def _fallback_teaser(
+        climax_narration: str,
+        *,
+        full_script: list[str] | None = None,
+        series_name: str | None = None,
+    ) -> str:
         """Heuristic teaser when LLM is unavailable.
 
-        Strips SFX content first (so we never end up reading 'GWOOO'),
-        then takes the first short clause that doesn't start with a
-        camera/panel description.
+        Aims for "one-sentence synopsis that hooks the viewer," not the
+        generic "you won't see this twist coming" placeholder we used
+        before. Strategy:
+
+          1. Pull a plot-bearing sentence from the FULL script (the
+             chapter's actual story), not just the climax panel - so
+             the teaser describes the journey, not the punchline.
+             Skips camera/panel-direction sentences ("A close-up of...")
+             and SFX-describing ones.
+          2. Compress to <= 18 words; if the picked sentence is longer,
+             keep its opening clause.
+          3. If we couldn't extract anything useful, build a
+             stakes-statement from the series name. Never resort to the
+             generic placeholder unless we have literally nothing.
         """
-        cleaned = strip_panel_sfx(climax_narration)
-        sentences = re.split(r"(?<=[.!?])\s+", cleaned)
         bad_starts = (
             "a close-up", "close-up", "the camera", "a panel", "we see",
             "the panel", "this panel", "a wide shot", "in the panel",
+            "a side view", "an overhead", "a medium shot",
         )
-        for s in sentences:
-            s = s.strip()
-            if not s or len(s) < 6:
-                continue
-            if any(s.lower().startswith(p) for p in bad_starts):
-                continue
-            words = [w for w in s.split() if w.strip()]
-            if len(words) >= 4:
-                snippet = " ".join(words[:18]).rstrip(".!?,;:")
-                return f"{snippet}..."
-        return "You won't see this twist coming."
+
+        def _pick_synopsis_sentence(text: str) -> str | None:
+            cleaned = strip_panel_sfx(text)
+            sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+            for s in sentences:
+                s = s.strip()
+                if not s or len(s) < 16:
+                    continue
+                if any(s.lower().startswith(p) for p in bad_starts):
+                    continue
+                words = [w for w in s.split() if w.strip()]
+                if len(words) < 5:
+                    continue
+                # Trim to 18 words, prefer cutting on a comma boundary.
+                if len(words) > 18:
+                    snippet = " ".join(words[:18])
+                    last_comma = snippet.rfind(",")
+                    if last_comma > 30:
+                        snippet = snippet[:last_comma]
+                else:
+                    snippet = s
+                snippet = snippet.rstrip(".!?,;:")
+                return snippet
+            return None
+
+        # Try the full script first (chapter-wide story material), then
+        # the climax narration as a fallback.
+        if full_script:
+            opener_text = " ".join(line for line in full_script[:60] if line and line.strip())
+            picked = _pick_synopsis_sentence(opener_text)
+            if picked:
+                return f"{picked}..."
+
+        picked = _pick_synopsis_sentence(climax_narration)
+        if picked:
+            return f"{picked}..."
+
+        # Last resort: stakes statement keyed to the series.
+        if series_name:
+            return f"What you need to know about {series_name.strip()}, in one sitting."
+        return "Every key moment of this chapter, in one sitting."
 
     # ── Chapter markers ──────────────────────────────────────────────────
 
