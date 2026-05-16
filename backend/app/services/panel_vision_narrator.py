@@ -104,16 +104,27 @@ The narration will be read aloud over this exact panel.
 
 GOOD narrations:
 • Specific to what's visible in THIS panel
-• Character names: use a name from the KNOWN CAST ONLY when this panel
-  shows a clear, unambiguous match. Required: face visible at a normal
-  angle, with the cast's distinguishing visible features (hair color,
-  eye color, signature outfit) clearly readable. If the angle is partial
-  (3/4 profile, back of head, distant shot, face cropped or obscured,
-  shadowed, motion-blurred, or rendered as a silhouette), DO NOT GUESS
-  a name - use a neutral descriptor instead ("the pilot", "the boy
-  with dark hair", "a uniformed figure"). It is much better to under-
-  identify than to wrongly call a side-profile of one character by
-  another character's name. Repeat: when in doubt, no name.
+• Character names: USE NAMES from the KNOWN CAST whenever a character
+  matches one of their distinguishing visible features (hair color,
+  eye color, signature outfit, horns, scars, etc.). Defaulting to a
+  generic descriptor when the cast bible has a match is a worse
+  failure mode than the occasional misidentification.
+    - If the cast says "Zero Two: long pink hair, red horns" and the
+      panel shows a character with pink hair OR red horns, that IS
+      Zero Two - use her name.
+    - If the cast says "Hiro: dark blue hair, blue eyes, Squad 13
+      uniform" and the panel shows a boy in that uniform from any
+      angle, that IS Hiro - use his name.
+    - Only fall back to a neutral descriptor ("the pilot", "an
+      officer") when the panel character DOES NOT match ANY cast
+      entry's visual description. New characters absent from the
+      cast bible get described, never named.
+    - The previous narration's character names carry forward: if the
+      last narration named Hiro and this panel continues the same
+      scene with a boy in the same uniform, that IS still Hiro.
+• When in doubt between two cast members, pick the more prominent /
+  more recently named one rather than defaulting to a generic. The
+  cast bible's ORDER reflects character prominence (lead first).
 • Flow naturally from the previous narration (continuity, not repetition)
 • Convey emotion when the panel shows emotion
 • Past or present tense - match the established voice

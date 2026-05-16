@@ -1503,6 +1503,30 @@ def _run_script_generation_vision(
     except Exception as exc:  # noqa: BLE001
         logger.warning("Opening-lines polish skipped (non-fatal): %s", exc)
 
+    # ── Name resolution pass ─────────────────────────────────────────────
+    # User rule: "if a character's name has never been said then and only
+    # then can their description be used." The per-panel vision narrator
+    # sometimes falls back to "the boy with dark hair" when the cast
+    # bible clearly identifies that boy as Hiro. This pass scans the
+    # entire script with the bible in context and rewrites every such
+    # descriptor back to the cast name, in batches of 80 lines for
+    # rolling continuity. Non-fatal: if Gemini hiccups we just keep
+    # the original descriptors.
+    try:
+        if cast_block:
+            context.progress(97, "Resolving character names across the script")
+            from app.services.name_resolution_service import resolve_character_names
+            report = resolve_character_names(
+                project_dir, cast_block=cast_block
+            )
+            if report.get("updated", 0) > 0:
+                logger.info(
+                    "Name resolution: %d lines rewritten across %d batches",
+                    report.get("updated"), report.get("batches", 0),
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Name-resolution pass skipped (non-fatal): %s", exc)
+
     # Post-write consistency check - catches any panels↔script drift before
     # we hand off to TTS. Failing fast here beats discovering a desync after
     # audio has been generated.
