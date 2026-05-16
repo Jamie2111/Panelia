@@ -2453,13 +2453,21 @@ def run_youtube_bundle(context: PipelineContext) -> None:
     # prepend the cold open and append the outro.
     main_video_path = project_dir / "video" / "final.mp4"
     if not main_video_path.exists():
-        # Fall back to whichever video the store last picked up.
+        # Fall back to whichever video the store last picked up. CRITICAL:
+        # skip `final_publish.mp4` (the OUTPUT of the finishing renderer)
+        # or each rerun would recursively wrap the previous publish file
+        # with another cold-open + outro and re-encode it at a lower
+        # bitrate. We want the un-finished main video.
         videos = store.list_videos(context.project_id) or []
-        main_video_path = (
-            (project_dir / videos[-1].path)
-            if (videos and getattr(videos[-1], "path", None))
-            else main_video_path
-        )
+        candidates = [
+            v for v in videos
+            if getattr(v, "name", "") not in {"final_publish.mp4", "short.mp4"}
+        ]
+        if candidates:
+            main_video_path = Path(str(candidates[-1].path))
+        elif videos:
+            # No clean candidate - fall back to whatever exists.
+            main_video_path = Path(str(videos[-1].path))
 
     service = YouTubeBundleService()
     result = service.build(
