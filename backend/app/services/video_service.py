@@ -1369,7 +1369,7 @@ class VideoRenderService:
         cache_payload = {
             "image_hash": self._file_content_hash(asset.image_path),
             "card_hash": self._file_content_hash(asset.card_path),
-            "render_strategy": "fullscreen_cover_v2" if self._panel_layout_is_fullscreen(video_config) else "card_layout_v1",
+            "render_strategy": "fullscreen_cover_v2" if self._panel_layout_is_fullscreen(video_config) else "card_layout_v2_bgplate",
             "duration": round(duration, 3),
             "panel_layout": getattr(video_config.panel_layout, "value", str(video_config.panel_layout)),
             "caption_start": round(caption_start, 3),
@@ -1410,21 +1410,27 @@ class VideoRenderService:
                 f"crop={video_config.width}:{video_config.height},setsar=1[base]",
             ]
         else:
-            # Background filter chain stripped to the essentials. The
-            # original (gblur sigma=36 + vignette + colorchannelmixer)
-            # was beautiful but ate ~50 ms per 1920x1080 frame on CPU,
-            # bottlenecking the encoder. boxblur is dramatically
-            # cheaper than gblur, and we drop the vignette filter
-            # entirely (it's per-pixel and the blur+darken already
-            # creates the recede-into-background effect). Net: ~10x
-            # throughput on the same CPU.
+            # Background is now precomputed in PIL ONCE per panel (see
+            # _panel_background_plate) and saved as a 1920x1080 JPG. By
+            # passing that as input[0], the per-frame ffmpeg filter for
+            # the bg branch collapses to setsar=1 - no scale, no blur,
+            # no colormix. Prior versions ran boxblur+scale+crop+colormix
+            # on every one of ~480 frames per clip on the SAME static
+            # image, which dominated the per-clip encode time.
             filter_steps = [
-                f"[0:v]scale={video_config.width}:{video_config.height}:force_original_aspect_ratio=increase,"
-                f"crop={video_config.width}:{video_config.height},boxblur=14:1,"
-                f"colorchannelmixer=rr=0.5:gg=0.5:bb=0.5[bg]",
+                "[0:v]setsar=1[bg]",
                 f"[1:v]scale='iw*{scale_expr}':'ih*{scale_expr}':eval=frame[fg];"
                 f"[bg][fg]overlay=x='{x_expr}':y='{y_expr}':format=auto[base]",
             ]
+        # For card layouts, input[0] is the precomputed blurred bg plate
+        # so ffmpeg doesn't redo blur/scale/colormix on every frame. For
+        # fullscreen layouts we still feed the raw panel image and let
+        # ffmpeg do the scale+crop (no blur involved).
+        bg_input_path: Path
+        if fullscreen_layout:
+            bg_input_path = asset.image_path
+        else:
+            bg_input_path = self._panel_background_plate(asset, video_config)
         command = [
             self.settings.ffmpeg_binary,
             "-y",
@@ -1435,7 +1441,7 @@ class VideoRenderService:
             "-t",
             duration_expr,
             "-i",
-            str(asset.image_path),
+            str(bg_input_path),
         ]
         if not fullscreen_layout:
             command.extend(
@@ -1919,6 +1925,34 @@ class VideoRenderService:
         background = background.filter(ImageFilter.GaussianBlur(radius=40))
         background = ImageEnhance.Brightness(background).enhance(0.6)
         return background.convert("RGBA")
+
+    def _panel_background_plate(self, asset: "PanelRenderAsset", video_config: VideoConfig) -> Path:
+        """Precompute the blurred/darkened bg plate ONCE per panel and cache.
+
+        Before this existed, every ffmpeg clip render ran boxblur+colormix
+        on the same static panel image, 480 times in a row (24 fps x 20s).
+        With h264_videotoolbox eating ~50% CPU and the blur filter eating
+        the other ~40%, each 20-second clip took 90+ seconds to encode.
+        Pre-rendering the bg plate to a 1920x1080 JPG and feeding that as
+        a static input lets ffmpeg short-circuit the bg branch entirely:
+        scale/crop/blur/colormix all collapse to one PIL call per panel.
+        """
+        cache_dir = ensure_dir(self._shared_video_cache / "bg_plates")
+        image_hash = self._file_content_hash(asset.image_path) or "noimg"
+        key = (
+            f"{image_hash}_"
+            f"{video_config.width}x{video_config.height}_"
+            f"blur40_dark60_v1"
+        )
+        out_path = cache_dir / f"{key}.jpg"
+        if out_path.exists():
+            return out_path
+        with Image.open(asset.image_path) as raw:
+            plate = self._blurred_background(raw, video_config).convert("RGB")
+        tmp = cache_dir / f"{key}.tmp.jpg"
+        plate.save(tmp, format="JPEG", quality=82, optimize=False)
+        tmp.replace(out_path)
+        return out_path
 
     def _foreground_panel(self, panel_image: Image.Image, pose: CameraPose, video_config: VideoConfig) -> Image.Image:
         max_width = min(1400, video_config.width - 320)
