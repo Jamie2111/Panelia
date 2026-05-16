@@ -1410,9 +1410,17 @@ class VideoRenderService:
                 f"crop={video_config.width}:{video_config.height},setsar=1[base]",
             ]
         else:
+            # NOTE: this used to be `gblur=sigma=36:steps=2` which gives a
+            # buttery 144-pixel kernel blur. Beautiful visually, but CPU-
+            # bound at ~50 ms per 1920x1080 frame x 450 frames per clip
+            # x 4 parallel ffmpegs = the 1-clip-per-minute throughput
+            # the user hit. boxblur produces a perceptually similar
+            # background blur at ~6x the throughput. We then keep the
+            # darkening + vignette so the background still recedes
+            # behind the foreground panel card.
             filter_steps = [
                 f"[0:v]scale={video_config.width}:{video_config.height}:force_original_aspect_ratio=increase,"
-                f"crop={video_config.width}:{video_config.height},gblur=sigma=36:steps=2,"
+                f"crop={video_config.width}:{video_config.height},boxblur=18:2,"
                 f"colorchannelmixer=rr=0.6:gg=0.6:bb=0.6,vignette=angle=PI/5[bg]",
                 f"[1:v]scale='iw*{scale_expr}':'ih*{scale_expr}':eval=frame[fg];"
                 f"[bg][fg]overlay=x='{x_expr}':y='{y_expr}':format=auto[base]",
