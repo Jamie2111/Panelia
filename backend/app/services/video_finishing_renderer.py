@@ -97,6 +97,51 @@ class VideoFinishingRenderer:
 
     def __init__(self, settings: Any | None = None) -> None:
         self.settings = settings or get_settings()
+        self._cached_video_codec_args: tuple[str, ...] | None = None
+
+    def _video_codec_args(self) -> tuple[str, ...]:
+        """Best-available H.264 encoder args.
+
+        On Apple Silicon we get h264_videotoolbox at ~10x the throughput
+        of libx264 for the kind of full-video re-encodes this renderer
+        does. Probe `ffmpeg -encoders` once and cache the result so the
+        probe doesn't run per clip.
+
+        Critical: every full-video re-encode in this file used to be
+        hardcoded libx264 default-preset, which on a 2-hour 1080p main
+        video meant ~2 HOURS of wall-clock just for the concat
+        normalize step. h264_videotoolbox brings that down to ~6-8 min.
+        """
+        if self._cached_video_codec_args is not None:
+            return self._cached_video_codec_args
+        encoder = "libx264"
+        try:
+            result = subprocess.run(
+                [self.settings.ffmpeg_binary, "-hide_banner", "-encoders"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if "h264_videotoolbox" in (result.stdout or ""):
+                encoder = "h264_videotoolbox"
+        except Exception:  # noqa: BLE001
+            pass
+        if encoder == "h264_videotoolbox":
+            args = (
+                "-c:v", "h264_videotoolbox",
+                "-b:v", "14M",
+                "-maxrate", "18M",
+                "-pix_fmt", "yuv420p",
+            )
+        else:
+            args = (
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "18",
+                "-pix_fmt", "yuv420p",
+            )
+        self._cached_video_codec_args = args
+        return args
 
     # ── Public entry point ────────────────────────────────────────────────
 
@@ -298,8 +343,7 @@ class VideoFinishingRenderer:
             ),
             "-map", "[vout]",
             "-map", "[aout]",
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
+            *self._video_codec_args(),
             "-r", str(fps),
             "-t", f"{hold}",
             "-c:a", "aac",
@@ -466,8 +510,7 @@ class VideoFinishingRenderer:
                 f"crop={width}:{height},"
                 f"zoompan=z='{zoom_expr}':d=1:s={width}x{height}:fps=30"
             ),
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
+            *self._video_codec_args(),
             "-r", "30",
             "-c:a", "aac",
             "-b:a", "192k",
@@ -556,8 +599,7 @@ class VideoFinishingRenderer:
             "-i", str(card_png),
             "-f", "lavfi",
             "-i", f"anullsrc=channel_layout=stereo:sample_rate=48000:duration={duration}",
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
+            *self._video_codec_args(),
             "-r", "30",
             "-c:a", "aac",
             "-b:a", "192k",
@@ -631,8 +673,7 @@ class VideoFinishingRenderer:
             "-i", str(card_png),
             "-f", "lavfi",
             "-i", f"anullsrc=channel_layout=stereo:sample_rate=48000:duration={duration}",
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
+            *self._video_codec_args(),
             "-r", "30",
             "-c:a", "aac",
             "-b:a", "192k",
@@ -669,6 +710,13 @@ class VideoFinishingRenderer:
         work_dir.mkdir(parents=True, exist_ok=True)
 
         # Normalize every part to a known format so concat is safe.
+        # IMPORTANT: this step used to hardcode libx264 default-preset,
+        # which on the 2-hour main video meant ~2 HOURS of wall-clock
+        # encoding just for normalization. Now uses h264_videotoolbox
+        # on Apple Silicon (~10x faster), libx264 -preset veryfast
+        # elsewhere. Quality difference at 14M bitrate is imperceptible
+        # for this kind of recap content.
+        codec_args = self._video_codec_args()
         normalized: list[Path] = []
         for idx, src in enumerate(parts):
             norm = work_dir / f"concat_{idx:03d}.mp4"
@@ -676,8 +724,7 @@ class VideoFinishingRenderer:
                 self.settings.ffmpeg_binary,
                 "-y",
                 "-i", str(src),
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
+                *codec_args,
                 "-r", "30",
                 "-c:a", "aac",
                 "-ar", "48000",
