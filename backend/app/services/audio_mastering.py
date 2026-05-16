@@ -28,6 +28,13 @@ class AudioMasteringService:
 
         for index, wav_path in enumerate(wav_files, start=1):
             temp_path = wav_path.with_name(f".{wav_path.stem}.mastered.wav")
+            # NOTE: the previous mastering chain included
+            # `aecho=0.7:0.45:18:0.04`. That added a 0.45-gain echo with
+            # only 18 ms delay, which the ear perceives as a DOUBLED
+            # voice (it's below the ~50 ms "single sound" Haas threshold
+            # but above the comb-filter range). Result: every panel's
+            # narration sounded like two TTS voices saying the same
+            # thing in tight succession. Removed.
             command = [
                 self.settings.ffmpeg_binary,
                 "-y",
@@ -40,7 +47,6 @@ class AudioMasteringService:
                         "lowpass=f=14500",
                         "acompressor=threshold=-18dB:ratio=2.4:attack=20:release=180:makeup=2.5",
                         "equalizer=f=3200:t=q:w=1.1:g=1.2",
-                        "aecho=0.7:0.45:18:0.04",
                         "loudnorm=I=-16:TP=-1.5:LRA=11",
                     )
                 ),

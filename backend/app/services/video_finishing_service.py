@@ -56,6 +56,93 @@ _CLIMAX_KEYWORDS = (
 )
 
 
+# ── SFX / onomatopoeia stripper (shared across services) ─────────────
+# Manga vision narrators frequently describe the visible SFX text in
+# panels (the "GWOOO!", "BOOM!", "VRRRR" etc. drawn onto the artwork).
+# When that text reaches TTS, the speaker reads "G W O O" or pronounces
+# the letters as a non-word - it never sounds like the in-panel sound
+# effect was supposed to. These helpers strip such descriptions out of
+# narration text before it hits the prompt or the TTS engine.
+
+# Common sentence-templates the vision model produces for SFX:
+#   "A massive 'GWOOO!' reverberates..."
+#   "A loud 'BOOM' rings out..."
+#   "The sound of 'SLASH!' echoes..."
+#   "A faint 'tap tap tap' is heard..."
+# Plus bare onomatopoeia tokens.
+_SFX_ECHO_VERBS = (
+    "reverberat", "echo", "ring out", "rings out", "ringing out",
+    "boom", "booms", "rumble", "rumbles", "thunders", "thudd",
+    "resonat", "shakes the", "shaking the",
+)
+_SFX_DESCRIPTOR_PHRASES = (
+    "sound effect", "onomatopoeia", "impact sound", "visible sfx",
+    "the sfx", "written sfx", "stylized sfx", "stylized sound",
+    "stylized impact", "in big bold letters", "letters fill the panel",
+)
+_SFX_ONOMATOPOEIA_RE = re.compile(
+    # Quoted all-caps onomatopoeia tokens like "GWOOO!", 'BOOM', "ZAP!?"
+    r"""[\"'“‘]\s*[A-Z]{2,}[A-Z!?\.\s]*[\"'”’]""",
+)
+_BARE_LONG_ONOMATOPOEIA_RE = re.compile(
+    # Long all-caps run that isn't a common word/abbreviation.
+    r"\b[A-Z]{4,}!*\b",
+)
+
+
+def strip_panel_sfx(text: str) -> str:
+    """Remove SFX / onomatopoeia content from a narration line.
+
+    Three passes:
+      1. Drop any SENTENCE that contains a quoted onomatopoeia token
+         (e.g. 'A massive "GWOOO!" reverberates...').
+      2. Drop sentences whose content is purely SFX descriptors
+         (matches `_SFX_ECHO_VERBS` AND `_SFX_DESCRIPTOR_PHRASES`).
+      3. Strip bare all-caps onomatopoeia from any remaining sentence
+         (e.g. "the building shakes with GWOOO" -> "the building shakes").
+
+    Always returns a string. If everything was SFX, returns "".
+    """
+    if not text:
+        return ""
+    raw = str(text).strip()
+    if not raw:
+        return ""
+
+    sentences = re.split(r"(?<=[.!?])\s+", raw)
+    kept: list[str] = []
+    for sentence in sentences:
+        s = sentence.strip()
+        if not s:
+            continue
+        lower = s.lower()
+        # Pass 1: skip if it contains a quoted onomatopoeia.
+        if _SFX_ONOMATOPOEIA_RE.search(s):
+            continue
+        # Pass 2: skip if it contains a clear SFX descriptor phrase.
+        if any(phrase in lower for phrase in _SFX_DESCRIPTOR_PHRASES):
+            continue
+        # Pass 3: skip if it contains a bare long all-caps token AND
+        # an SFX-echo verb. The combination is the unmistakable
+        # "A massive GWOOO reverberates" / "A loud BOOM echoes" pattern.
+        # We drop the WHOLE sentence rather than surgically removing the
+        # SFX word, because that would leave broken grammar like
+        # "A massive reverberates through the city."
+        if _BARE_LONG_ONOMATOPOEIA_RE.search(s) and any(verb in lower for verb in _SFX_ECHO_VERBS):
+            continue
+        # Pass 4: only strip bare all-caps tokens that look like
+        # onomatopoeia (3+ of the same letter in a row, like GWOOO,
+        # AAAAH, BOOOM, NOOOO). Plain all-caps names like HIRO or
+        # ZERO TWO survive untouched.
+        cleaned = re.sub(r"\b[A-Z]*([A-Z])\1{2,}[A-Z]*!*\b", "", s).strip()
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        cleaned = re.sub(r"\s+([,.!?;:])", r"\1", cleaned)
+        if len(cleaned.split()) < 3:
+            continue
+        kept.append(cleaned)
+    return " ".join(kept).strip()
+
+
 @dataclass
 class ColdOpenPlan:
     """What goes before the title card."""
@@ -114,6 +201,8 @@ class VideoFinishingService:
         audio_manifest: dict[str, Any],
         preset: ChannelPreset,
         project_dir: Path,
+        manga_title: str | None = None,
+        chapter_label: str | None = None,
     ) -> FinishingPlan:
         """Build cold-open + chapter-marker plan. Writes intermediate
         artifacts to disk so video_service and youtube_bundle_service
@@ -125,7 +214,11 @@ class VideoFinishingService:
         )
         cold_open = None
         if preset.cold_open_enabled and kept:
-            cold_open = self._select_cold_open(kept, script_lines, preset)
+            cold_open = self._select_cold_open(
+                kept, script_lines, preset,
+                manga_title=manga_title,
+                chapter_label=chapter_label,
+            )
 
         markers = self._select_chapter_markers(kept, script_lines, audio_manifest)
 
@@ -158,6 +251,9 @@ class VideoFinishingService:
         kept_sorted: list[dict[str, Any]],
         script_lines: list[str],
         preset: ChannelPreset,
+        *,
+        manga_title: str | None = None,
+        chapter_label: str | None = None,
     ) -> ColdOpenPlan:
         """Pick the climax panel and write a punchy teaser line for it."""
         # Same scoring shape as the thumbnail picker, but biased even
@@ -190,6 +286,8 @@ class VideoFinishingService:
             climax_narration,
             preset=preset,
             full_script=script_lines,
+            manga_title=manga_title,
+            chapter_label=chapter_label,
         )
 
         return ColdOpenPlan(
@@ -205,29 +303,63 @@ class VideoFinishingService:
         *,
         preset: ChannelPreset,
         full_script: list[str],
+        manga_title: str | None = None,
+        chapter_label: str | None = None,
     ) -> str:
-        """One punchy teaser line under 18 words. Try Gemini; fall back to
-        a rule-based derivation if the call fails."""
+        """One punchy teaser line under 18 words.
+
+        Designed to read like the opening line of a manga-recap channel's
+        cold open: it sets a STAKE and ends with curiosity, never echoes
+        the climax panel narration verbatim. Strips visible panel SFX
+        / onomatopoeia from the input context before the model sees it
+        so the model can't be tempted to write "a massive 'GWOOO!'
+        reverberates" lines.
+        """
+        # Clean inputs so the model isn't seeded with SFX-laden panel
+        # descriptions like 'A massive "GWOOO!" rings out...'.
+        clean_climax = strip_panel_sfx(climax_narration)
+        clean_opener = " ".join(
+            strip_panel_sfx(line) for line in full_script[:30] if line and line.strip()
+        )
+
         model = self._gemini()
         if model is None:
-            return self._fallback_teaser(climax_narration)
+            return self._fallback_teaser(clean_climax)
         try:
-            opener = " ".join(line for line in full_script[:30] if line.strip())
+            series_name = (manga_title or "this manga").strip()
+            chapter_name = (chapter_label or "this chapter").strip()
             prompt = (
-                "Write ONE cold-open teaser line for the start of a YouTube "
-                "manga recap video. Goal: hook the viewer in the first 6 "
-                "seconds with a tease of where the chapter is heading.\n\n"
-                "RULES:\n"
-                "  • 8-18 words\n"
-                "  • Hint at the climax WITHOUT naming the exact outcome\n"
-                "  • End on suspense (no 'and they lived happily ever after')\n"
-                "  • Do not use 'In this chapter', 'Today on', or any meta wrapper\n"
-                "  • Return JUST the line - no quotes, no prefix\n\n"
-                f"Opening of the recap: {opener[:1200]}\n\n"
-                f"Climax moment: {climax_narration[:200]}"
+                "You are a senior YouTuber with 1.2M subscribers writing the OPENING "
+                "voiceover line for a manga recap video. This is the first thing the "
+                "viewer hears in the first 6 seconds. Treat it like the opening line "
+                "of a movie trailer. Your ONLY job is to make the viewer want to keep "
+                "watching.\n\n"
+                f"SERIES: {series_name}\n"
+                f"CHAPTER FOCUS: {chapter_name}\n\n"
+                "STORY CONTEXT (for understanding only - do NOT quote, paraphrase, "
+                "echo, or describe any sentence from this block; do not mention "
+                "sound effects or panel art):\n"
+                "---\n"
+                f"{clean_opener[:1200]}\n"
+                "---\n\n"
+                f"Most striking moment: {clean_climax[:200]}\n\n"
+                "WHAT YOU WRITE:\n"
+                "Exactly ONE sentence. 8-18 words. Either a question form OR a "
+                "stakes statement. NO commentary about panels, art, or sound "
+                "effects. NO meta wrappers ('In this chapter', 'Today on'). NO "
+                "quotation marks. NO ellipses-as-suspense crutch.\n\n"
+                "GOOD examples (study the shape, don't copy):\n"
+                "  - 'Hiro never wanted to pilot. Then she walked in.'\n"
+                "  - 'What would you sacrifice for the one person who chose you?'\n"
+                "  - 'A boy with no future just met the girl who decides his.'\n\n"
+                "BAD examples (do not write anything like these):\n"
+                "  - 'As the city lights gleam, a massive GWOOO reverberates.'\n"
+                "  - 'A close-up of a character shows their emotion.'\n"
+                "  - 'In this chapter, we follow our hero through trials.'\n\n"
+                "Return ONLY the one sentence. No prose around it."
             )
             gen_kwargs: dict[str, Any] = {
-                "temperature": 0.75,
+                "temperature": 0.85,
                 "top_p": 0.9,
                 "max_output_tokens": 256,
             }
@@ -243,25 +375,39 @@ class VideoFinishingService:
             text = (getattr(response, "text", "") or "").strip()
             text = re.sub(r"^[\"'`]+|[\"'`]+$", "", text)
             text = text.split("\n", 1)[0].strip()
+            # Belt-and-suspenders: strip any SFX the model snuck in.
+            text = strip_panel_sfx(text)
             if 4 <= len(text.split()) <= 28:
                 return text
         except Exception as exc:  # noqa: BLE001
             logger.warning("Cold-open teaser LLM failed: %s", exc)
-        return self._fallback_teaser(climax_narration)
+        return self._fallback_teaser(clean_climax)
 
     @staticmethod
     def _fallback_teaser(climax_narration: str) -> str:
-        """Heuristic teaser when LLM is unavailable: trim the climax
-        narration to the most evocative clause and reframe as
-        cliffhanger."""
-        # Take the first ≤14 words of the climax narration.
-        words = [w for w in climax_narration.split() if w.strip()]
-        snippet = " ".join(words[:14])
-        if not snippet:
-            return "Wait until you see how this one ends."
-        if not snippet.endswith("..."):
-            snippet = snippet.rstrip(".!?") + "…"
-        return snippet
+        """Heuristic teaser when LLM is unavailable.
+
+        Strips SFX content first (so we never end up reading 'GWOOO'),
+        then takes the first short clause that doesn't start with a
+        camera/panel description.
+        """
+        cleaned = strip_panel_sfx(climax_narration)
+        sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+        bad_starts = (
+            "a close-up", "close-up", "the camera", "a panel", "we see",
+            "the panel", "this panel", "a wide shot", "in the panel",
+        )
+        for s in sentences:
+            s = s.strip()
+            if not s or len(s) < 6:
+                continue
+            if any(s.lower().startswith(p) for p in bad_starts):
+                continue
+            words = [w for w in s.split() if w.strip()]
+            if len(words) >= 4:
+                snippet = " ".join(words[:18]).rstrip(".!?,;:")
+                return f"{snippet}..."
+        return "You won't see this twist coming."
 
     # ── Chapter markers ──────────────────────────────────────────────────
 

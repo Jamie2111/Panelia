@@ -216,6 +216,8 @@ class YouTubeBundleService:
                     audio_manifest=audio_manifest,
                     preset=preset,
                     project_dir=project_dir,
+                    manga_title=manga_title,
+                    chapter_label=_normalize_chapter_label(chapter_title),
                 )
                 cold_open_plan = finishing_plan.cold_open
                 chapter_markers = finishing_plan.chapter_markers

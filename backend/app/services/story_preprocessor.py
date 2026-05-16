@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from app.services.video_finishing_service import strip_panel_sfx
+
 
 @dataclass(slots=True)
 class NarrationUnit:
@@ -59,7 +61,14 @@ class StoryPreprocessor:
         return units
 
     def _normalize(self, value: str) -> str:
-        return re.sub(r"\s+", " ", str(value or "").strip()).strip()
+        # Strip any visible-SFX/onomatopoeia descriptions BEFORE the
+        # narration reaches the TTS engine. Without this, the model
+        # speaks "G W O O" or "BOOM" letter-by-letter when the panel
+        # vision narrator described the in-panel sound effect text.
+        # `strip_panel_sfx` only removes SFX-pattern sentences; plain
+        # story prose passes through untouched.
+        cleaned_sfx = strip_panel_sfx(str(value or ""))
+        return re.sub(r"\s+", " ", cleaned_sfx.strip()).strip()
 
     def _soften_repeated_subject(self, line: str, previous_subject: str, index: int) -> str:
         subject = self._lead_subject(line)

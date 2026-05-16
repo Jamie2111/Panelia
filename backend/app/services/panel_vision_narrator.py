@@ -113,6 +113,12 @@ AVOID:
 • Repeating the previous narration's wording with a tense change
 • Inventing details not visible in the panel
 • Describing what's about to happen - describe THIS panel only
+• Describing visible sound effects or onomatopoeia. NEVER write things
+  like 'A massive "GWOOO!" reverberates', 'The sound of "BOOM!"
+  echoes', 'A loud "ZAP!" rings out'. The narration is read by a
+  TTS voice; it pronounces those tokens as random letters. If a
+  panel's main content is a stylized SFX, describe the IMPACT in the
+  story (who, what, the emotional beat) instead.
 
 PART 2 - CONTENT RATING (one of: "safe", "borderline", "explicit"):
 Classify by YouTube's Advertiser-Friendly Content Guidelines.
