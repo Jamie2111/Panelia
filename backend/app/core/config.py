@@ -86,7 +86,7 @@ class Settings(BaseSettings):
     # simultaneous encoder sessions; libx264 on Intel/Linux also fits a
     # typical 4-core box. Going higher tends to oversubscribe. Override
     # via env var PANELIA_VIDEO_CLIP_RENDER_WORKERS.
-    video_clip_render_workers: int = 4
+    video_clip_render_workers: int = 6
     narration_mastering_enabled: bool = True
     openvoice_enabled: bool = False
     redis_url: str = "redis://redis:6379/0"
