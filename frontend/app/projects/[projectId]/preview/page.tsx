@@ -77,7 +77,7 @@ export default function PreviewPage() {
   const [resolution, setResolution] = useState("1920x1080");
   const [orientation, setOrientation] = useState<"landscape" | "vertical">("vertical");
   const [panelLayout, setPanelLayout] = useState<PanelLayout>("card");
-  const [introThumbnailEnabled, setIntroThumbnailEnabled] = useState(false);
+  const [introThumbnailEnabled, setIntroThumbnailEnabled] = useState(true);
   const [introThumbnailSeconds, setIntroThumbnailSeconds] = useState(1.5);
   const [outputFormat, setOutputFormat] = useState<"mp4" | "mov">("mp4");
   const [savingVideoSettings, setSavingVideoSettings] = useState(false);

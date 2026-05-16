@@ -193,7 +193,7 @@ class VideoConfig(BaseModel):
     height: int = 1080
     orientation: Orientation = Orientation.LANDSCAPE
     panel_layout: PanelLayout = PanelLayout.CARD
-    intro_thumbnail_enabled: bool = False
+    intro_thumbnail_enabled: bool = True
     intro_thumbnail_seconds: float = 1.5
     output_format: OutputFormat = OutputFormat.MP4
     fps: int = 24
