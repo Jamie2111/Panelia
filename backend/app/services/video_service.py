@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -21,6 +22,8 @@ from app.core.config import get_settings
 from app.schemas.project import MusicConfig, PanelBox, StorySegment, VideoConfig
 from app.services.project_store import ProjectStore
 from app.utils.files import ensure_dir, read_json, write_json
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -240,6 +243,40 @@ class VideoRenderService:
                 output_path = wm_out
                 if progress_callback:
                     progress_callback(99, "Applied watermark")
+
+        # ── Channel text watermark ──────────────────────────────────────
+        # If the channel preset has a watermark text ("@handle") and
+        # watermark_enabled, render it as a transparent PNG and overlay
+        # it on the video at low opacity in the bottom-right. This
+        # replaces the per-thumbnail watermark that used to live on
+        # every PNG (now gone - thumbnails are too small for it to do
+        # anything useful). On the video itself, a soft handle in the
+        # corner is the channel-branding contract.
+        try:
+            from app.services.channel_preset_service import ChannelPresetService
+            channel_preset = ChannelPresetService(self.settings).load()
+        except Exception:
+            channel_preset = None
+        channel_wm_text = (
+            (getattr(channel_preset, "watermark_text", "") or "").strip()
+            if channel_preset and getattr(channel_preset, "watermark_enabled", False)
+            else ""
+        )
+        if channel_wm_text:
+            try:
+                wm_png = output_dir / "_channel_watermark.png"
+                self._render_channel_watermark_png(channel_wm_text, wm_png, video_config)
+                if wm_png.exists():
+                    wm_text_out = output_dir / f"{output_name}_chwm.{video_config.output_format.value}"
+                    if progress_callback:
+                        progress_callback(99, "Applying channel watermark")
+                    self._apply_channel_watermark(output_path, wm_png, wm_text_out, video_config)
+                    output_path.unlink(missing_ok=True)
+                    output_path = wm_text_out
+                    if progress_callback:
+                        progress_callback(99, "Applied channel watermark")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Channel watermark overlay failed: %s", exc)
 
         # Safety net: every encoder path in this file is supposed to pass
         # `-movflags +faststart`, but if any future remux step forgets to do
@@ -469,6 +506,112 @@ class VideoRenderService:
             "yuv420p",
             "-movflags",
             "+faststart",
+            str(output_path),
+        ]
+        self._run_ffmpeg(command)
+
+    @staticmethod
+    def _render_channel_watermark_png(
+        text: str,
+        output_path: Path,
+        video_config: "VideoConfig",
+    ) -> None:
+        """Render the channel handle as a small transparent PNG.
+
+        Used to overlay a subtle, non-intrusive corner watermark onto
+        the rendered video. Sized to ~2.6% of canvas height (so 28 px
+        on a 1080p frame), white with a 1-px black stroke for legibility
+        on any background. We render only the text + stroke, NO opaque
+        box - the ffmpeg overlay step controls final opacity globally.
+        """
+        from PIL import Image as _Image, ImageDraw as _ImageDraw, ImageFont as _ImageFont
+
+        height = int(video_config.height)
+        font_size = max(18, int(height * 0.026))
+        # Sized to fit the longest reasonable handle (~20 chars).
+        canvas_w = int(font_size * 14)
+        canvas_h = int(font_size * 2)
+
+        # Pick a font; falls back to default if no TrueType is present.
+        font: _ImageFont.ImageFont
+        for candidate in (
+            "/System/Library/Fonts/HelveticaNeue.ttc",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        ):
+            try:
+                if Path(candidate).exists():
+                    font = _ImageFont.truetype(candidate, font_size)
+                    break
+            except Exception:
+                continue
+        else:
+            font = _ImageFont.load_default()
+
+        canvas = _Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+        draw = _ImageDraw.Draw(canvas)
+        text_str = text.strip()
+        bbox = draw.textbbox((0, 0), text_str, font=font)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        # Right-pad inside the canvas so we don't clip the descender;
+        # the overlay positioning is done by ffmpeg from the right edge.
+        x = canvas_w - tw - 4
+        y = (canvas_h - th) // 2
+        # Soft drop shadow for legibility on any panel background.
+        draw.text(
+            (x, y),
+            text_str,
+            fill=(255, 255, 255, 235),
+            font=font,
+            stroke_width=max(1, font_size // 18),
+            stroke_fill=(0, 0, 0, 200),
+        )
+        canvas.save(output_path, "PNG", optimize=True)
+
+    def _apply_channel_watermark(
+        self,
+        video_path: Path,
+        wm_png: Path,
+        output_path: Path,
+        video_config: "VideoConfig",
+    ) -> None:
+        """Overlay the channel-handle PNG bottom-right at low opacity.
+
+        Hard-coded to bottom-right + ~30% opacity + small margin -
+        these are the channel-branding defaults. The per-project
+        image watermark (`_apply_watermark`) still takes its config
+        from `video_config.watermark` for users who want a custom logo.
+        """
+        output_path.unlink(missing_ok=True)
+        w = video_config.width
+        h = video_config.height
+        margin = max(12, int(min(w, h) * 0.018))
+        # Right-aligned, ~22% of canvas width so a 14-char handle reads
+        # cleanly without dominating the frame.
+        wm_width = max(120, int(w * 0.18))
+        opacity = 0.32
+
+        filter_complex = (
+            f"[1:v]scale={wm_width}:-1,format=rgba,"
+            f"colorchannelmixer=aa={opacity}[wm];"
+            f"[0:v][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto"
+        )
+
+        command = [
+            self.settings.ffmpeg_binary,
+            "-y",
+            "-i", str(video_path),
+            "-i", str(wm_png),
+            "-filter_complex", filter_complex,
+            "-map", "0:a?",
+            "-c:a", "copy",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
             str(output_path),
         ]
         self._run_ffmpeg(command)

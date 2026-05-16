@@ -1123,7 +1123,11 @@ Return ONLY the JSON. No prose before or after, no markdown fences."""
                 preset = ChannelPreset()
 
         accent_rgb = self._hex_to_rgb(preset.accent_color, fallback=(127, 255, 212))
-        watermark_text = (preset.watermark_text or "").strip() if preset.watermark_enabled else ""
+        # Watermark is intentionally NOT drawn on thumbnails any more -
+        # YouTube's recommended-video grid renders thumbnails so small
+        # (~320px wide on phones) that a corner watermark just becomes
+        # noise. The channel handle now lives on the rendered video
+        # instead via the per-video text overlay in video_service.
         canvas_size = target_size or THUMBNAIL_SIZE
 
         with Image.open(base_image) as src:
@@ -1154,10 +1158,6 @@ Return ONLY the JSON. No prose before or after, no markdown fences."""
                 resolved_overlay = overlay_text.strip()
             if resolved_overlay:
                 self._draw_thumbnail_text(canvas, resolved_overlay, accent_rgb=accent_rgb)
-
-            # Channel watermark in bottom-right (small).
-            if watermark_text:
-                self._draw_watermark(canvas, watermark_text)
 
             canvas.save(output_path, "PNG", optimize=True)
         return output_path
