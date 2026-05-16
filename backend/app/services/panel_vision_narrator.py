@@ -129,6 +129,14 @@ AVOID:
   TTS voice; it pronounces those tokens as random letters. If a
   panel's main content is a stylized SFX, describe the IMPACT in the
   story (who, what, the emotional beat) instead.
+• Quoting in-panel dialogue verbatim with quotation marks. NEVER write
+  things like 'Hiro asks, "How do I smell?"' or 'She mutters, "It's
+  not safe."'. TTS reads the quotation marks as awkward pauses and
+  breaks the narrative flow. Either OMIT the dialogue (let the panel
+  speak for itself) or REPHRASE in narration ('Hiro asks if he
+  smells okay', 'She mutters that it isn't safe'). The OCR text is
+  provided to you for context only - it is NOT meant to be repeated
+  verbatim in the narration.
 
 PART 2 - CONTENT RATING (one of: "safe", "borderline", "explicit"):
 Classify by YouTube's Advertiser-Friendly Content Guidelines.
@@ -534,7 +542,9 @@ class PanelVisionNarrator:
 
     @staticmethod
     def _post_process(raw: str) -> str:
-        """Strip common LLM artifacts: numbering, quotes, headers."""
+        """Strip common LLM artifacts: numbering, quotes, headers,
+        embedded dialogue quotations."""
+        import re as _re
         text = (raw or "").strip()
         # Remove leading numbering like "1. " or "1) "
         if text and text[0].isdigit():
@@ -546,6 +556,35 @@ class PanelVisionNarrator:
         # Strip surrounding quotes
         if len(text) >= 2 and text[0] in ("'", '"', "“", "‘") and text[-1] in ("'", '"', "”", "’"):
             text = text[1:-1]
+        # Strip embedded dialogue quotations the model sometimes inserts
+        # despite the prompt's instructions. Pattern: 'verb, "text"' or
+        # 'verb: "text"' where verb is a speech tag (asks, says, mutters,
+        # exclaims, whispers, screams, declares, etc.) - the quoted
+        # content gets read aloud awkwardly by TTS with the quotation
+        # marks turned into pauses. Remove the speech tag + quoted
+        # content entirely; the narration around it usually still
+        # stands ("Hiro stares at the device" remains useful even
+        # without the trailing ', asking "How do I smell?"').
+        _DIALOGUE_RE = _re.compile(
+            r"""(?:,|;|:)?\s*\b
+                (?:asks?|says?|said|mutters?|exclaims?|whispers?|
+                shouts?|cries?|declares?|replies?|responds?|states?|
+                yells?|screams?|inquires?|wonders?|tells?\s+\w+|
+                adds?|insists?|begs?|demands?|growls?|hisses?|sighs?|
+                snaps?|warns?|reassures?|promises?|admits?|confesses?|
+                pleads?|orders?|murmurs?|barks?|grunts?)
+                \s*[,;:]?\s*
+                ["'“‘][^"'”’]{1,200}["'”’]""",
+            _re.VERBOSE | _re.IGNORECASE,
+        )
+        text = _DIALOGUE_RE.sub("", text)
+        # Also catch bare '"quoted dialogue"' tail without a verb tag.
+        # Limit to <=200 chars to avoid eating long narration accidentally.
+        text = _re.sub(r'\s*["“][^"”]{2,200}["”]\s*$', "", text)
+        # Tidy up any double-spaces / dangling commas left by the strip.
+        text = _re.sub(r"\s+([,.;])", r"\1", text)
+        text = _re.sub(r"\s+", " ", text).strip()
+        text = text.rstrip(",;:")
         # Collapse internal whitespace
         text = " ".join(text.split())
         # Strip trailing/leading bullets
