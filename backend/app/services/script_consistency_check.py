@@ -106,10 +106,18 @@ def check_project(project_dir: Path, project_id: str | None = None) -> Consisten
         for pid in seg.get("panel_ids") or []:
             pid = str(pid)
             if pid not in kept_ids:
+                # Warning-level, not error: this commonly happens when the
+                # content-safety classifier flips a panel to keep=False
+                # AFTER segment composition. The renderer handles missing
+                # panels gracefully (skips the segment); failing the whole
+                # script_generation stage would lose all the just-done
+                # Gemini Vision work for one orphan reference.
                 issues.append(ConsistencyIssue(
                     "segment_references_missing_panel",
-                    "error",
-                    f"Segment {seg_id} references panel {pid} which is not a kept panel.",
+                    "warning",
+                    f"Segment {seg_id} references panel {pid} which is not a kept panel "
+                    f"(likely flipped to keep=False by content safety after script composition; "
+                    f"the renderer will skip this segment).",
                     panel_id=pid,
                     segment_id=seg_id,
                 ))
