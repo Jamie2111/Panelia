@@ -172,14 +172,43 @@ class CastBibleService:
         force_refresh: bool = False,
     ) -> CastBible:
         """Get a bible, building one if needed. Always returns; falls
-        back to empty for obscure series so the caller can still narrate."""
+        back to empty for obscure series so the caller can still narrate.
+
+        Auto-retry policy: if the cached bible is an EMPTY fallback
+        (the LLM was unavailable/errored when it ran), treat the cache
+        as stale and try the LLM again. That way a one-time Gemini
+        outage doesn't poison the project's cast forever. A real
+        "this series is too obscure" empty bible would also retry,
+        which is fine - a retry is cheap and we re-cache the empty
+        result.
+        """
         if not force_refresh:
             cached = self.load_cached(project_dir)
             if cached is not None:
-                return cached
+                # Treat empty-on-fallback as stale and retry. The raw
+                # source field is preserved through load_cached as
+                # "cached" so we need to inspect the on-disk file too.
+                is_stale_empty = not cached.members
+                if is_stale_empty:
+                    try:
+                        raw = read_json(project_dir / "output" / "cast_bible.json")
+                        if isinstance(raw, dict) and raw.get("source") == "fallback":
+                            logger.info(
+                                "Cast bible cached as empty fallback; retrying LLM build.",
+                            )
+                        else:
+                            return cached
+                    except Exception:
+                        return cached
+                else:
+                    return cached
         bible = self._build_via_llm(manga_title=manga_title, chapter_title=chapter_title)
         # Persist even empty bibles so we don't keep retrying on every
-        # script regen for obscure series.
+        # script regen for genuinely obscure series. The auto-retry
+        # above only fires on the SOURCE being "fallback" (i.e. the
+        # LLM was unavailable, not that the LLM said "I don't know").
+        # For "I don't know" we'd need a separate signal which the LLM
+        # doesn't currently provide.
         write_json(project_dir / "output" / "cast_bible.json", bible.to_dict())
         return bible
 

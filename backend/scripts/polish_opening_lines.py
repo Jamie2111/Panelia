@@ -68,13 +68,26 @@ def load_cast_bible(project_dir: Path) -> list[dict]:
 
 
 def cast_block(members: list[dict]) -> str:
-    """Format the cast as a prompt-friendly bullet list."""
+    """Format the cast as a prompt-friendly bullet list.
+
+    Schema match: CastBibleService writes {name, role, visual_description}
+    (NOT canonical_name / appearance_summary / one_liner which were
+    in an earlier draft of this helper - the field-name mismatch was
+    causing the polish prompt to receive "no character roster available"
+    even when the bible was fully populated).
+    """
     if not members:
         return "(no character roster available - use generic descriptors only)"
     rows = []
     for m in members[:15]:
-        name = m.get("canonical_name") or m.get("name") or "?"
-        desc = (m.get("appearance_summary") or m.get("description") or m.get("one_liner") or "").strip()
+        name = m.get("name") or m.get("canonical_name") or "?"
+        desc = (
+            m.get("visual_description")
+            or m.get("appearance_summary")
+            or m.get("description")
+            or m.get("role")
+            or ""
+        ).strip()
         if desc:
             rows.append(f"  - {name}: {desc[:120]}")
         else:
