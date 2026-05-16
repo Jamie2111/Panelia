@@ -104,7 +104,16 @@ The narration will be read aloud over this exact panel.
 
 GOOD narrations:
 • Specific to what's visible in THIS panel
-• Use character names only when you can identify them with confidence
+• Character names: use a name from the KNOWN CAST ONLY when this panel
+  shows a clear, unambiguous match. Required: face visible at a normal
+  angle, with the cast's distinguishing visible features (hair color,
+  eye color, signature outfit) clearly readable. If the angle is partial
+  (3/4 profile, back of head, distant shot, face cropped or obscured,
+  shadowed, motion-blurred, or rendered as a silhouette), DO NOT GUESS
+  a name - use a neutral descriptor instead ("the pilot", "the boy
+  with dark hair", "a uniformed figure"). It is much better to under-
+  identify than to wrongly call a side-profile of one character by
+  another character's name. Repeat: when in doubt, no name.
 • Flow naturally from the previous narration (continuity, not repetition)
 • Convey emotion when the panel shows emotion
 • Past or present tense - match the established voice
@@ -144,8 +153,21 @@ Classify by YouTube's Advertiser-Friendly Content Guidelines.
 
 "explicit" - skip the panel entirely. Includes:
   • Visible genitalia, exposed nipples, fully nude bodies shown directly
-  • On-panel depiction of sex acts
+  • Exposed buttocks shown as the panel's focal subject (a clear glute
+    close-up, not an incidental side angle of a clothed character)
+  • On-panel depiction of sex acts, simulated or otherwise
+  • Crotch-focused or panty-shot close-ups where that is the panel's
+    main subject (incidental short skirts in action poses stay "safe";
+    a deliberately-framed underwear close-up does not)
+  • Lingerie / undressed shots that linger on a single character's
+    body as the panel's focal subject (not a quick action beat)
   • Decapitations, dismemberment, exposed viscera, graphic body horror
+  • Torture, mutilation, or self-harm shown explicitly
+
+When you're on the fence between "borderline" and "explicit", default
+to "explicit". Demonetization risk is asymmetric: a falsely-flagged
+borderline panel just gets blurred; a missed explicit panel kills the
+entire video's monetization. Be cautious.
 
 If the panel is borderline OR explicit, give a short factual reason
 (under 12 words) explaining what triggered the rating, so the user can

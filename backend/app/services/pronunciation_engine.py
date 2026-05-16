@@ -406,6 +406,20 @@ class PronunciationEngine:
         "Tengen": "Tengen",
         "Muichiro": "Moo-eecheeroh",
         "Yoriichi": "Yoreeechee",
+        # Darling in the FRANXX vocabulary. Without these, Edge/Azure
+        # TTS spells "FRANXX" letter-by-letter ("fran ex ex"), pronounces
+        # "Klaxosaur" as "klax-uh-soar" with a confused stress, and
+        # mangles the squad-mech names.
+        "FRANXX": "franks",
+        "Franxx": "franks",
+        "franxx": "franks",
+        "Klaxosaur": "Klaxohsor",
+        "Klaxosaurs": "Klaxohsors",
+        "Strelizia": "Strelitzia",
+        "Plantation": "Plantation",  # noop, but stops auto-phonetics from breaking it
+        # Generic anime/sci-fi terms that English TTS misreads
+        "mecha": "mekha",
+        "Mecha": "Mekha",
     }
 
     def apply(
