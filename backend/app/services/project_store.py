@@ -2244,15 +2244,57 @@ class ProjectStore:
         return path
 
     def write_video_thumbnail(self, project_id: str, image_bytes: bytes) -> Path:
-        path = self._project_dir(project_id) / "thumbnails" / "video_intro.jpg"
+        """User upload path. Writes the image and drops a marker that
+        tells the bundle stage to leave this file alone (so an auto-pull
+        from the chosen Shorts cover doesn't overwrite the user's pick).
+        """
+        thumbs_dir = self._project_dir(project_id) / "thumbnails"
+        thumbs_dir.mkdir(parents=True, exist_ok=True)
+        path = thumbs_dir / "video_intro.jpg"
         path.write_bytes(image_bytes)
+        (thumbs_dir / ".video_intro_user_upload").write_text("user")
         self.update_project_metadata(project_id)
         return path
 
     def delete_video_thumbnail(self, project_id: str) -> None:
-        path = self._project_dir(project_id) / "thumbnails" / "video_intro.jpg"
-        path.unlink(missing_ok=True)
+        """Removes both the user upload AND the marker, so the next
+        bundle stage will auto-pull from the chosen Shorts cover again.
+        """
+        thumbs_dir = self._project_dir(project_id) / "thumbnails"
+        (thumbs_dir / "video_intro.jpg").unlink(missing_ok=True)
+        (thumbs_dir / ".video_intro_user_upload").unlink(missing_ok=True)
         self.update_project_metadata(project_id)
+
+    def sync_video_thumbnail_from_short_cover(
+        self, project_id: str, short_thumbnail_abs_path: Path,
+    ) -> Path | None:
+        """Copy the chosen Shorts cover into `video_intro.jpg` so it
+        becomes the video lead-in.
+
+        If the user has uploaded a custom video thumbnail (marker file
+        exists), this is a no-op - we never clobber the user's choice.
+        Returns the destination path on success, None if skipped.
+        """
+        import shutil
+        from PIL import Image as _Image
+
+        thumbs_dir = self._project_dir(project_id) / "thumbnails"
+        thumbs_dir.mkdir(parents=True, exist_ok=True)
+        marker = thumbs_dir / ".video_intro_user_upload"
+        if marker.exists():
+            return None
+        if not short_thumbnail_abs_path.exists():
+            return None
+        dest = thumbs_dir / "video_intro.jpg"
+        try:
+            # Source is a PNG; re-encode as JPEG to match the on-disk
+            # convention (and shrink the file).
+            with _Image.open(short_thumbnail_abs_path) as src:
+                src.convert("RGB").save(dest, format="JPEG", quality=92)
+        except Exception:
+            # Fall back to a straight copy if PIL chokes.
+            shutil.copy2(short_thumbnail_abs_path, dest)
+        return dest
 
     def list_music_tracks(self) -> list[dict[str, object]]:
         tracks: list[dict[str, object]] = []

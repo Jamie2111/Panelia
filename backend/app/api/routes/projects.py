@@ -953,6 +953,16 @@ def update_youtube_bundle(project_id: str, payload: YouTubeBundleEditPayload):
         manifest["short_chosen_thumbnail_index"] = payload.short_chosen_thumbnail_index
         if isinstance(s_chosen, dict) and s_chosen.get("path"):
             manifest["short_thumbnail_path"] = s_chosen["path"]
+            # Push the new chosen Shorts cover into the video lead-in
+            # too (unless the user has explicitly uploaded a custom
+            # video-intro thumbnail). Keeps "what the viewer sees first"
+            # consistent across the long video and the Short.
+            try:
+                store.sync_video_thumbnail_from_short_cover(
+                    project_id, project_dir / s_chosen["path"],
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Auto-sync video intro on Shorts pick failed: %s", exc)
 
     manifest_path.write_text(_json.dumps(manifest, indent=2), encoding="utf-8")
     return get_youtube_bundle(project_id)

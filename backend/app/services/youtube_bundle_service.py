@@ -426,6 +426,26 @@ class YouTubeBundleService:
         }
         write_json(bundle_dir / "manifest.json", manifest)
 
+        # Auto-sync the chosen Shorts cover into the project's
+        # `thumbnails/video_intro.jpg` so the video lead-in card uses
+        # the same visual the user is shipping to YouTube as their
+        # Shorts cover. Skipped if the user has uploaded a custom
+        # thumbnail (marker file present) - their explicit choice wins.
+        try:
+            from app.services.project_store import ProjectStore
+            project_id_for_sync = project_dir.name
+            if short_thumbnail_variants:
+                chosen_idx = int(manifest.get("short_chosen_thumbnail_index") or 0)
+                if 0 <= chosen_idx < len(short_thumbnail_variants):
+                    chosen_rel = short_thumbnail_variants[chosen_idx].get("path")
+                    if chosen_rel:
+                        ProjectStore().sync_video_thumbnail_from_short_cover(
+                            project_id_for_sync,
+                            project_dir / chosen_rel,
+                        )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Auto-sync video intro thumbnail failed: %s", exc)
+
         if progress_callback:
             progress_callback(100, "Bundle is ready")
 
