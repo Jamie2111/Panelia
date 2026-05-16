@@ -170,13 +170,26 @@ export default function PreviewPage() {
     [project, selectedPaths]
   );
 
+  // Also poll while the youtube_bundle stage is active so the publish
+  // studio's "Bundle ready" pill + thumbnail set refresh as soon as
+  // the new bundle is written. Previously polling only fired during
+  // video_rendering, so re-running the bundle stage in isolation
+  // (which happens after every video re-render in the chain) left the
+  // UI staring at the previous bundle until the user hard-refreshed.
+  const bundleStage = project?.stage_states?.youtube_bundle;
+  const bundleInFlight =
+    bundleStage?.status === "running" ||
+    bundleStage?.status === "ready" ||
+    (project?.active_jobs ?? []).some(
+      (job) => job.stage === "youtube_bundle" && (job.status === "queued" || job.status === "running"),
+    );
   useAdaptivePolling(load, {
     enabled: Boolean(projectId),
-    active: renderInFlight || Boolean(project?.active_jobs.length),
+    active: renderInFlight || bundleInFlight || Boolean(project?.active_jobs.length),
     activeMs: 7000,
     idleMs: 30000,
     hiddenMs: 120000,
-    deps: [projectId]
+    deps: [projectId, bundleInFlight]
   });
 
   async function persistVideoSettings() {
