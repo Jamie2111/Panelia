@@ -395,7 +395,13 @@ class VideoRenderService:
         video_config: VideoConfig,
         duration_seconds: float,
     ) -> None:
-        """Render title card image to video with fade-in/out."""
+        """Render title card image to video with fade-in/out.
+
+        Uses the shared _video_encoder_args helper so the codec/profile
+        matches the per-panel clips. Matching codec params lets
+        _prepend_video_intro use the concat-demuxer with -c copy
+        (no re-encode) instead of the slow concat-filter path.
+        """
         output_path.unlink(missing_ok=True)
         fade_dur = min(0.6, duration_seconds * 0.2)
         command = [
@@ -412,10 +418,7 @@ class VideoRenderService:
                 f"fade=t=out:st={duration_seconds - fade_dur:.3f}:d={fade_dur:.3f}"
             ),
             "-an",
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "17",
-            "-pix_fmt", "yuv420p",
+            *self._video_encoder_args(intermediate=True),
             "-movflags", "+faststart",
             str(output_path),
         ]
@@ -428,6 +431,12 @@ class VideoRenderService:
         video_config: VideoConfig,
         duration_seconds: float,
     ) -> None:
+        """Render a static intro thumbnail clip.
+
+        Uses the shared _video_encoder_args helper so the codec/profile
+        matches the per-panel clips and the concat-demuxer in
+        _prepend_video_intro can stream-copy without re-encoding.
+        """
         output_path.unlink(missing_ok=True)
         command = [
             self.settings.ffmpeg_binary,
@@ -446,14 +455,7 @@ class VideoRenderService:
                 f"pad={video_config.width}:{video_config.height}:(ow-iw)/2:(oh-ih)/2:color={video_config.background_color},setsar=1"
             ),
             "-an",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "17",
-            "-pix_fmt",
-            "yuv420p",
+            *self._video_encoder_args(intermediate=True),
             "-movflags",
             "+faststart",
             str(output_path),
@@ -461,31 +463,75 @@ class VideoRenderService:
         self._run_ffmpeg(command)
 
     def _prepend_video_intro(self, intro_path: Path, video_path: Path, output_path: Path) -> None:
+        """Prepend a short intro clip to a long video.
+
+        Performance critical: a Darling-sized project has a ~2-hour silent
+        timeline. The original implementation used the concat *filter*
+        which re-encodes both inputs end-to-end (libx264 veryfast crf 17
+        on 2 hours @ 1080p = roughly an hour wall clock). Both inputs in
+        practice come from our own pipeline with matching codec / pix_fmt
+        / resolution, so we can use the concat *demuxer* with -c copy and
+        skip re-encoding entirely - the operation drops to seconds.
+
+        If the codec parameters don't match (rare; would only happen if
+        someone fed an intro file from an unrelated source), we fall back
+        to a re-encode using h264_videotoolbox on Apple Silicon
+        (~6-8 min for 2 hours) or libx264 elsewhere.
+        """
         output_path.unlink(missing_ok=True)
-        command = [
+        list_file = output_path.parent / f".{output_path.stem}_concat.txt"
+        list_file.write_text(
+            f"file '{intro_path.resolve()}'\nfile '{video_path.resolve()}'\n",
+            encoding="utf-8",
+        )
+        try:
+            self._run_ffmpeg([
+                self.settings.ffmpeg_binary,
+                "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", str(list_file),
+                "-c", "copy",
+                "-movflags", "+faststart",
+                str(output_path),
+            ])
+            return
+        except subprocess.CalledProcessError as exc:
+            logger.warning(
+                "concat-demuxer prepend failed (likely mismatched codec params); "
+                "falling back to filter+re-encode. err=%s",
+                exc,
+            )
+        finally:
+            list_file.unlink(missing_ok=True)
+
+        # Fallback: concat filter with hardware encode where possible.
+        is_apple = Path("/opt/homebrew/bin/ffmpeg").exists()
+        if is_apple:
+            codec_args = [
+                "-c:v", "h264_videotoolbox",
+                "-b:v", "14M",
+                "-maxrate", "18M",
+                "-pix_fmt", "yuv420p",
+            ]
+        else:
+            codec_args = [
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "17",
+                "-pix_fmt", "yuv420p",
+            ]
+        self._run_ffmpeg([
             self.settings.ffmpeg_binary,
             "-y",
-            "-i",
-            str(intro_path),
-            "-i",
-            str(video_path),
-            "-filter_complex",
-            "[0:v][1:v]concat=n=2:v=1:a=0[vout]",
-            "-map",
-            "[vout]",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "17",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
+            "-i", str(intro_path),
+            "-i", str(video_path),
+            "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[vout]",
+            "-map", "[vout]",
+            *codec_args,
+            "-movflags", "+faststart",
             str(output_path),
-        ]
-        self._run_ffmpeg(command)
+        ])
 
     def _resolve_channel_watermark(
         self, video_config: "VideoConfig"
