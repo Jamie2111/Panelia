@@ -236,11 +236,16 @@ class YouTubeBundleService:
 
         if progress_callback:
             progress_callback(55, "Painting the viral thumbnail")
+        # Default thumbnail overlay text is the manga name. Short,
+        # recognizable, looks bold on the panel. User can edit per-variant
+        # from the publish studio if they want.
+        default_overlay = (manga_title or self._shorten_for_overlay(title)).strip()
         thumbnail_path = self._compose_thumbnail(
             base_image=thumb_source_path,
             title=title,
             output_path=bundle_dir / "thumbnail.png",
             preset=preset,
+            overlay_text=default_overlay,
         )
 
         # ── 5 thumbnail variants ──────────────────────────────────────
@@ -272,16 +277,19 @@ class YouTubeBundleService:
                     title=title,
                     output_path=variants_dir / f"variant_{v_idx}.png",
                     preset=preset,
+                    overlay_text=default_overlay,
                 )
                 thumbnail_variants.append({
                     "style_id": f"v{v_idx}",
                     "style_label": variant_labels[v_idx] if v_idx < len(variant_labels) else f"Variant {v_idx + 1}",
                     "path": str(v_path.relative_to(project_dir)),
                     "source_panel_id": str(v_panel.get("id") or ""),
-                    # The text painted on top of the panel. Tracked here
-                    # so the publish studio can show what's currently set
-                    # and let the user edit it per-variant.
-                    "overlay_text": self._shorten_for_overlay(title),
+                    # Default overlay text is just the manga name. It's
+                    # short, instantly recognizable, and lets the user
+                    # type a custom hook per-variant if they want.
+                    # Falls back to a shortened title when manga_title
+                    # isn't set.
+                    "overlay_text": (manga_title or self._shorten_for_overlay(title)).strip(),
                 })
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Thumbnail variant %d failed: %s", v_idx, exc)
@@ -365,13 +373,14 @@ class YouTubeBundleService:
                             output_path=short_variants_dir / f"variant_{s_idx}.png",
                             preset=preset,
                             target_size=(1080, 1920),
+                            overlay_text=default_overlay,
                         )
                         short_thumbnail_variants.append({
                             "style_id": f"sv{s_idx}",
                             "style_label": short_variant_labels[s_idx] if s_idx < len(short_variant_labels) else f"Variant {s_idx + 1}",
                             "path": str(s_path.relative_to(project_dir)),
                             "source_panel_id": str(s_panel.get("id") or ""),
-                            "overlay_text": self._shorten_for_overlay(title),
+                            "overlay_text": default_overlay,
                         })
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("Short thumbnail variant %d failed: %s", s_idx, exc)
@@ -1217,41 +1226,80 @@ Return ONLY the JSON. No prose before or after, no markdown fences."""
         *,
         accent_rgb: tuple[int, int, int] = (127, 255, 212),
     ) -> None:
-        w, h = image.size
-        # Try to load a strong display font; fall back to default if needed.
-        font = self._load_font(int(h * 0.13))
-        accent_font = self._load_font(int(h * 0.13))
+        """Paint the bold thumbnail title overlay.
 
+        Auto-fits the text by measuring at the chosen base font size and
+        shrinking down (and wrapping to up to 3 lines) until the widest
+        line fits within ~88% of the canvas width. This handles both
+        landscape (1280x720) and vertical Shorts (1080x1920) canvases
+        without the text running off the edge.
+        """
+        w, h = image.size
         draw = ImageDraw.Draw(image)
         words = text.split()
-        # Wrap into max 2 lines for readability.
-        if len(words) > 2 and font.size * len(text) > w * 0.6:
-            mid = len(words) // 2
-            lines = [" ".join(words[:mid]), " ".join(words[mid:])]
-        else:
-            lines = [text]
+        if not words:
+            return
 
-        # Highlight the longest single word in the preset's accent color.
+        # Base size scales with canvas height. Vertical Shorts get a
+        # slightly smaller multiplier because the canvas is so tall the
+        # text would otherwise dwarf the panel underneath.
+        is_portrait = h > w
+        base_font_px = int((min(w, h) if is_portrait else h) * 0.13)
+        min_font_px = max(28, int(base_font_px * 0.45))
+        max_text_w = int(w * 0.88)
+
+        # Try wrapping into 1, 2, or 3 lines. For each layout choice, try
+        # progressively smaller fonts until the widest line fits.
+        best_lines: list[str] = [text]
+        best_font: ImageFont.ImageFont | None = None
+        for line_count in (1, 2, 3):
+            # Split into roughly equal-word chunks.
+            if line_count == 1 or len(words) <= line_count:
+                candidate_lines = [text] if line_count == 1 else [" ".join(words[i::line_count]) for i in range(min(line_count, len(words)))]
+                if line_count > 1:
+                    # Better split: keep word order, partition into N chunks.
+                    chunk = max(1, (len(words) + line_count - 1) // line_count)
+                    candidate_lines = [" ".join(words[i:i + chunk]) for i in range(0, len(words), chunk)]
+            else:
+                chunk = max(1, (len(words) + line_count - 1) // line_count)
+                candidate_lines = [" ".join(words[i:i + chunk]) for i in range(0, len(words), chunk)]
+            candidate_lines = [c for c in candidate_lines if c.strip()]
+
+            # Pick the largest font where every line fits.
+            for size in range(base_font_px, min_font_px - 1, -4):
+                font_try = self._load_font(size)
+                widths = [draw.textbbox((0, 0), line, font=font_try)[2] for line in candidate_lines]
+                if not widths or max(widths) <= max_text_w:
+                    best_lines = candidate_lines
+                    best_font = font_try
+                    break
+            if best_font is not None:
+                break
+        if best_font is None:
+            best_font = self._load_font(min_font_px)
+            best_lines = candidate_lines or [text]
+
+        # Highlight the longest single word in the accent color.
         highlight_word = max(words, key=len) if words else ""
 
         # Anchor at bottom-left with margins.
         margin_x = int(w * 0.05)
         margin_y = int(h * 0.07)
-        line_height = int(font.size * 1.08)
-        total_h = line_height * len(lines)
+        font_size = getattr(best_font, "size", base_font_px)
+        line_height = int(font_size * 1.08)
+        total_h = line_height * len(best_lines)
         y = h - margin_y - total_h
 
-        for line in lines:
+        for line in best_lines:
             x = margin_x
             for word in line.split():
                 color = accent_rgb if word == highlight_word else (255, 255, 255)
                 self._draw_stroked_word(
                     draw, word + " ", (x, y),
-                    font=font if word != highlight_word else accent_font,
+                    font=best_font,
                     fill=color,
                 )
-                # advance x - use textbbox for accurate measurement
-                bbox = draw.textbbox((0, 0), word + " ", font=font)
+                bbox = draw.textbbox((0, 0), word + " ", font=best_font)
                 x += bbox[2] - bbox[0]
             y += line_height
 

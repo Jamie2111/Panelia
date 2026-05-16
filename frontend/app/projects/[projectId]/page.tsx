@@ -217,6 +217,12 @@ export default function ProjectOverviewPage() {
           cost={estimateProjectCost(project as any)}
         />
 
+        {/* Channel tag editor - small inline control for the watermark
+            text that gets stamped on every panel and every thumbnail.
+            Lives here instead of buried in Settings so the user can tweak
+            it without leaving the project they're publishing. */}
+        <ChannelTagEditor />
+
         {/* The Publish Studio (title / description / thumbnail editor)
             now lives on the Preview tab so it sits next to the actual
             rendered video. The overview keeps a compact hint that the
@@ -582,5 +588,86 @@ export default function ProjectOverviewPage() {
         </div>
       </div>
     </AppShell>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// ChannelTagEditor
+// Inline editor for the global channel watermark text (e.g. "@panelia").
+// Persists via the existing channel preset API so the change applies to
+// every project's next render. Debounced save on type, with a status
+// pill so the user knows their edit landed.
+// ────────────────────────────────────────────────────────────────────
+
+function ChannelTagEditor() {
+  const [draft, setDraft] = useState<string>("@panelia");
+  const [loaded, setLoaded] = useState(false);
+  const [enabled, setEnabled] = useState<boolean>(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const preset = await api.getChannelPreset();
+        setDraft(preset.watermark_text || "@panelia");
+        setEnabled(preset.watermark_enabled !== false);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unable to load channel tag");
+      } finally {
+        setLoaded(true);
+      }
+    })();
+  }, []);
+
+  // Debounced save when draft or enabled changes.
+  useEffect(() => {
+    if (!loaded) return;
+    const handle = window.setTimeout(async () => {
+      setSaving(true);
+      setError(null);
+      try {
+        await api.updateChannelPreset({ watermark_text: draft.trim() || "@panelia", watermark_enabled: enabled });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Save failed");
+      } finally {
+        setSaving(false);
+      }
+    }, 700);
+    return () => window.clearTimeout(handle);
+  }, [draft, enabled, loaded]);
+
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="flex-1 min-w-[220px]">
+          <p className="text-[10px] uppercase tracking-track text-mutedForeground">Channel tag</p>
+          <p className="text-xs text-mutedForeground mt-0.5">
+            Watermarked on every panel and thumbnail. Applies to every project on this channel.
+          </p>
+        </div>
+        <label className="flex items-center gap-2 text-xs text-mutedForeground">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => setEnabled(e.target.checked)}
+            className="h-4 w-4"
+          />
+          Show on renders
+        </label>
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          maxLength={40}
+          placeholder="@yourhandle"
+          className="w-44 rounded-2xl border border-white/[0.10] bg-white/[0.04] px-3 py-2 text-sm font-medium text-foreground outline-none transition-colors focus:border-accent/60 focus:bg-white/[0.06]"
+        />
+        <Badge tone={error ? "warn" : "ok"} dot>
+          {saving ? "Saving..." : error ? "Save failed" : "Saved"}
+        </Badge>
+      </div>
+      {error ? <p className="mt-2 text-xs text-fail">{error}</p> : null}
+    </Card>
   );
 }

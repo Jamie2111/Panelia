@@ -15,6 +15,25 @@ import { PanelLayout, ProjectDetail } from "@/lib/types";
 import { useAdaptivePolling } from "@/lib/use-adaptive-polling";
 import { buildMediaUrl, formatRelativeDate } from "@/lib/utils";
 
+/**
+ * Slugify a project name for use as a download filename.
+ *
+ *   "DARLING in the FRANXX (chapters 1-10)" -> "darling-in-the-franxx-chapters-1-10"
+ *
+ * Used by the "Download latest video" anchor's `download` attribute so
+ * the file saves with the project's own name instead of the internal
+ * stable name (`final_publish.mp4`).
+ */
+function slugifyProjectName(name: string): string {
+  return (name || "panelia-video")
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "panelia-video";
+}
+
 function safeDimension(value: number | string | null | undefined, fallback: number) {
   const numeric = Number(value);
   return Number.isFinite(numeric) && numeric > 0 ? Math.round(numeric) : fallback;
@@ -445,6 +464,7 @@ export default function PreviewPage() {
             {latestVideo ? (
               <a
                 href={latestVideoDownloadUrl}
+                download={`${slugifyProjectName(project.name)}.${latestVideo.output_format || "mp4"}`}
                 className="inline-flex items-center gap-2 rounded-full border border-white/[0.08] px-5 py-2.5 text-sm font-medium text-white transition hover:bg-white/5"
               >
                 <Download className="h-4 w-4" />
