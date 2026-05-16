@@ -1084,13 +1084,34 @@ class VideoRenderService:
         output_path: Path,
         music_config: MusicConfig | None = None,
     ) -> Path:
-        sample_rate = self.settings.kokoro_sample_rate
-        narration_end = max((event.start_seconds + event.duration_seconds for event in plan.audio_events), default=0.0)
-        total_duration = max(plan.total_duration_seconds, narration_end, 0.5)
-        total_samples = max(int(math.ceil(total_duration * sample_rate)), sample_rate // 2)
-        mix = np.zeros(total_samples, dtype=np.float32)
+        """Render the per-panel narration WAVs into one continuous track.
 
-        for event in plan.audio_events:
+        Hard rule: there must be EXACTLY ONE voice playing at any
+        moment. The previous version used `mix[start:end] += audio_data`
+        which sums overlapping audio samples - if the timeline plan
+        had any event that started before the previous one's audio
+        ended, two TTS voices would speak simultaneously, and a third
+        could start on top while the first two were still playing. The
+        result was the "audio buildup as the video goes on" symptom.
+
+        This implementation:
+          1. Sorts events by start_seconds.
+          2. As we lay each event into the mix, shifts its start to be
+             >= the running max-end of all events placed so far. The
+             original event.start_seconds is honored as a MINIMUM, so
+             gaps stay where the timeline put them; only overlaps get
+             snapped forward to the next free slot.
+          3. Writes (=) instead of accumulating (+=) so the narration
+             slot is exclusive. SFX still get mixed on top separately.
+        """
+        sample_rate = self.settings.kokoro_sample_rate
+        sorted_events = sorted(plan.audio_events, key=lambda ev: ev.start_seconds)
+        # First pass: compute the actual placement for each event,
+        # snapping start forward to the running cursor if needed.
+        placements: list[tuple[int, np.ndarray]] = []
+        cursor_sec = 0.0
+        max_end_sec = 0.0
+        for event in sorted_events:
             audio_data, audio_rate = sf.read(event.path, dtype="float32")
             if audio_data.ndim > 1:
                 audio_data = audio_data.mean(axis=1)
@@ -1102,12 +1123,28 @@ class VideoRenderService:
                     np.arange(len(audio_data)),
                     audio_data,
                 ).astype(np.float32)
+            wanted_start = float(event.start_seconds)
+            actual_start = max(wanted_start, cursor_sec)
+            start_index = max(int(round(actual_start * sample_rate)), 0)
+            placements.append((start_index, audio_data))
+            duration_sec = len(audio_data) / float(sample_rate)
+            cursor_sec = actual_start + duration_sec
+            max_end_sec = max(max_end_sec, cursor_sec)
 
-            start_index = max(int(round(event.start_seconds * sample_rate)), 0)
+        plan_end = max(
+            (ev.start_seconds + ev.duration_seconds for ev in plan.audio_events),
+            default=0.0,
+        )
+        total_duration = max(plan.total_duration_seconds, plan_end, max_end_sec, 0.5)
+        total_samples = max(int(math.ceil(total_duration * sample_rate)), sample_rate // 2)
+        mix = np.zeros(total_samples, dtype=np.float32)
+        for start_index, audio_data in placements:
             end_index = start_index + len(audio_data)
             if end_index > len(mix):
                 mix = np.pad(mix, (0, end_index - len(mix)))
-            mix[start_index:end_index] += audio_data
+            # Exclusive narration slot: replace, do not accumulate.
+            # Two voices NEVER overlap. SFX still gets added below.
+            mix[start_index:end_index] = audio_data
 
         # Mix in procedural transition whooshes at panel boundaries
         if music_config is not None and getattr(music_config, "sfx_enabled", True):
