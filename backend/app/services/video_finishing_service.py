@@ -358,10 +358,17 @@ class VideoFinishingService:
                 "  - 'In this chapter, we follow our hero through trials.'\n\n"
                 "Return ONLY the one sentence. No prose around it."
             )
+            # Gemini 2.5 burns output tokens on internal "thinking"
+            # before returning the visible answer. 256 tokens looked
+            # like plenty for an 18-word hook (~30 tokens of output),
+            # but the thinking budget ate most of it - the visible
+            # response came back truncated mid-sentence (e.g. "What
+            # happens when humanity's last hope is also its"). Bump
+            # the budget so the visible hook always fits.
             gen_kwargs: dict[str, Any] = {
                 "temperature": 0.85,
                 "top_p": 0.9,
-                "max_output_tokens": 256,
+                "max_output_tokens": 4096,
             }
             try:
                 from google.generativeai.types import ThinkingConfig  # type: ignore
@@ -374,7 +381,17 @@ class VideoFinishingService:
             )
             text = (getattr(response, "text", "") or "").strip()
             text = re.sub(r"^[\"'`]+|[\"'`]+$", "", text)
-            text = text.split("\n", 1)[0].strip()
+            # The model sometimes formats the hook across multiple
+            # lines for emphasis. Collapse all whitespace runs to a
+            # single space rather than taking just the first line -
+            # that was truncating real hooks mid-sentence (e.g.
+            # "Their world is a cage, but what happens\nwhen they
+            # break free?" became "Their world is a cage, but what
+            # happens"). Strip code fences first.
+            if text.startswith("```"):
+                text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+                text = re.sub(r"```\s*$", "", text)
+            text = " ".join(text.split())
             # Belt-and-suspenders: strip any SFX the model snuck in.
             text = strip_panel_sfx(text)
             # Truncate over-long responses to the first sentence rather
