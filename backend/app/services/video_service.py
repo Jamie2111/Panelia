@@ -599,6 +599,28 @@ class VideoRenderService:
             f"[0:v][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto"
         )
 
+        # Apple Silicon hardware encode where available - the watermark
+        # overlay is a re-encode of the full final video (2 hours @ 1080p
+        # for Darling) and libx264 veryfast tops out around 10 fps which
+        # took ~90 minutes. h264_videotoolbox runs the same overlay in
+        # ~6-8 minutes at the same visual quality.
+        is_apple = bool(getattr(self.settings, "ffmpeg_binary", "") and Path("/opt/homebrew/bin/ffmpeg").exists())
+        video_codec_args: list[str]
+        if is_apple:
+            video_codec_args = [
+                "-c:v", "h264_videotoolbox",
+                "-b:v", "14M",
+                "-maxrate", "18M",
+                "-pix_fmt", "yuv420p",
+            ]
+        else:
+            video_codec_args = [
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "18",
+                "-pix_fmt", "yuv420p",
+            ]
+
         command = [
             self.settings.ffmpeg_binary,
             "-y",
@@ -607,10 +629,7 @@ class VideoRenderService:
             "-filter_complex", filter_complex,
             "-map", "0:a?",
             "-c:a", "copy",
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "18",
-            "-pix_fmt", "yuv420p",
+            *video_codec_args,
             "-movflags", "+faststart",
             str(output_path),
         ]
