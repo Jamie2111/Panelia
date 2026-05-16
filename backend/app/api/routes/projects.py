@@ -936,6 +936,21 @@ def update_youtube_bundle(project_id: str, payload: YouTubeBundleEditPayload):
         manifest["chosen_thumbnail_index"] = payload.chosen_thumbnail_index
         if isinstance(chosen, dict) and chosen.get("path"):
             manifest["thumbnail_path"] = chosen["path"]
+        # Log the pick to Liquid Memory so future projects can bias
+        # the variant scorer toward this user's taste. No-op when LM
+        # isn't configured.
+        try:
+            from app.services.channel_intelligence import ChannelIntelligenceService
+            if isinstance(chosen, dict):
+                ChannelIntelligenceService().remember_thumbnail_pick(
+                    project_id=project_id,
+                    chosen_index=payload.chosen_thumbnail_index,
+                    chosen_style_label=chosen.get("style_label") or "",
+                    chosen_overlay_text=chosen.get("overlay_text") or "",
+                    group="main",
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LM thumbnail-pick log failed: %s", exc)
 
     if payload.short_chosen_thumbnail_index is not None:
         s_variants = manifest.get("short_thumbnail_variants") or []
