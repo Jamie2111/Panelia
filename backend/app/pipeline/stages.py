@@ -1478,6 +1478,31 @@ def _run_script_generation_vision(
         project_dir, panel_inputs, batch.results, panels_json
     )
 
+    # ── Auto-polish the opening 20 lines ─────────────────────────────────
+    # The first 20 lines = first ~3 minutes of audio = the make-or-break
+    # retention window on YouTube. The per-panel vision narrator does an
+    # okay job but tends to write panel descriptions ("a uniformed
+    # character with a reflective visor holds a small orb") for the early
+    # set-up panels where the cast isn't visible yet. This step rewrites
+    # those into cinematic recap narration ("In a dying world, humanity
+    # hides inside moving fortresses called Plantations") - the same
+    # transformation backend/scripts/polish_opening_lines.py did as a
+    # one-off, now wired into the pipeline so every project gets it
+    # automatically. Non-fatal: failures fall through and ship the
+    # un-polished version.
+    try:
+        context.progress(96, "Polishing opening narration lines")
+        from app.services.opening_polish_service import polish_opening_narration
+        polish_opening_narration(
+            project_dir,
+            cast_block=cast_block,
+            manga_title=manga_title,
+            chapter_title=chapter_title,
+            line_count=20,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Opening-lines polish skipped (non-fatal): %s", exc)
+
     # Post-write consistency check - catches any panels↔script drift before
     # we hand off to TTS. Failing fast here beats discovering a desync after
     # audio has been generated.

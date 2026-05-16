@@ -636,8 +636,41 @@ class PanelVisionNarrator:
                 reason = reason_match.group(1) if reason_match else ""
                 return narration, rating_raw, reason
 
-        # Fallback: treat whole response as a bare narration line.
-        return cls._post_process(text), "safe", ""
+            # Last-resort narration extraction for TRUNCATED JSON responses.
+            # Gemini occasionally hits max_output_tokens mid-string, leaving
+            # us with `{"narration": "An old man with...` and nothing else.
+            # The earlier regexes require the closing `","rating"` token so
+            # they fail. Salvage just the narration prefix instead of
+            # letting the raw JSON-looking string get spoken aloud (which
+            # is what the user saw on Darling line 28).
+            trunc_match = _re.search(
+                r'"narration"\s*:\s*"([^"]*)$',
+                json_text,
+                _re.DOTALL,
+            )
+            if not trunc_match:
+                trunc_match = _re.search(
+                    r'"narration"\s*:\s*"(.*)',  # very permissive last-ditch
+                    json_text,
+                    _re.DOTALL,
+                )
+            if trunc_match:
+                # Strip any trailing JSON syntax that snuck in.
+                cleaned = trunc_match.group(1).strip()
+                cleaned = _re.sub(r'["}\],]+\s*$', "", cleaned)
+                cleaned = cleaned.replace('\\"', '"').replace("\\n", " ")
+                if cleaned:
+                    return cls._post_process(cleaned), "safe", ""
+
+        # Final fallback: treat whole response as a bare narration line,
+        # but FIRST reject anything that still looks like raw JSON so we
+        # never speak `{"narration": ...}` out loud.
+        cleaned_text = text.strip()
+        if cleaned_text.startswith("{") or cleaned_text.startswith('"narration"'):
+            # Better to return empty (panel becomes silent) than to read
+            # JSON syntax aloud.
+            return "", "safe", ""
+        return cls._post_process(cleaned_text), "safe", ""
 
 
 # ── Convenience: load panels from project_store, narrate, persist ─────────

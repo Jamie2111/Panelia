@@ -826,9 +826,11 @@ class YouTubeBundleService:
         # and explicitly forbid the model from quoting or paraphrasing
         # any single sentence of it.
         chapter_label = _normalize_chapter_label(chapter_title) or "this chapter"
-        prompt = f"""You are writing YouTube metadata for a manga / manhwa / comic recap video.
-You have 10 years of experience as a manga-narration YouTuber. Your goal
-is click-through, retention, and comments, in that order.
+        prompt = f"""You are writing YouTube metadata for a manga / manhwa / comic
+recap video. You have 10 years of experience as a manga-narration YouTuber
+with 1.2M subscribers. You know exactly which titles get clicked on the
+"recommended" sidebar and which ones get scrolled past in a tenth of a
+second. Your goal is click-through, retention, and comments, in that order.
 
 Series: {series}
 Chapter focus: {chapter_label}
@@ -846,41 +848,60 @@ not what we sell in the description:
 OUTPUT FORMAT:
 
 Return a JSON object with these three keys:
-- "title": EXACTLY the pattern "{{Series}} - {{Chapter label}}", e.g.
-  "DARLING in the FRANXX - Chapters 1-10" or "unOrdinary - Chapter 27".
-  Use a regular hyphen "-", never an em dash "-". No "Recap" or
-  "Explained" suffix. No emoji. No ALL CAPS.
-- "variants": three alternative titles testing three angles:
-    1. Question form ("Who really controls the Plantations?")
-    2. Character spotlight ("Zero Two's first mission - DARLING in the FRANXX")
-    3. Stakes statement ("Humanity's last weapon meets its match")
-  Each under 70 chars. No em dashes. No emoji.
+
+- "title": The MAIN title. This is a HOOK, not a label. Pick from the
+  patterns that consistently outperform on YouTube manga channels:
+    a. Specific intriguing statement that implies a story:
+       "She Said She'd Kill Him. He Begged to Pilot Her Anyway."
+       "The Strongest Pilot in the Plantation is a Failure. Until Her."
+       "Everyone Else Stayed in Their Lane. This Boy Walked Up to a Monster."
+    b. Specific question that creates a knowledge gap:
+       "Why Does Zero Two Have Horns?"
+       "What Is the Plantation Actually Hiding from Its Pilots?"
+    c. Big-stakes statement:
+       "How One Pink-Haired Pilot Restarted the Mech War"
+  Rules: 50-95 chars. The series name is OPTIONAL in the title - if you
+  include it, parenthesize it at the end like "... (DARLING in the FRANXX)".
+  NEVER use the pattern "Series Name - Chapter X" (that reads as a
+  channel-naming-convention label, not a hook). NEVER use "Recap" or
+  "Explained" as the suffix. NO emoji. NO ALL CAPS for emphasis (the
+  series name's natural casing is fine, e.g. "DARLING in the FRANXX").
+  NEVER use em dashes or en dashes - use periods, hyphens, or commas.
+
+- "variants": three alternative titles testing three different angles
+  (NOT three rephrasings of the same idea). Mix patterns from above.
+  Each 50-95 chars. Same casing/dash/emoji rules as the main title.
+
 - "description": exactly this structure, plain text, NO markdown, NO
   bullet points, NO chapter timestamps, NO "## What happens", NO
   "in this video":
 
-  LINE 1: A single-sentence hook. Either a question OR a stakes
-          statement. Under 110 chars. Treat it like ad copy: it has
-          ONE job, to make the viewer click "Show more". GOOD:
-          "Hiro never wanted to pilot a Franxx. Then she walked in."
-          BAD: "The world is a barren wasteland scarred by humanity's
-          extraction of magma energy".
+  LINE 1: A single-sentence hook that EARNS the click. Under 110 chars.
+          Treat it like ad copy: one job, make the viewer hit "Show more".
+          GOOD: "Hiro never wanted to pilot a Franxx. Then she walked in."
+          GOOD: "A boy with no future meets a girl who eats them."
+          BAD:  "The world is a barren wasteland scarred by humanity's
+                 extraction of magma energy" (Wikipedia voice).
+          BAD:  "Every key moment of [series], in story order" (template
+                 filler).
   (blank line)
-  LINES 3-5: A 2-3 sentence story synopsis. This is the elevator
-             pitch for THIS chapter (or this chapter range): name the
-             protagonist if it makes sense, set the central conflict,
-             state what's at stake. It should read like the back-cover
-             blurb of a book - intriguing, specific, not a recap. Do
-             NOT list scene-by-scene beats. Do NOT spoil the climax.
-             Do NOT echo the panel narration from the context block.
+  LINES 3-5: A 2-3 sentence story synopsis. The elevator pitch for THIS
+             chapter / chapter range: name the protagonist if it sells,
+             set the central conflict, state what's at stake. Reads like
+             a back-cover blurb. NO scene-by-scene beats. NO climax
+             spoiler. Do NOT echo the panel narration from context.
   (blank line)
   LINE 7: One sentence subscribe CTA in your own voice. Examples:
           "Subscribe so the next chapter hits your feed the day it drops."
           "If chapter recaps are your thing, hit subscribe."
   (blank line)
-  LINE 9: Hashtag block, space-separated, 5-7 tags. Include #manga
-          #anime #mangarecap plus 2-4 series-specific tags (one word,
-          no spaces, derived from the series name).
+  LINE 9: Hashtag block, space-separated, 6-10 tags. Include #manga
+          #anime #mangarecap plus 3-7 SERIES-SPECIFIC tags:
+            - The series name as one word (#darlinginthefranxx)
+            - 1-2 main character first names (#zerotwo #hiro)
+            - 1-2 genre tags (#mechaanime #sciFiAnime)
+            - 1 thematic tag (#starcrossedlovers)
+          One word each, no spaces, no apostrophes.
 
 ABSOLUTE RULES:
 - Never use an em dash (-) or en dash (-) anywhere. Use a hyphen, period,
@@ -927,6 +948,28 @@ Return ONLY the JSON. No prose before or after, no markdown fences."""
         description = str(data.get("description") or "").strip()
         if not title:
             raise ValueError("LLM returned empty title")
+
+        # Reject template-y titles that ignore the "use a hook" instruction.
+        # The model sometimes falls back to "Series - Chapters X-Y" form
+        # despite the prompt rules; that label is what we used to ship as
+        # the default, and it gets near-zero CTR on YouTube. If the LLM
+        # produced one of those, raise so the caller falls back to the
+        # heuristic synthesizer (which now also writes a hook).
+        bland_patterns = (
+            r"^[^-]+ - chapters?\s*\d",          # "Foo - Chapters 1-10"
+            r"^[^-]+ - chapter\s*\d",            # "Foo - Chapter 27"
+            r"^[^-]+ explained$",                 # "Foo explained"
+            r"^everything that happened in ",     # "Everything that happened in..."
+            r"^[^-]+ recap$",                     # "Foo recap"
+        )
+        title_lower = title.casefold()
+        if any(re.match(p, title_lower) for p in bland_patterns):
+            raise ValueError(
+                f"LLM returned a template-y title ({title!r}); "
+                "falling back to heuristic synthesizer so we never ship "
+                "a 'Series - Chapter X' as the click target."
+            )
+
         return title, variants[:3], description
 
     def _fallback_metadata(
@@ -941,23 +984,44 @@ Return ONLY the JSON. No prose before or after, no markdown fences."""
         chapter = _normalize_chapter_label(chapter_title)
         base = series or "Manga"
 
-        # Format: "Manga Name - Chapters X-Y" with a plain hyphen.
-        # No em dashes anywhere. No " - Recap" suffix.
-        title = f"{base} - {chapter}"[:TITLE_CHAR_BUDGET] if chapter else base[:TITLE_CHAR_BUDGET]
-        chapter_suffix = f" - {chapter}" if chapter else ""
-        variants = [
-            f"{base}{chapter_suffix}",
-            f"Everything that happened in {base}{chapter_suffix}",
-            f"{base} explained{chapter_suffix}",
-        ]
+        # Heuristic title fallback (used when LLM is unavailable or its
+        # output was rejected as template-y). Even in fallback we avoid
+        # the dead "Series - Chapter X" pattern - we synthesize a generic
+        # hook flavored by the chapter label so the click-target reads
+        # like ad copy, not a filing system. The series name is in the
+        # parens so YouTube's search still indexes it.
+        if chapter and base:
+            chapter_intro_phrases = [
+                f"The Chapter That Restarts Everything ({base})",
+                f"What Actually Happens When the Story Begins ({base})",
+                f"Why You Should Care About {base} (start here)",
+            ]
+        elif base:
+            chapter_intro_phrases = [
+                f"The {base} Story, From The Beginning",
+                f"Why {base} Is Worth Your Hour",
+                f"What Makes {base} Different",
+            ]
+        else:
+            chapter_intro_phrases = [
+                "The Story That Hooks You In One Chapter",
+                "An Hour Of Story In One Sitting",
+                "What You'll Wish You'd Read Sooner",
+            ]
+        title = chapter_intro_phrases[0][:TITLE_CHAR_BUDGET]
+        variants = [phrase[:TITLE_CHAR_BUDGET] for phrase in chapter_intro_phrases]
         # Fallback description used when no LLM is configured. We
         # deliberately do NOT echo per-panel narration. Instead, we
         # extract a short setting/synopsis from the opener block using
         # a light scrubber that strips per-panel directorial language
         # ("A close-up of...", "The camera pans...") and keeps the
         # first 1-2 plot sentences.
-        hook_base = f"Every key moment of {base}{chapter_suffix}, in story order, in one sitting"
-        hook = hook_base if len(hook_base) <= 110 else hook_base[:107].rstrip(", ;-") + "..."
+        synopsis_preview = self._extract_short_synopsis(opener, base=base) if opener else ""
+        if synopsis_preview:
+            first_sentence = synopsis_preview.split('.')[0].strip()
+            hook = (first_sentence + '.')[:110] if first_sentence else f"Inside {base or 'this chapter'} - the story, not the setup."
+        else:
+            hook = f"Inside {base or 'this chapter'} - the story, not the setup."[:110]
 
         synopsis = self._extract_short_synopsis(opener, base=base) if opener else ""
         if not synopsis:
@@ -969,8 +1033,10 @@ Return ONLY the JSON. No prose before or after, no markdown fences."""
         cta = "Subscribe so the next chapter recap hits your feed the day it drops."
         series_tag = re.sub(r"[^a-z0-9]", "", (manga_title or project_name or "manga").lower()) or "manga"
         hashtag_line = f"#manga #anime #mangarecap #{series_tag} #manhwa"
+        # Strip trailing period from hook so the join below doesn't double it.
+        hook_clean = hook.rstrip(".").rstrip()
         # Structure: hook line, blank, synopsis, blank, CTA, blank, hashtags.
-        description = f"{hook}.\n\n{synopsis}\n\n{cta}\n\n{hashtag_line}"
+        description = f"{hook_clean}.\n\n{synopsis}\n\n{cta}\n\n{hashtag_line}"
         return title, variants, description
 
     @staticmethod
