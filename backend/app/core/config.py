@@ -74,11 +74,13 @@ class Settings(BaseSettings):
     # the Edge TTS path routes calls to Azure first and only falls
     # back to the free Edge endpoint on Azure failure. Same voice
     # catalog (en-US-AvaNeural etc.) so audio character is identical.
-    azure_speech_key: str = ""
-    azure_speech_region: str = ""
+    # NOTE the PANELIA_-prefixed env names; that's the convention in
+    # this codebase (see data_dir / training_data_dir above).
+    azure_speech_key: str = Field(default="", validation_alias="PANELIA_AZURE_SPEECH_KEY")
+    azure_speech_region: str = Field(default="", validation_alias="PANELIA_AZURE_SPEECH_REGION")
     # Max concurrent Azure synth calls. Azure handles 16+ comfortably;
     # cap is here to protect the rest of the machine.
-    azure_speech_max_workers: int = 16
+    azure_speech_max_workers: int = Field(default=16, validation_alias="PANELIA_AZURE_SPEECH_MAX_WORKERS")
     # How many panel clips to render concurrently in the per-panel ffmpeg
     # loop. h264_videotoolbox on Apple Silicon comfortably handles 4
     # simultaneous encoder sessions; libx264 on Intel/Linux also fits a
