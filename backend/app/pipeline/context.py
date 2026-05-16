@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import threading
+import time
+from dataclasses import dataclass, field
 
 from app.schemas.project import JobStatus, PipelineStage, StageStatus
 from app.services.project_store import ProjectStore
@@ -15,6 +17,22 @@ class JobPausedError(RuntimeError):
     pass
 
 
+# Throttle config for the high-frequency `progress()` method. Pipelines
+# like Edge/Azure TTS narration call progress thousands of times per
+# minute; each unthrottled call did 2 reads + 2 writes of a 3 MB
+# metadata.json + a job.json read+write. With 16 concurrent narration
+# workers calling at once, the file locks on metadata.json starved the
+# worker threads to a halt (the "metadata busy-loop"). Now we only
+# flush to disk when:
+#   - the integer progress changes, OR
+#   - the message changes meaningfully, OR
+#   - at least PROGRESS_MIN_INTERVAL_SECONDS have passed since the
+#     last flush.
+# Cancel-check still happens on every call (it just hits an in-memory
+# queue lookup, no disk).
+PROGRESS_MIN_INTERVAL_SECONDS = 0.5
+
+
 @dataclass
 class PipelineContext:
     store: ProjectStore
@@ -22,6 +40,14 @@ class PipelineContext:
     project_id: str
     job_id: str
     stage: PipelineStage
+
+    # In-memory throttling state (one set per PipelineContext instance).
+    # The lock keeps multi-threaded workers (TTS sentence cache, video
+    # render parallelism) from racing on the flush check.
+    _progress_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+    _last_flushed_progress: int = field(default=-1, repr=False, compare=False)
+    _last_flushed_message: str = field(default="", repr=False, compare=False)
+    _last_flush_time: float = field(default=0.0, repr=False, compare=False)
 
     def start(self, message: str) -> None:
         self.ensure_not_cancelled()
@@ -36,9 +62,31 @@ class PipelineContext:
         self.store.update_stage_state(self.project_id, self.stage, StageStatus.RUNNING, progress=0, message=message)
 
     def progress(self, progress: float, message: str) -> None:
+        """Throttled progress update.
+
+        Flushes to disk only when progress moves at least 1% OR the
+        message materially changes OR `PROGRESS_MIN_INTERVAL_SECONDS`
+        seconds have passed since the last flush. Always honors
+        cancel/pause requests (in-memory check, no disk).
+        """
         self.ensure_not_cancelled()
+        new_progress_int = max(0, int(round(max(float(progress), 0.0))))
+        now = time.monotonic()
+        with self._progress_lock:
+            elapsed_ok = (now - self._last_flush_time) >= PROGRESS_MIN_INTERVAL_SECONDS
+            progress_changed = new_progress_int != self._last_flushed_progress
+            message_changed = (message or "") != self._last_flushed_message
+            if not (progress_changed or message_changed or elapsed_ok):
+                return
+            self._last_flushed_progress = new_progress_int
+            self._last_flushed_message = message or ""
+            self._last_flush_time = now
+
+        # Use the throttled progress value; never go backwards relative
+        # to what's on disk (a stale read could undercut a flush from
+        # another thread).
         current_job = self.store.get_job(self.project_id, self.job_id)
-        next_progress = max(float(int(max(float(progress), 0.0) + 0.9999)), float(current_job.progress or 0.0))
+        next_progress = max(float(new_progress_int), float(current_job.progress or 0.0))
         self.store.update_job(
             self.project_id,
             self.job_id,
