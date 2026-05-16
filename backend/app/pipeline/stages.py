@@ -2367,6 +2367,36 @@ def run_narration_generation(context: PipelineContext) -> None:
         # projects shouldn't be blocked by the legacy contamination gate.
         skip_contamination_guard=(pipeline_version == "vision"),
     )
+
+    # Coverage validator: every narration_id we passed in must have a
+    # corresponding .wav on disk. Without this, an early-exit / partial
+    # crash inside generate_narration silently leaves the stage marked
+    # COMPLETED even when half the script has no audio. That's the
+    # 2-hour-Darling-with-40-min-of-silent-panels failure mode the user
+    # hit. Refuse to mark the stage complete unless every expected file
+    # is present and non-empty.
+    audio_dir = Path(store._project_dir(context.project_id) / "audio")
+    missing: list[str] = []
+    empty: list[str] = []
+    for idx, panel_id in enumerate(narration_ids, start=1):
+        wav = audio_dir / f"panel_{idx:03d}.wav"
+        if not wav.exists():
+            missing.append(f"panel_{idx:03d}.wav ({panel_id})")
+        elif wav.stat().st_size < 1024:  # < 1KB = effectively empty
+            empty.append(f"panel_{idx:03d}.wav ({panel_id})")
+    if missing or empty:
+        # Roll the stage state back so auto_run won't cascade to render.
+        problem_count = len(missing) + len(empty)
+        sample = (missing + empty)[:5]
+        detail = (
+            f"Narration coverage gap: {problem_count} of {len(narration_ids)} "
+            f"expected WAVs are missing or empty. First few: {sample}. "
+            f"Retry the narration stage; do not proceed to render until "
+            f"every script line has audio."
+        )
+        logger.error(detail)
+        raise RuntimeError(detail)
+
     store.update_stage_state(
         context.project_id,
         PipelineStage.VIDEO_RENDERING,
@@ -2397,6 +2427,33 @@ def run_video_rendering(context: PipelineContext) -> None:
         raise ValueError("No script is available. Generate or save a script before rendering the video.")
     if not project.audio_files:
         raise ValueError("No narration audio is available. Generate audio before rendering the video.")
+
+    # Audio coverage guard: defense-in-depth match to the one in
+    # run_narration_generation. Catches the case where a user added
+    # script lines after narration was marked complete (or where the
+    # narration validator was bypassed). Without this, the renderer
+    # would render every panel - including the ones with no audio -
+    # producing a video that's much longer than the actual narration.
+    # (Darling hit this: 603 panels in script, only 347 WAVs, render
+    # produced a 2-hour video where the last 41 minutes were silent.)
+    audio_dir = Path(store._project_dir(context.project_id) / "audio")
+    text_segments = [s for s in story_segments if str(getattr(s, "text", "") or "").strip()]
+    missing_wavs: list[str] = []
+    for idx, _ in enumerate(text_segments, start=1):
+        wav = audio_dir / f"panel_{idx:03d}.wav"
+        if not wav.exists() or wav.stat().st_size < 1024:
+            missing_wavs.append(f"panel_{idx:03d}.wav")
+    if missing_wavs:
+        detail = (
+            f"Cannot render: {len(missing_wavs)} of {len(text_segments)} "
+            f"narrated panels are missing audio (first few: {missing_wavs[:5]}). "
+            f"Re-run narration_generation to fill the gap, then retry the render. "
+            f"Without this guard the video would still render but {len(missing_wavs)} "
+            f"panels would appear on screen with no narration."
+        )
+        logger.error(detail)
+        raise RuntimeError(detail)
+
     service = VideoRenderService()
     context.start("Rendering video with FFmpeg")
     render_panels = project.panels
