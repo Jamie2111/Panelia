@@ -20,6 +20,7 @@ Design principles:
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import time
 from dataclasses import dataclass, field
@@ -453,8 +454,24 @@ class PanelVisionNarrator:
             # token budget alone is enough to avoid truncation.
             pass
 
+        # Encode the panel as WebP and hand Gemini the bytes directly
+        # instead of letting the SDK serialize PIL.Image (which defaults
+        # to PNG). WebP q80 cuts manga line-art panel sizes by 60-80%
+        # with no perceptible quality loss, which trims upload time on
+        # every vision call. The Gemini API natively accepts image/webp.
+        # Falls back to handing the PIL Image to the SDK if WebP encode
+        # fails for any reason (e.g. exotic mode).
+        image_part: Any
+        try:
+            buf = io.BytesIO()
+            image.save(buf, format="WEBP", quality=80, method=4)
+            image_part = {"mime_type": "image/webp", "data": buf.getvalue()}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("WebP encode failed (%s); falling back to PIL handoff", exc)
+            image_part = image
+
         response = model.generate_content(
-            [prompt, image],
+            [prompt, image_part],
             generation_config=genai.types.GenerationConfig(**gen_kwargs),
             safety_settings=safety,
         )
