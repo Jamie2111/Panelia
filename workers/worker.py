@@ -4,6 +4,7 @@ import atexit
 import fcntl
 import logging
 import os
+import shutil
 import time
 from datetime import datetime, timezone
 from multiprocessing import Process
@@ -40,6 +41,89 @@ logger = logging.getLogger("panelia-worker")
 _WORKER_LOCK_HANDLE = None
 _WORKER_LOCK_PATH = Path("/tmp/panelia-worker.lock")
 _STALE_JOB_RECOVERY_INTERVAL_SECONDS = 60
+
+# Minimum free disk space required before we start any job. A panel-render
+# or video-render can write 5-10 GB of intermediates (final_silent.mp4,
+# final_silent_with_intro.mp4, final.mp4, final_music.mp4). Starting one
+# with too little headroom means ffmpeg crashes mid-encode on ENOSPC and -
+# worse - the worker can't always write the failure status back to disk
+# (because the disk that just rejected the encode rejects the status
+# update too), so the job sits at "running" forever and the recovery
+# sweeper keeps re-spawning it. Cleaner to refuse to start and tell the
+# user. 5 GB matches the worst-case ~4 GB silent video + a margin.
+_MIN_FREE_DISK_GB_FOR_JOB = 5.0
+# In-process memo of job IDs we've already refused this run, so the
+# recovery sweeper doesn't keep handing them back to us in a tight loop
+# if the user hasn't freed disk yet.
+_REFUSED_JOB_IDS: set[str] = set()
+
+
+def _check_disk_space_or_fail(
+    message,
+    store: ProjectStore,
+    data_dir: Path,
+    min_free_gb: float = _MIN_FREE_DISK_GB_FOR_JOB,
+) -> bool:
+    """Return True if there's enough headroom to start; otherwise mark the
+    job FAILED with an actionable message and return False.
+
+    This guard prevents the crash-loop pattern where a render starts on a
+    near-full disk, ffmpeg hits ENOSPC at the merge/prepend step (which
+    needs 5-8 GB scratch), and the worker can't even flush the failure
+    status because the disk that broke ffmpeg also breaks the JSON write.
+    """
+    try:
+        usage = shutil.disk_usage(data_dir)
+        free_gb = usage.free / (1024 ** 3)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Disk-space check failed for %s: %s", data_dir, exc)
+        return True  # Don't block on a bad probe
+
+    if free_gb >= min_free_gb:
+        return True
+
+    error_msg = (
+        f"Not enough disk space to start this job. "
+        f"Only {free_gb:.1f} GB free at {data_dir} (need >= {min_free_gb:.0f} GB). "
+        f"Free up space (delete old project outputs or clear data/_video_cache) and retry."
+    )
+    logger.error("[disk-guard] %s job_id=%s", error_msg, message.job_id)
+    _REFUSED_JOB_IDS.add(message.job_id)
+
+    try:
+        job = store.get_job(message.project_id, message.job_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("[disk-guard] Could not load job to mark failed")
+        return False
+
+    try:
+        store.update_job(
+            message.project_id,
+            message.job_id,
+            status=JobStatus.FAILED.value,
+            finished_at=store._now().isoformat(),
+            error=error_msg,
+            message=error_msg,
+        )
+        store.update_stage_state(
+            message.project_id,
+            job.stage,
+            StageStatus.FAILED,
+            progress=job.progress,
+            message=error_msg,
+        )
+    except Exception:  # noqa: BLE001
+        # If the status write itself fails (disk is THAT full), we at
+        # least have the in-memory _REFUSED_JOB_IDS set to stop the loop
+        # in this worker process. The job will appear "running" in the
+        # store until the user frees disk and restarts the worker, but
+        # we won't burn CPU on retries.
+        logger.exception(
+            "[disk-guard] Could not persist failure status for %s; "
+            "in-memory refusal set will stop the loop until worker restarts",
+            message.job_id,
+        )
+    return False
 
 
 def _run_job_child(project_id: str, job_id: str, stage: str) -> None:
@@ -241,6 +325,23 @@ def main() -> None:
                 _recover_interrupted_jobs(store, queue)
                 last_recovery_check = now
             time.sleep(1)
+            continue
+
+        # Skip jobs we already refused this worker lifetime (disk-full
+        # guard). Without this, the stale-job recovery sweeper keeps
+        # handing them back and we'd burn cycles re-checking and re-failing.
+        if message.job_id in _REFUSED_JOB_IDS:
+            logger.warning(
+                "Skipping previously-refused job %s (free up disk and restart worker to retry)",
+                message.job_id,
+            )
+            continue
+
+        # Disk-space gate. Cheaper to fail fast with a clear error than
+        # to crash mid-encode and lose all the render-cache work we built.
+        from app.core.config import get_settings  # local import to avoid startup cost
+        settings_for_guard = get_settings()
+        if not _check_disk_space_or_fail(message, store, settings_for_guard.data_dir):
             continue
 
         logger.info("Processing job %s for project %s stage %s", message.job_id, message.project_id, message.stage)

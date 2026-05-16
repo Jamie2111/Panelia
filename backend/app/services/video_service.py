@@ -264,9 +264,62 @@ class VideoRenderService:
         self._ensure_faststart(output_path)
 
         self._write_video_manifest(output_dir, output_path, video_config)
+        # Reclaim the multi-GB intermediates now that the final file is on
+        # disk. Without this, every retry left ~7 GB of stale outputs behind
+        # (final_silent.mp4, final_silent_with_intro.mp4, final.mp4,
+        # final_music.mp4, and so on) - five or six iterations on a 2-hour
+        # video would silently consume 30-40 GB until ffmpeg crashed on
+        # ENOSPC and the worker started crash-looping at 92%.
+        try:
+            self._cleanup_render_intermediates(project_dir, output_dir, output_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Render intermediate cleanup failed (non-fatal): %s", exc)
         if progress_callback:
             progress_callback(100, "Video render complete")
         return output_path
+
+    def _cleanup_render_intermediates(
+        self,
+        project_dir: Path,
+        output_dir: Path,
+        final_output: Path,
+    ) -> None:
+        """Delete render scratch files now that ``final_output`` is written.
+
+        Hard rules:
+          - Never touch ``final_output`` itself or its sibling ``short.mp4``
+            (created later by ShortsService during the YouTube bundle).
+          - Never touch ``_channel_watermark.png`` (cached + reused across
+            renders, still tiny).
+          - Never touch ``final_camera.json`` / ``final_chapters.json``
+            (they're metadata the UI reads for the timeline view).
+          - Delete every other ``*.mp4`` in ``<project>/video/`` - those are
+            stale intermediates from prior render attempts that we now have
+            confirmed superseded.
+          - Wipe ``<project>/temp/render/`` entirely - that whole dir is
+            scratch space, gets recreated on the next render.
+        """
+        keep_names = {final_output.name, "short.mp4"}
+        # Drop stale .mp4 intermediates next to the final output.
+        for entry in output_dir.glob("*.mp4"):
+            if entry.name in keep_names:
+                continue
+            try:
+                entry.unlink()
+                logger.info("Cleaned up render intermediate: %s", entry.name)
+            except OSError:
+                continue
+        # Wipe the temp/render scratch dir.
+        scratch = project_dir / "temp" / "render"
+        if scratch.exists():
+            for entry in scratch.iterdir():
+                try:
+                    if entry.is_file() or entry.is_symlink():
+                        entry.unlink()
+                    elif entry.is_dir():
+                        shutil.rmtree(entry, ignore_errors=True)
+                except OSError:
+                    continue
 
     def _ensure_faststart(self, video_path: Path) -> None:
         """Fast check + repair for moov-atom ordering.
