@@ -5,7 +5,7 @@
  * that the design language demands. The rule is simple:
  *
  *   "97% - Pass 1: repaired 15/399"  ❌
- *   "Polishing your script - about a minute left"  ✓
+ *   "Polishing your script..."  ✓
  *
  * Why this exists: percentages without context cause anxiety. Sentences
  * with a verb and a timeframe activate the same trust mechanism as a
@@ -117,31 +117,14 @@ function cap(s: string): string {
 }
 
 /**
- * Roughly map a percent + stage to a human-readable time estimate.
- * We deliberately avoid false precision - users prefer "about a minute"
- * over "47 seconds" for trust reasons.
+ * Note: previously this file contained an `estimateTimeLeft()` helper
+ * that produced strings like "about 4 minutes left". The estimates
+ * were derived from a static seconds-per-percent table and didn't
+ * track actual runtime variance (network rate-limits on Edge TTS,
+ * Gemini queue depth, cold vs warm caches), so they routinely
+ * promised "1 minute" and delivered 30. Removed - the UI now shows
+ * the qualitative phase verb only, with no time claim.
  */
-function estimateTimeLeft(stage: PipelineStage, progress: number): string {
-  if (progress >= 99) return "almost done";
-  if (progress <= 0) return "starting up";
-
-  // Rough seconds-per-percent estimates per stage. These exist only to
-  // give the user a "feel" of pacing, not a stopwatch. Tune over time.
-  const SECONDS_PER_PCT: Partial<Record<PipelineStage, number>> = {
-    script_generation: 12,
-    narration_generation: 5,
-    video_rendering: 8,
-    panel_vision_extraction: 6,
-  };
-  const secPerPct = SECONDS_PER_PCT[stage] ?? 3;
-  const remainingSec = Math.max(1, Math.round((100 - progress) * secPerPct));
-  if (remainingSec < 30) return "less than a minute left";
-  if (remainingSec < 90) return "about a minute left";
-  const remainingMin = Math.round(remainingSec / 60);
-  if (remainingMin <= 4) return `about ${remainingMin} minutes left`;
-  if (remainingMin <= 9) return "a few more minutes";
-  return "a little while yet";
-}
 
 /**
  * Turn a raw StageState into the sentence form the UI displays.
@@ -156,9 +139,10 @@ export function toPipelineDisplay(state: StageState): PipelineDisplay {
   switch (status as StageStatus) {
     case "running": {
       const verb = STAGE_RUNNING_VERBS[stage] ?? `working on ${stageLabel}`;
-      const timeLeft = estimateTimeLeft(stage, progress);
+      // Time estimates removed - they were consistently wrong and
+      // eroded trust. UI shows the phase verb only.
       return {
-        sentence: `${cap(verb)} - ${timeLeft}`,
+        sentence: `${cap(verb)}...`,
         detail: message || undefined,
         tone: "accent",
         active: true,

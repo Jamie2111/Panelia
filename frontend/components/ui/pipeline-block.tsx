@@ -14,7 +14,7 @@
  *   ◉ ── ◉ ── ◉ ── ●═══─ ○ ── ○
  *   Pages  Panels  Vision  Script  Audio  Video
  *                          ↑
- *               "Writing your script - about a minute left"
+ *               "Writing your script..."
  *               [ Pause ]
  *
  * Filled circles = complete. Half-filled with shimmer = running. Empty =
