@@ -61,12 +61,21 @@ class EdgeTTSEngine:
         sentence_jobs = self._collect_sentence_jobs(units, voice_config)
         ordered_jobs = list(sentence_jobs.items())
 
-        # Parallelize the per-sentence Edge TTS HTTP calls. They're I/O
-        # bound (~1.5-2s each round trip to Microsoft), so a small pool
-        # gives a real speedup. We cap at 4 workers because Microsoft's
-        # public endpoint gets unhappy past that - pushing higher made
-        # the WebSocket connection stall mid-batch in testing.
-        cache_workers = max(2, min(int(self.settings.narration_sentence_cache_workers or 2) * 2, 4))
+        # Parallelize the per-sentence TTS calls. With the FREE Edge
+        # endpoint we cap at 4 workers (Microsoft's public WebSocket
+        # gets unhappy past that). With Azure paid tier configured we
+        # can push to 16 - the paid endpoint handles the concurrency
+        # without rate-limit 503s, and TTS goes from ~2h to ~15-25min
+        # on an unord-sized project.
+        try:
+            from app.services.azure_tts_service import is_azure_configured
+            azure_on = is_azure_configured()
+        except Exception:
+            azure_on = False
+        if azure_on:
+            cache_workers = max(2, min(int(getattr(self.settings, "azure_speech_max_workers", 16)), 32))
+        else:
+            cache_workers = max(2, min(int(self.settings.narration_sentence_cache_workers or 2) * 2, 4))
         completed_count = 0
         completed_lock = __import__("threading").Lock()
 

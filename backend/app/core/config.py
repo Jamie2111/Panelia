@@ -70,6 +70,15 @@ class Settings(BaseSettings):
     )
     narration_enhancement_enabled: bool = True
     narration_sentence_cache_workers: int = 2
+    # Azure Speech Service (paid) - when both key + region are set,
+    # the Edge TTS path routes calls to Azure first and only falls
+    # back to the free Edge endpoint on Azure failure. Same voice
+    # catalog (en-US-AvaNeural etc.) so audio character is identical.
+    azure_speech_key: str = ""
+    azure_speech_region: str = ""
+    # Max concurrent Azure synth calls. Azure handles 16+ comfortably;
+    # cap is here to protect the rest of the machine.
+    azure_speech_max_workers: int = 16
     # How many panel clips to render concurrently in the per-panel ffmpeg
     # loop. h264_videotoolbox on Apple Silicon comfortably handles 4
     # simultaneous encoder sessions; libx264 on Intel/Linux also fits a

@@ -98,6 +98,13 @@ class EdgeTTSService:
     # without a resample step.
     SAMPLE_RATE: int = 24_000
 
+    # Class-level latch: once Azure has bailed with a quota/auth error,
+    # stop attempting it for the remainder of the process. The next
+    # cold start re-evaluates whether Azure is healthy.
+    _azure_disabled_this_run: bool = False
+    _azure_consecutive_failures: int = 0
+    _AZURE_FAILURE_LATCH: int = 5  # disable Azure after this many in a row
+
     def __init__(self) -> None:
         self.settings = get_settings()
         self._shared_cache_dir = self.settings.data_dir / "_edge_tts_cache"
@@ -106,6 +113,20 @@ class EdgeTTSService:
             raise RuntimeError(
                 "edge-tts is not installed. Run: pip install edge-tts"
             )
+        # Lazy-init the Azure paid client. Stays None if not configured
+        # or if the SDK isn't installed - the rest of the engine falls
+        # back to free Edge TTS automatically.
+        self._azure: Any = None
+        try:
+            from app.services.azure_tts_service import (
+                AzureTTSService, is_azure_configured,
+            )
+            if is_azure_configured():
+                self._azure = AzureTTSService()
+                logger.info("EdgeTTSService: Azure paid tier active; free Edge endpoint is the fallback")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("EdgeTTSService: Azure init failed (%s); using free Edge endpoint only", exc)
+            self._azure = None
 
     # ── Public API (mirrors KokoroTTSService) ─────────────────────────────
 
@@ -200,15 +221,56 @@ class EdgeTTSService:
     # ── Internals ─────────────────────────────────────────────────────────
 
     def _render_to_wav_bytes(self, text: str, voice_config: VoiceConfig) -> bytes:
-        """Run the async Edge TTS pipeline and return WAV bytes.
+        """Render one utterance to WAV bytes.
 
-        edge-tts emits MP3 (24kHz mono 96kbps). We decode in-memory to a
-        numpy float32 array via soundfile, then write back to a WAV bytes
-        buffer at our chosen sample rate. No temp files; no shell-outs.
+        Routing:
+          1. If Azure paid tier is configured AND hasn't been disabled
+             for this run, try Azure first (no rate limits, faster).
+          2. On Azure quota/auth exhaustion → latch Azure off for the
+             rest of the run, fall through to free Edge TTS.
+          3. On any other Azure failure → fall through to free Edge
+             TTS for THIS call, leave Azure enabled for the next one.
+          4. Free Edge TTS is the structural fallback either way.
+
+        The voice catalog is identical between the two engines (Azure
+        Speech IS the same Microsoft Neural service Edge TTS hits via
+        the free public endpoint), so the audio character does not
+        change when fallback kicks in. The user just trades latency.
         """
         clean_text = (text or "").strip()
         if not clean_text:
             return self._silence_wav(0.25)
+
+        if self._azure is not None and not type(self)._azure_disabled_this_run:
+            try:
+                # Reach into the Azure renderer's bytes-level method
+                # so we don't double-disk-write here.
+                wav_bytes = self._azure._render_to_wav_bytes(clean_text, voice_config)
+                type(self)._azure_consecutive_failures = 0
+                return wav_bytes
+            except Exception as exc:  # noqa: BLE001
+                from app.services.azure_tts_service import AzureQuotaExhausted
+                if isinstance(exc, AzureQuotaExhausted):
+                    type(self)._azure_disabled_this_run = True
+                    logger.warning(
+                        "Azure TTS quota/auth exhausted (%s); "
+                        "falling back to free Edge TTS for the rest of this run.",
+                        exc,
+                    )
+                else:
+                    type(self)._azure_consecutive_failures += 1
+                    if type(self)._azure_consecutive_failures >= type(self)._AZURE_FAILURE_LATCH:
+                        type(self)._azure_disabled_this_run = True
+                        logger.warning(
+                            "Azure TTS failed %d times in a row (%s); "
+                            "latching to free Edge TTS for the rest of this run.",
+                            type(self)._azure_consecutive_failures, exc,
+                        )
+                    else:
+                        logger.warning(
+                            "Azure TTS call failed (%s); trying free Edge TTS for this sentence.",
+                            exc,
+                        )
 
         voice = self._resolve_voice(voice_config)
         rate, volume, pitch = self._format_prosody(voice_config)
