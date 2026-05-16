@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     )
     narration_enhancement_enabled: bool = True
     narration_sentence_cache_workers: int = 2
+    # How many panel clips to render concurrently in the per-panel ffmpeg
+    # loop. h264_videotoolbox on Apple Silicon comfortably handles 4
+    # simultaneous encoder sessions; libx264 on Intel/Linux also fits a
+    # typical 4-core box. Going higher tends to oversubscribe. Override
+    # via env var PANELIA_VIDEO_CLIP_RENDER_WORKERS.
+    video_clip_render_workers: int = 4
     narration_mastering_enabled: bool = True
     openvoice_enabled: bool = False
     redis_url: str = "redis://redis:6379/0"
