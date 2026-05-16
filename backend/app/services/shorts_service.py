@@ -310,24 +310,78 @@ class ShortsService:
     def _make_hook(manga_title: str | None, chapter_title: str | None) -> str:
         series = (manga_title or "this chapter").strip()
         if chapter_title:
-            return f"In {series}, {chapter_title}…"
+            return f"In {series}, {chapter_title}..."
         return f"Here's what happened in {series}."
 
     @staticmethod
     def _make_title(manga_title: str | None, chapter_title: str | None, hook: str) -> str:
-        series = (manga_title or "Manga").strip()
-        if chapter_title:
-            return f"{series} - {chapter_title} in 60s"[:60]
-        return f"{series} chapter recap in 60s"[:60]
+        """Shorts title: a single click-line, NOT a label.
+
+        Shorts have ~60 chars of visible title in the feed. Wasting that
+        on "Series Name - Chapter X in 60s" is throwing away the only
+        text-side hook you get. We synthesize from the long-form HOOK
+        the bundle already wrote (passed in as `hook`) - usually a
+        question or shock statement - and append the series name in
+        parens for searchability. If no hook, fall back to a curiosity
+        opener using the series.
+        """
+        series = (manga_title or "").strip()
+        hook = (hook or "").strip()
+        SHORTS_TITLE_MAX = 100  # YouTube cap; Shorts UI truncates around 70-90
+
+        # Prefer the long-form hook (e.g. "What if humanity's last hope
+        # is also its greatest danger?") - it's already been tuned for
+        # click-through. Strip a trailing period or ellipsis so we can
+        # append the series tag cleanly.
+        if hook:
+            clean_hook = hook.rstrip(".? ")
+            # The Gemini hook often ends with "?" - keep that punctuation
+            # for the question variant.
+            if hook.endswith("?"):
+                base = clean_hook + "?"
+            else:
+                base = clean_hook + "."
+            if series and series.casefold() not in base.casefold():
+                tail = f" ({series})"
+                if len(base) + len(tail) <= SHORTS_TITLE_MAX:
+                    base = base + tail
+            return base[:SHORTS_TITLE_MAX]
+
+        # No hook - synthesize a curiosity-friendly opener.
+        if series:
+            return f"The moment {series} actually starts."[:SHORTS_TITLE_MAX]
+        return "The moment the story actually starts."[:SHORTS_TITLE_MAX]
 
     @staticmethod
     def _make_description(manga_title: str | None, chapter_title: str | None, hook: str) -> str:
+        """Shorts description: hook line + soft CTA + tags.
+
+        Avoids the bland "60-second recap: <chapter>" template that
+        signals filler. The long-form hook (if present) becomes the
+        first line; chapter label only appears as a tag.
+        """
         series = manga_title or "Manga"
-        chapter = chapter_title or "this chapter"
+        chapter_tag = ""
+        if chapter_title:
+            # "Chapters 1-10" -> "chapters110", "Chapter 27" -> "chapter27"
+            chapter_tag = "#" + "".join(
+                ch for ch in chapter_title.lower() if ch.isalnum()
+            )
+        series_tag = "#" + "".join(ch for ch in series.lower() if ch.isalnum())
+        # Preserve the original terminal punctuation so question hooks
+        # stay questions ("...danger?" not "...danger.").
+        raw_hook = (hook or "").strip()
+        if raw_hook:
+            if raw_hook[-1] in "?.!":
+                lead = raw_hook
+            else:
+                lead = raw_hook + "."
+        else:
+            lead = f"The moment {series} actually starts."
         return (
-            f"60-second recap: {chapter}\n\n"
+            f"{lead}\n\n"
             f"Watch the full chapter recap on the channel for the complete story.\n\n"
-            f"#shorts #manga #manhwa #anime #recap #{series.replace(' ', '').lower()}\n"
+            f"#shorts #manga #manhwa #anime #recap {series_tag} {chapter_tag}\n"
         )
 
     # ── Rendering primitives ─────────────────────────────────────────────
