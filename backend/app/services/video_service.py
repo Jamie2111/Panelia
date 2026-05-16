@@ -19,7 +19,7 @@ import soundfile as sf
 from PIL import Image, ImageColor, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 from app.core.config import get_settings
-from app.schemas.project import MusicConfig, PanelBox, StorySegment, VideoConfig
+from app.schemas.project import MusicConfig, Orientation, PanelBox, StorySegment, VideoConfig
 from app.services.project_store import ProjectStore
 from app.utils.files import ensure_dir, read_json, write_json
 
@@ -196,8 +196,23 @@ class VideoRenderService:
                 progress_callback(93, "Added animated title card")
 
         # --- Static intro thumbnail (user-uploaded, legacy) ---
+        # Gated to LANDSCAPE-only renders. The 16:9 thumbnail that
+        # YouTube generates for a long-form video is a landscape image;
+        # prepending it makes sense for the landscape long-form. For
+        # vertical / Shorts renders the YouTube cover is a totally
+        # different 9:16 image and we don't want a stretched, letterboxed
+        # landscape thumbnail showing up as the first frame of a vertical
+        # video. The user-flag still controls overall enable/disable;
+        # this is an additional orientation guard.
         intro_thumbnail_path = self._resolve_video_intro_thumbnail(project_dir)
-        intro_thumbnail_enabled = bool(getattr(video_config, "intro_thumbnail_enabled", False)) and intro_thumbnail_path is not None
+        orientation_value = getattr(getattr(video_config, "orientation", None), "value", None) \
+            or str(getattr(video_config, "orientation", "")).lower()
+        is_landscape_render = orientation_value in {"landscape", str(Orientation.LANDSCAPE.value)}
+        intro_thumbnail_enabled = (
+            bool(getattr(video_config, "intro_thumbnail_enabled", False))
+            and intro_thumbnail_path is not None
+            and is_landscape_render
+        )
         if intro_thumbnail_enabled:
             intro_duration = max(0.5, min(float(getattr(video_config, "intro_thumbnail_seconds", 1.5) or 1.5), 4.0))
             intro_video_path = work_dir / f"{output_name}_intro.mp4"
