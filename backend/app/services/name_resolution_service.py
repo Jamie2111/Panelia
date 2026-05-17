@@ -46,37 +46,52 @@ except ImportError:
 _NAME_RESOLUTION_PROMPT = """You are editing a manga-recap narration script
 to enforce a strict character-naming rule the YouTuber demands:
 
-  RULE: Every character must be referred to by their cast-bible NAME.
+  RULE: Every character should be referred to by their cast-bible NAME.
   Generic descriptors ("the boy with dark hair", "a uniformed pilot",
-  "the pink-haired girl", "a stern officer") are only allowed for
-  characters who are NOT in the cast bible.
+  "the pink-haired girl", "a stern officer", "a figure", "a voice")
+  should be replaced with cast names WHENEVER the surrounding script
+  context lets you confidently infer who is being referred to.
 
 You will be given:
   1. The CAST BIBLE for the series, with each member's visible
      features (hair color, eye color, signature outfit, etc.).
   2. The SCRIPT as a numbered list of narration lines (one per panel).
 
-For each line, decide:
-  • If a generic descriptor in that line matches a cast member's
-    visible features in the bible, REPLACE the descriptor with that
-    cast member's name.
-    Example: bible has "Hiro: dark blue hair, blue eyes, Squad 13
-    uniform". Line says "The boy with dark blue hair stares at the
-    device." → rewrite to "Hiro stares at the device."
-  • If multiple cast members could plausibly fit the descriptor, pick
-    the one most recently named in the preceding lines (continuity).
-  • If no cast member fits the descriptor (a new background character,
-    an unnamed NPC), leave the descriptor as-is.
-  • If a line ALREADY uses a cast name correctly, leave it untouched.
-  • Do not invent new content. Do not add or remove sentences.
-  • Do not rephrase beyond the descriptor swap. Keep tense, tone,
-    word count similar to the original line.
+How to assign names to descriptors:
+
+  STRATEGY A - feature match against the bible:
+    Bible: "Hiro: messy short dark blue hair, blue eyes, Squad 13
+    uniform". Line: "The boy with dark blue hair stares at the device."
+    → rewrite to "Hiro stares at the device."
+
+  STRATEGY B - context inference (the most powerful one):
+    A bare "a figure", "a voice", "the boy", "the girl", or "one
+    character" almost always refers to the character most recently
+    named in the SAME or PRECEDING lines. Read 3-5 lines of context
+    before and after, ask "who has been the active subject of this
+    scene?", and use that name.
+    Example: line N-1: "Hiro punches the console in frustration."
+             line N:   "A figure storms off the bridge."
+    → rewrite line N as "Hiro storms off the bridge."
+
+  STRATEGY C - speaker inference from dialogue context:
+    A bare "A voice declares, 'X'" or "Someone shouts 'Y'" can often
+    be tied to the named character whose POV the scene is in, or to
+    the character whose name appears in the next 1-2 lines.
+
+When to LEAVE the descriptor alone:
+  • The descriptor refers to a generic crowd / NPC / background
+    character clearly not in the cast bible.
+  • Multiple cast members fit equally and no preceding context
+    disambiguates.
+  • The line already uses a cast name correctly.
 
 ABSOLUTE RULES:
   - Output line K corresponds to input line K. Same number of lines.
   - One sentence per line. No multi-sentence rewrites.
   - No numbering, no preface, no commentary.
   - Never invent a cast member who isn't in the bible.
+  - Keep tense, tone, word count similar to the original.
 
 CAST BIBLE:
 {cast_text}
@@ -129,9 +144,11 @@ def resolve_character_names(
     # a descriptor word - the bible isn't going to help and we don't want
     # to spend tokens regenerating identical text.
     descriptor_signal = re.compile(
-        r"\b(the|a|an)\s+(?:[a-z\-]+\s+){0,3}"
+        r"\b(?:the|a|an|one|another|someone)\s+(?:[a-z\-]+\s+){0,4}"
         r"(?:boy|girl|man|woman|pilot|officer|figure|character|stranger|"
-        r"person|child|teen|student|guard|knight|prisoner|warrior)\b",
+        r"person|child|teen|student|guard|knight|prisoner|warrior|"
+        r"voice|individual|kid|youth|adult|elder|companion|partner|"
+        r"friend|enemy|soldier|fighter|warrior|leader|villain|hero)\b",
         re.IGNORECASE,
     )
     candidate_indices = [
@@ -145,7 +162,24 @@ def resolve_character_names(
     model_name = (settings.gemini_model or "gemini-2.5-flash").strip()
     if model_name in {"gemini-2.0-flash", "gemini-2.0-flash-exp"}:
         model_name = "gemini-2.5-flash"
-    model = genai.GenerativeModel(model_name)
+    # Maximally permissive safety settings: this is editing manga recap
+    # script text, not generating fresh content. Default Gemini safety
+    # blocks the whole batch on a single PROHIBITED_CONTENT trigger
+    # (a bath / intimate scene reference), losing 80 lines per blocked
+    # batch even when only one line is borderline. Override the four
+    # exposed harm categories to BLOCK_NONE.
+    safety_settings = []
+    try:
+        from google.generativeai.types import HarmCategory, HarmBlockThreshold  # type: ignore
+        safety_settings = [
+            {"category": HarmCategory.HARM_CATEGORY_HATE_SPEECH, "threshold": HarmBlockThreshold.BLOCK_NONE},
+            {"category": HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, "threshold": HarmBlockThreshold.BLOCK_NONE},
+            {"category": HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": HarmBlockThreshold.BLOCK_NONE},
+            {"category": HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, "threshold": HarmBlockThreshold.BLOCK_NONE},
+        ]
+    except Exception:
+        pass
+    model = genai.GenerativeModel(model_name, safety_settings=safety_settings or None)
 
     new_lines = list(all_lines)
     total_rewrites = 0
