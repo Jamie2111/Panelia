@@ -153,11 +153,15 @@ class PanelBox(BaseModel):
 
 class VoiceConfig(BaseModel):
     # Default to Edge TTS (Microsoft Azure Neural). It's free, requires no
-    # API key, and sounds dramatically more human than Kokoro. The narrator
-    # falls back to Kokoro automatically if Edge synthesis fails.
+    # API key, and sounds dramatically more human than Kokoro. Per-sentence
+    # retries inside edge_tts_service handle transient 503s; if Edge truly
+    # fails after retries, the narration job FAILS LOUDLY (no silent
+    # voice swap mid-video). Set allow_kokoro_fallback=True to revive
+    # the old auto-fallback behavior at the cost of voice consistency.
     voice: str = "edge_ava"
     lang_code: str = "a"
     speed: float = 1.0
+    allow_kokoro_fallback: bool = False
 
 
 class MusicConfig(BaseModel):

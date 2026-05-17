@@ -148,14 +148,19 @@ def generate_narration(
     if cancel_callback:
         cancel_callback()
 
-    # Run the primary engine; if Edge TTS fails partway (Microsoft's
-    # public endpoint sometimes returns a transient 503 on the first
-    # WebSocket handshake) we retry the whole batch on Edge a couple of
-    # times before falling back to Kokoro. Without the retries a single
-    # transient 503 dumps the whole run onto Kokoro, which is sequential
-    # CPU TTS - roughly 20x slower (2 h instead of ~5 min for an unord-
-    # sized project). The per-sentence wav cache means a retry that
-    # picks up where the previous attempt left off is essentially free.
+    # Run the primary engine. Per-sentence retries with exponential
+    # backoff happen INSIDE edge_tts_service._render_to_wav_bytes (5
+    # attempts at 0.5/1/2/4/8s), so a single transient 503 never
+    # reaches this layer. If a sentence still fails after all internal
+    # retries we RE-RAISE rather than silently switch to Kokoro - the
+    # voice swap mid-video is a much worse quality regression than a
+    # failed job the user can retry.
+    #
+    # Kokoro fallback is OPT-IN via voice_config.allow_kokoro_fallback
+    # (default false). Set it on the voice config to revive the old
+    # auto-fallback behavior for projects that would rather ship with
+    # mixed voices than fail.
+    allow_kokoro_fallback = bool(getattr(voice_config, "allow_kokoro_fallback", False))
     manifest = None
     edge_attempts = 3 if use_edge else 1
     last_edge_err: Exception | None = None
@@ -176,17 +181,29 @@ def generate_narration(
             if attempt < edge_attempts:
                 backoff_seconds = min(2 * attempt, 8)
                 logger.warning(
-                    "Edge TTS synthesis failed on attempt %s/%s (%s); retrying in %ss",
+                    "Edge TTS batch failed on attempt %s/%s (%s); retrying in %ss",
                     attempt, edge_attempts, primary_err, backoff_seconds,
                 )
                 import time as _time
                 _time.sleep(backoff_seconds)
                 continue
-            logger.warning(
-                "Edge TTS synthesis failed after %s attempts (%s); falling back to Kokoro for this run.",
-                edge_attempts, primary_err,
-            )
+            if allow_kokoro_fallback:
+                logger.warning(
+                    "Edge TTS exhausted %s attempts (%s); allow_kokoro_fallback=True, falling back",
+                    edge_attempts, primary_err,
+                )
+            else:
+                logger.error(
+                    "Edge TTS exhausted %s attempts (%s). Failing the narration "
+                    "job to preserve voice consistency. Retry when Microsoft's "
+                    "endpoint is healthy, or set voice_config.allow_kokoro_fallback "
+                    "to True to enable the old auto-Kokoro-fallback behavior.",
+                    edge_attempts, primary_err,
+                )
+                raise
     if manifest is None:
+        # Only reached when allow_kokoro_fallback=True. Behavior is
+        # the historical mixed-voice fallback.
         fallback_voice = voice_config.model_copy(update={
             "voice": "af_bella",
             "lang_code": "a",

@@ -307,9 +307,44 @@ class EdgeTTSService:
                         chunks.append(data)
             return b"".join(chunks)
 
-        mp3_bytes = self._run_async(_gather())
+        # Per-sentence retries with exponential backoff. Free Edge
+        # endpoint is hosted on Microsoft's public WebSocket which
+        # occasionally returns 503 / drops connections on the first
+        # try. Without these retries a single transient failure
+        # poisons the whole narration run via the generate_narration
+        # fallback path (voice silently switches from Edge Ava to
+        # Kokoro Bella mid-video). 5 retries at 0.5/1/2/4/8s nearly
+        # always clear the transient.
+        import time as _time
+        last_exc: Exception | None = None
+        mp3_bytes = b""
+        for attempt in range(1, 6):
+            try:
+                mp3_bytes = self._run_async(_gather())
+                if mp3_bytes:
+                    break
+                # Empty audio stream is treated as a transient too.
+                raise RuntimeError("Edge TTS returned empty audio stream")
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt < 5:
+                    sleep_s = 0.5 * (2 ** (attempt - 1))  # 0.5, 1, 2, 4
+                    logger.warning(
+                        "Edge TTS attempt %d/5 failed (%s); retrying in %.1fs",
+                        attempt, exc, sleep_s,
+                    )
+                    _time.sleep(sleep_s)
+                    continue
+                logger.error(
+                    "Edge TTS exhausted 5 attempts (%s); raising so the "
+                    "narration job fails loudly instead of silently "
+                    "switching to Kokoro.",
+                    exc,
+                )
+                raise
         if not mp3_bytes:
-            raise RuntimeError("Edge TTS returned empty audio stream")
+            assert last_exc is not None
+            raise last_exc
 
         # Decode MP3 → float32 array; soundfile handles MP3 via libsndfile.
         with sf.SoundFile(io.BytesIO(mp3_bytes), "r") as src:
