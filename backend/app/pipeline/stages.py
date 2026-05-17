@@ -379,6 +379,40 @@ def _collect_narration_world_terms(project_dir: Path, project: Any) -> list[str]
     return unique
 
 
+def _build_cast_block_for_name_resolution(
+    canonical_characters: list[Any] | None,
+) -> str:
+    """Render canonical characters as the cast block the name resolver
+    expects. Mirrors CastBibleService.format_for_prompt format so the
+    resolver prompt sees the same shape regardless of where the cast
+    came from (CastBible or canonical_characters.json).
+
+    Empty / None canonical list returns "" so the resolver skips the
+    pass entirely instead of running against an empty bible.
+    """
+    if not canonical_characters:
+        return ""
+    lines: list[str] = ["KNOWN CAST (use these names when you can match them in the panel):"]
+    seen: set[str] = set()
+    for character in canonical_characters:
+        name = str(getattr(character, "name", "") or "").strip()
+        if not name or name.casefold() in seen:
+            continue
+        seen.add(name.casefold())
+        description = str(getattr(character, "visual_description", "") or "").strip()
+        role = str(getattr(character, "role", "") or "").strip()
+        aliases = list(getattr(character, "aliases", []) or [])
+        piece = f"  • {name}"
+        if description:
+            piece += f" - {description}"
+        elif role:
+            piece += f" - {role}"
+        if aliases:
+            piece += f" (also known as: {', '.join(aliases[:3])})"
+        lines.append(piece)
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
 def run_ingestion(context: PipelineContext) -> None:
     store = context.store
     project = store.get_project(context.project_id)
@@ -2348,6 +2382,31 @@ def run_script_generation(context: PipelineContext) -> None:
                 logger.info("Applied YouTube recap rewrite pass for %s", context.project_id)
         except Exception as exc:
             logger.warning("YouTube recap rewrite pass failed (non-fatal): %s", exc)
+
+    # Name resolution pass: rewrite generic descriptors ("the boy",
+    # "a student", "the woman") to canonical cast names. The vision
+    # narrator emits names when it visually matches a reference portrait
+    # but otherwise drops to descriptors; this pass uses Gemini to fix
+    # those after the fact via 3 strategies (feature match, context
+    # inference, speaker inference). Non-fatal: a quota / safety
+    # failure leaves the script as-is and the run continues. Model
+    # cascade inside the service handles per-model 429 fallback.
+    if not bool(job.payload.get("skip_name_resolution")):
+        context.progress(99, "Resolving generic descriptors to cast names")
+        try:
+            from app.services.name_resolution_service import resolve_character_names
+            project_dir = store._project_dir(context.project_id)
+            cast_block = _build_cast_block_for_name_resolution(canonical_characters)
+            if cast_block:
+                report = resolve_character_names(project_dir, cast_block=cast_block, batch_size=80)
+                if report.get("updated"):
+                    logger.info(
+                        "Name resolution rewrote %d/%d lines across %d batches for %s",
+                        report.get("updated"), report.get("total_lines"),
+                        report.get("batches"), context.project_id,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Name resolution pass failed (non-fatal): %s", exc)
 
     quality_report = store.load_script_quality_report(context.project_id)
     if bool(quality_report.get("should_block_tts")) and not bool(job.payload.get("skip_quality_rewrite")):

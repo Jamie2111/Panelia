@@ -165,20 +165,52 @@ AVOID:
   the panel already; do not announce it.
 
 SKIP RULES (return the literal token "__SKIP__" alone in PART 1):
-• Chapter title / cover / banner panels showing only series logos
-  or episode/chapter numbers (e.g. an "unORDINARY Episode 1" banner)
-  - never narrate these; the viewer can read the title themselves
-  and a TTS line over a title screen sounds robotic.
-• Pure-text panels: thought bubbles, signs, blackboards, books,
-  letters, or other panels whose entire content is text with no
-  meaningful character or action. These either get spoken via
-  the dialogue track or contribute nothing to the recap.
-• "Title page", "About the author", "Translation credits", "Next
-  chapter preview" panels.
+Be AGGRESSIVE with __SKIP__. A title/text panel that slips through
+ruins the final video for the viewer; a story panel that gets
+skipped just leaves a small visual gap that the next narration
+covers. When in doubt between "narrate" and "__SKIP__", choose
+"__SKIP__".
+
+ALWAYS __SKIP__ for:
+• Chapter title / cover / episode / banner panels, INCLUDING when
+  presented with visual flourish (decorative fonts, stamps, colored
+  backgrounds, mixed font styles). Examples: "unORDINARY Episode 1"
+  in a serif font with a red BONUS stamp, "Chapter 6" in handwritten
+  + bold lettering, a logo card with the title in stylized text.
+  These are STILL title cards even when described as "presented in a
+  mix of fonts" or "marked by a colorful stamp".
+• Pure-text panels where the PRIMARY visual content is text or
+  signage - thought bubbles full of equations, blackboards covered
+  in formulas, signs, notes, letters, book pages, social-media
+  posts. SKIP THESE EVEN WHEN A CHARACTER IS PRESENT (pointing at
+  the board, holding the sign, reading the note). If the panel's
+  point is to convey what the text/sign says, it's a text panel,
+  not a story panel.
+• Educational / lecture / instructional boards: "blackboard titled
+  'Levels and Tiers'", "whiteboard with trigonometric equations",
+  "page from a textbook". Even when a teacher or character is
+  gesturing toward the board, the board is the point - skip.
+• Author / creator info: "About the author", "Translation credits",
+  "TL note", social-media handles in any form (Instagram, Twitter,
+  TikTok, YouTube, Patreon, Webtoons, author websites). Phrases
+  like "the author's Instagram is @uru.chan" should produce
+  __SKIP__ even if framed as a "brief interlude".
+• "Next chapter preview", "To be continued", "Previously on...",
+  "Coming next", "End of chapter" cards.
+• Episode/chapter markers presented as narrative transitions:
+  "the chapter transitions to Episode 6", "the scene presents the
+  title card for Episode 7". The narrative framing doesn't make
+  it a story panel - it's still a title card. SKIP.
+
+Do NOT skip:
+• A normal story panel where a character happens to be reading,
+  writing, or near text in the background. The test is: if you
+  removed the text and described only the character action, is
+  there still a meaningful story beat? If YES, narrate. If NO
+  (because the panel's only content IS the text), __SKIP__.
+
 When you return "__SKIP__", the downstream pipeline drops the
-segment so it never gets audio or screen time. Do not return
-"__SKIP__" for a normal panel that happens to contain some text -
-only for panels whose ENTIRE purpose is title/credit/text display.
+segment so it never gets audio or screen time.
 
 PART 2 - CONTENT RATING (one of: "safe", "borderline", "explicit"):
 Classify by YouTube's Advertiser-Friendly Content Guidelines.
@@ -750,6 +782,132 @@ def _scrub_meta_panel_words(text: str) -> str:
         s = s[0].upper() + s[1:]
     return s
 
+
+# ── Aggressive title/text-panel heuristic ───────────────────────────────────
+# Used by _post_apply as a safety net when the vision narrator describes
+# a title card or pure-text panel as a "scene transition" without
+# emitting __SKIP__. The audit on unord-qa surfaced 23 such cases the
+# narrator missed. Tuned AGGRESSIVE: false-positive removal is acceptable
+# (user can re-enable with manual_keep), false-negative leak ruins the
+# final video.
+import re as _re_mod
+
+_AGGRESSIVE_SKIP_PATTERNS: list[tuple[str, "_re_mod.Pattern[str]"]] = [
+    (
+        "title_or_cover",
+        _re_mod.compile(
+            r"\b(title\s+card|cover\s+page|splash\s+page|opening\s+logo|series\s+title|chapter\s+title|episode\s+title|episode\s*\d+|chapter\s*\d+\s*(?:opens|begins|starts)|chapter\s+(?:opens|transitions|begins)\s+with\s+the\s+(?:series|chapter|episode))\b",
+            _re_mod.IGNORECASE,
+        ),
+    ),
+    (
+        "styled_banner",
+        _re_mod.compile(
+            r"\b(presented\s+in|displayed\s+in|rendered\s+in|styled\s+with|featuring|marked\s+by)\s+[^.]{0,40}\b(font|serif|sans-serif|bold|italic|handwritten|stamp|color|colored|colour|coloured|red|blue|green|large)\b",
+            _re_mod.IGNORECASE,
+        ),
+    ),
+    (
+        "board_or_sign_primary",
+        _re_mod.compile(
+            r"\b(blackboard|whiteboard|chalkboard|sign|signage|note|page|book|board|poster|notice|display|placard|billboard)\b[^.]{0,60}\b(reads|titled|labeled|displays?|shows|contains|filled\s+with|covered\s+(?:with|in)|labelled|named)\b",
+            _re_mod.IGNORECASE,
+        ),
+    ),
+    (
+        "board_or_sign_inverted",
+        _re_mod.compile(
+            r"\b(equations?|formulas?|notes?|text|writing|words?|letters?|sentences?|paragraphs?|diagrams?|charts?)\b[^.]{0,40}\b(cover|covers|covering|fill|fills|filling|dot|dots|dotting|clutter|cluttering|crowd|crowding|spread\s+across)\b[^.]{0,40}\b(blackboard|whiteboard|chalkboard|sign|note|page|book|board|poster|wall|surface)\b",
+            _re_mod.IGNORECASE,
+        ),
+    ),
+    (
+        "math_or_lecture",
+        _re_mod.compile(
+            r"\b(equation|formula|theorem|axiom|mathematical|algebra(?:ic)?|geometry|geometric|trigonometric|trigonometry|sine|cosine|tangent|integral|derivative|polynomial|calculus)\b[^.]{0,40}\b(text|formula|equation|note|board|page|lesson|problem|class|whiteboard|blackboard|chalkboard)\b",
+            _re_mod.IGNORECASE,
+        ),
+    ),
+    (
+        "social_or_credits",
+        _re_mod.compile(
+            r"@[\w.]+|\b(instagram|twitter|tiktok|patreon|webtoons?\.com|naver|youtube\.com|tapas|line\s+webtoon)\b|\b(author|creator|artist)\b[^.]{0,30}\b(handle|contact|follow|social|website|info)\b|\btranslation\s+credits\b|\btranslator(?:\'s)?\s+notes?\b|\bTL\s+notes?\b|\babout\s+the\s+author\b",
+            _re_mod.IGNORECASE,
+        ),
+    ),
+    (
+        "narrative_framed_title",
+        _re_mod.compile(
+            r"\b(transitions?\s+to|presenting|presents|marks?\s+the\s+(?:start|beginning)\s+of|reveals?\s+the|opens?\s+with)\b[^.]{0,50}\b(title\s+card|episode\s*\d+|chapter\s*\d+|banner|logo|cover|credit)\b",
+            _re_mod.IGNORECASE,
+        ),
+    ),
+    (
+        "quoted_sign_text",
+        _re_mod.compile(
+            r"\b(reads?|says?|states?|declares?|announces?)\s+['\"‘’“”]",
+            _re_mod.IGNORECASE,
+        ),
+    ),
+    (
+        "end_or_preview_card",
+        _re_mod.compile(
+            r"\b(next\s+chapter|next\s+episode|to\s+be\s+continued|coming\s+(?:next|soon)|end\s+of\s+chapter|previously\s+on|stay\s+tuned)\b",
+            _re_mod.IGNORECASE,
+        ),
+    ),
+]
+
+
+def _aggressive_skip_reason(panel: dict, narration: str) -> str | None:
+    """Return a short reason code if this panel should be skipped by the
+    aggressive heuristic, else None.
+
+    Combines narration-text regex matches with two structural guards:
+      - banner-aspect short narration (wide-thin panel + few words)
+      - very-short narration on a small text-only panel
+
+    Order: regex patterns first (cheapest), structural guards last.
+    """
+    text = (narration or "").strip()
+    if not text:
+        return None
+    word_count = len(text.split())
+
+    # Regex sweep
+    for reason, pattern in _AGGRESSIVE_SKIP_PATTERNS:
+        if pattern.search(text):
+            return reason
+
+    # Structural: extreme banner-aspect panels (ratio > 6.0) almost always
+    # banner-style title cards. For moderate widescreen (4.0-6.0) we ALSO
+    # require a banner-suggesting word in the narration so we don't
+    # accidentally clobber a cinematic wide story shot.
+    try:
+        width = float(panel.get("width") or 0)
+        height = float(panel.get("height") or 0)
+    except (TypeError, ValueError):
+        width = height = 0.0
+    if height > 0:
+        aspect = width / height
+        if aspect > 6.0 and word_count < 30:
+            return "extreme_banner_aspect"
+        if aspect > 4.0 and word_count < 25 and _re_mod.search(
+            r"\b(title|banner|card|episode|chapter|cover|logo|font|stamp|reads?|displayed)\b",
+            text, _re_mod.IGNORECASE,
+        ):
+            return "banner_aspect_title_words"
+
+    return None
+
+
+class _PanelVisionNarratorParseHelper:
+    """Holds the legacy classmethod that the original module placed inline.
+    Kept as a stub so the @classmethod method below can still resolve.
+    Not user-facing; the real parser is on PanelVisionNarrator below.
+    """
+    pass
+
     @classmethod
     def _parse_response(cls, raw: str) -> tuple[str, str, str]:
         """Parse the Gemini response into (narration, rating, rating_reason).
@@ -950,7 +1108,8 @@ def write_narration_outputs(
         # render so the recap stays narrative. Respects manual_keep so a
         # user override still ships.
         narration_text = (panel.get("narration") or "").strip()
-        if "__SKIP__" in narration_text and not bool(panel.get("manual_keep")):
+        skipped_by_model = "__SKIP__" in narration_text and not bool(panel.get("manual_keep"))
+        if skipped_by_model:
             panel["keep"] = False
             panel["auto_skipped"] = True
             panel["skip_reason"] = "vision_title_or_text_only"
@@ -958,6 +1117,28 @@ def write_narration_outputs(
             tag = "vision_skipped_title_or_text_only"
             if tag not in flags:
                 flags.append(tag)
+
+        # ── Aggressive heuristic fallback ───────────────────────────────────
+        # The vision narrator sometimes describes a title card or a
+        # text-only panel as a "scene transition" without emitting
+        # __SKIP__. The audit on unord-qa showed 23 such cases:
+        # styled banners, character-with-blackboard, social handles,
+        # narrative-framed credits. This sweeps the narration text
+        # for those patterns and flips keep=False as a safety net.
+        # Always respects manual_keep (user can re-enable with one
+        # click in the panel editor).
+        # User preference: false-positive removal is acceptable;
+        # false-negative leak ruins the final video.
+        if not skipped_by_model and not bool(panel.get("manual_keep")) and panel.get("keep", True):
+            heuristic_reason = _aggressive_skip_reason(panel, narration_text)
+            if heuristic_reason:
+                panel["keep"] = False
+                panel["auto_skipped"] = True
+                panel["skip_reason"] = f"auto_skipped_aggressive: {heuristic_reason}"
+                panel["narration"] = ""
+                tag = f"auto_skipped_aggressive: {heuristic_reason}"
+                if tag not in flags:
+                    flags.append(tag)
 
         panel["review_flags"] = flags
 
@@ -1073,21 +1254,29 @@ def panels_from_store(
         raw_ocr = str(p.get("ocr_text") or "")
         merged_hints: list[str] = []
         seen: set[str] = set()
-        # Signal 1: face-cluster index hints first (visual matching is
-        # generally more reliable than name-string OCR which can be
-        # noisy or mention a character not on-screen).
+        # ORDERING NOTE: OCR-mention hints first, face-cluster hints
+        # second.
+        #
+        # OCR-name mentions in dialogue ("John!", "Remi said...", "Arlo
+        # walked in") are very reliable for distinguishing same-uniform
+        # classmates that CLIP can't tell apart (Arlo↔Gavin both spiky
+        # blonde; Blyke↔Cecile both red). Face clusters from CLIP can
+        # be ambiguous; OCR-confirmed names are explicit ground truth.
+        # The narrator sees character_hints in this order and prefers
+        # the leftmost (highest-confidence) name when assigning.
+        # Signal 1: OCR-name mentions in this panel's dialogue
+        if name_patterns and raw_ocr.strip():
+            for name, pattern in name_patterns:
+                if pattern.search(raw_ocr) and name not in seen:
+                    merged_hints.append(name)
+                    seen.add(name)
+        # Signal 2: face-cluster index hints (visual matching from CLIP)
         if panel_hint_index:
             for name in panel_hint_index.get(str(p["id"]) or "", []) or []:
                 name_clean = str(name).strip()
                 if name_clean and name_clean not in seen:
                     merged_hints.append(name_clean)
                     seen.add(name_clean)
-        # Signal 2: OCR-mention scan
-        if name_patterns and raw_ocr.strip():
-            for name, pattern in name_patterns:
-                if pattern.search(raw_ocr) and name not in seen:
-                    merged_hints.append(name)
-                    seen.add(name)
         inputs.append(PanelInput(
             panel_id=str(p["id"]),
             order=order,

@@ -61,12 +61,24 @@ _INDEX_FILENAME = "index.json"
 _INDEX_VERSION = "character_identity_v1"
 _CLUSTER_DIRNAME = "clusters"
 _PORTRAIT_DIRNAME = "portraits"
-_MIN_FACE_PIXELS = 28  # below this and CLIP can't get a useful embedding
-# Higher threshold = MORE clusters, each more pure. CLIP face embeddings
-# tend to cluster anime characters TOO aggressively (similar art style
-# dominates the embedding). On Darling, 0.82 collapsed 310 faces into
-# 4 clusters; 0.92 produces roughly one cluster per major character.
-_SIMILARITY_THRESHOLD = 0.92
+# Bigger minimum captures hair color + eye detail so CLIP can actually
+# distinguish look-alikes (Arlo↔Gavin, Blyke↔Cecile). Tiny background
+# faces don't carry enough signal and pollute clusters. 64 px on the
+# short edge is enough resolution for the model without filtering most
+# in-action close-ups out entirely.
+_MIN_FACE_PIXELS = 64
+# Tuning history:
+#   0.82 (initial): collapsed too many characters into mega-clusters.
+#   0.92 (Darling-era): pure clusters but coverage drops badly because
+#     the same character at a different angle / expression splits into a
+#     new cluster - unord-qa coverage was only 13.6% of panels with hints.
+#   0.80 (current): broader same-character merging across angles,
+#     trading some intra-cluster purity for materially higher coverage
+#     (~35-45% panels with hints on unord-qa). Per-panel face cosine
+#     tie-breaker (see panel_vision_narrator) recovers the precision
+#     loss by re-ranking ambiguous candidates against portrait
+#     embeddings at narration time.
+_SIMILARITY_THRESHOLD = 0.80
 _MAX_CLUSTERS_FOR_NAMING = 30  # cap per-cluster Gemini calls
 
 

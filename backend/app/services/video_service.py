@@ -922,7 +922,14 @@ class VideoRenderService:
     ) -> TimelinePlan:
         narration_events = self._build_audio_events(project_dir, audio_manifest)
         panels_by_id = {panel.id: panel for panel in kept_panels}
-        audio_by_id = {event.panel_id: event for event in narration_events}
+        # AudioEvents are keyed by panel_id in _build_audio_events. Build
+        # two lookup maps so we can resolve per-panel timing precisely
+        # AND fall back to first-panel lookup for legacy segments that
+        # may have stored audio under the segment.id rather than the
+        # actual panel.id.
+        audio_by_panel_id: dict[str, AudioEvent] = {
+            event.panel_id: event for event in narration_events
+        }
         timed_audio_events: list[AudioEvent] = []
 
         segments: list[CameraSegment] = []
@@ -935,26 +942,40 @@ class VideoRenderService:
             if not covered_panels:
                 continue
 
-            audio_event = audio_by_id.get(story_segment.id)
-            if audio_event is None and segment_index - 1 < len(ordered_events):
-                audio_event = ordered_events[segment_index - 1]
-            audio_start = timeline_seconds
-
-            # Build a chapter marker for each story segment - first sentence becomes the title
+            # Build a chapter marker for each story segment - first sentence
+            # becomes the title. Marker placed at the timeline position
+            # WHERE THE FIRST PANEL OF THIS SEGMENT STARTS (= the moment
+            # the viewer first sees this scene).
             segment_text = str(story_segment.text or "").strip()
             marker_title = self._chapter_title_from_text(segment_text, segment_index)
             chapter_markers.append(ChapterMarker(
                 index=segment_index,
                 title=marker_title,
-                start_seconds=audio_start,
+                start_seconds=timeline_seconds,
             ))
-            audio_duration = float(audio_event.duration_seconds) if audio_event is not None else 0.0
 
-            text_fragments = self._distribute_segment_text(str(story_segment.text or "").strip(), len(covered_panels))
-            per_panel_audio = audio_duration / max(len(covered_panels), 1) if audio_duration > 0 else 0.0
+            text_fragments = self._distribute_segment_text(segment_text, len(covered_panels))
 
             for panel_index, panel in enumerate(covered_panels, start=1):
                 fragment = text_fragments[panel_index - 1] if panel_index - 1 < len(text_fragments) else ""
+
+                # Per-panel audio: prefer the AudioEvent keyed by THIS
+                # panel's id (the typical case - one wav per panel). Fall
+                # back to the segment-id lookup, then to ordinal, only
+                # for legacy projects whose audio was built per-segment.
+                # The legacy fallback paths preserve the old behavior
+                # without making the per-panel path depend on them.
+                panel_audio_event = audio_by_panel_id.get(panel.id)
+                if panel_audio_event is None:
+                    panel_audio_event = audio_by_panel_id.get(story_segment.id)
+                if panel_audio_event is None:
+                    legacy_index = (segment_index - 1) + (panel_index - 1)
+                    if 0 <= legacy_index < len(ordered_events):
+                        panel_audio_event = ordered_events[legacy_index]
+                per_panel_audio = (
+                    float(panel_audio_event.duration_seconds) if panel_audio_event else 0.0
+                )
+
                 hold_duration = self._panel_time(fragment, per_panel_audio, panel.duration_seconds)
                 panel_poses = self._build_panel_poses(panel, video_config, sequence_seed=segment_index * 17 + panel_index)
                 hold_segments, _final_pose = self._build_panel_hold_segments(
@@ -965,18 +986,25 @@ class VideoRenderService:
                     sequence_seed=segment_index * 17 + panel_index,
                     video_config=video_config,
                 )
-                segments.extend(hold_segments)
-                timeline_seconds += sum(segment.duration_seconds for segment in hold_segments)
 
-            if audio_event is not None:
-                timed_audio_events.append(
-                    AudioEvent(
-                        panel_id=story_segment.id,
-                        path=audio_event.path,
-                        start_seconds=audio_start,
-                        duration_seconds=audio_duration,
+                # Place this panel's narration AT the moment its hold
+                # starts on the timeline (not at the segment start).
+                # Previously, segment-level audio events let panel 2's
+                # narration play during panel 1's hold for multi-panel
+                # segments, producing the "narration starts ~1s before
+                # the panel appears" symptom.
+                if panel_audio_event is not None and per_panel_audio > 0:
+                    timed_audio_events.append(
+                        AudioEvent(
+                            panel_id=panel.id,
+                            path=panel_audio_event.path,
+                            start_seconds=timeline_seconds,
+                            duration_seconds=per_panel_audio,
+                        )
                     )
-                )
+
+                segments.extend(hold_segments)
+                timeline_seconds += sum(seg.duration_seconds for seg in hold_segments)
 
         if narration_events and not timed_audio_events:
             timeline_seconds, segments = self._stretch_segments_for_narration(segments, timeline_seconds, narration_events)

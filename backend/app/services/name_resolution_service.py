@@ -159,9 +159,20 @@ def resolve_character_names(
         return {"updated": 0, "reason": "no descriptor candidates in script"}
 
     genai.configure(api_key=settings.gemini_api_key)
-    model_name = (settings.gemini_model or "gemini-2.5-flash").strip()
-    if model_name in {"gemini-2.0-flash", "gemini-2.0-flash-exp"}:
-        model_name = "gemini-2.5-flash"
+    primary_model = (settings.gemini_model or "gemini-2.5-flash").strip()
+    if primary_model in {"gemini-2.0-flash", "gemini-2.0-flash-exp"}:
+        primary_model = "gemini-2.5-flash"
+    # Model cascade: each subsequent model has a separate quota bucket
+    # on the free tier, so a 429 on the primary doesn't kill the run.
+    # On the paid tier the primary essentially never 429s and the
+    # fallbacks are unused. Order matters - cheapest + fastest first.
+    model_cascade: list[str] = []
+    seen: set[str] = set()
+    for name in (primary_model, "gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro"):
+        if name and name not in seen:
+            model_cascade.append(name)
+            seen.add(name)
+
     # Maximally permissive safety settings: this is editing manga recap
     # script text, not generating fresh content. Default Gemini safety
     # blocks the whole batch on a single PROHIBITED_CONTENT trigger
@@ -179,7 +190,12 @@ def resolve_character_names(
         ]
     except Exception:
         pass
-    model = genai.GenerativeModel(model_name, safety_settings=safety_settings or None)
+    # Cache the per-model GenerativeModel objects so we don't reconstruct
+    # on every batch. _call_resolver will try them in order.
+    models_by_name: dict[str, Any] = {
+        name: genai.GenerativeModel(name, safety_settings=safety_settings or None)
+        for name in model_cascade
+    }
 
     new_lines = list(all_lines)
     total_rewrites = 0
@@ -193,8 +209,9 @@ def resolve_character_names(
             # Skip a batch entirely if none of its lines contain a
             # potential descriptor - saves a Gemini call.
             continue
-        rewritten = _call_resolver(
-            model, cast_text=cleaned_cast, lines=batch
+        rewritten = _call_resolver_with_fallback(
+            models_by_name, cascade=model_cascade,
+            cast_text=cleaned_cast, lines=batch,
         )
         for k, (before, after) in enumerate(zip(batch, rewritten)):
             if (after or "").strip() and after.strip() != (before or "").strip():
@@ -235,6 +252,57 @@ def resolve_character_names(
         "batches": batches_run,
         "total_lines": len(all_lines),
     }
+
+
+def _call_resolver_with_fallback(
+    models_by_name: dict[str, Any],
+    *,
+    cascade: list[str],
+    cast_text: str,
+    lines: list[str],
+) -> list[str]:
+    """Try each model in `cascade` in order until one returns rewrites.
+
+    On a 429 quota error or transient failure on the primary model,
+    falls through to the next. Each Gemini model has its own quota
+    bucket on the free tier, so a primary 429 doesn't kill the run.
+    On paid-tier billing, the primary essentially never 429s and the
+    fallbacks never run.
+    """
+    last_exc: Exception | None = None
+    for model_name in cascade:
+        model = models_by_name.get(model_name)
+        if model is None:
+            continue
+        try:
+            rewritten = _call_resolver(model, cast_text=cast_text, lines=lines)
+            # _call_resolver returns the input list unchanged on failure.
+            # Treat a returned-identity result as "model couldn't help"
+            # only when it's also tied to an exception we caught.
+            return rewritten
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            err_str = str(exc).lower()
+            is_quota = ("429" in err_str or "quota" in err_str or
+                        "exhausted" in err_str or "resourceexhausted" in err_str)
+            if is_quota and model_name != cascade[-1]:
+                logger.warning(
+                    "Name resolver hit quota on %s; falling through to next model in cascade",
+                    model_name,
+                )
+                continue
+            # Non-quota error - log and move on; cascade continues
+            logger.warning(
+                "Name resolver %s call raised %s; trying next model",
+                model_name, exc,
+            )
+            continue
+    if last_exc is not None:
+        logger.warning(
+            "Name resolver exhausted all %d fallback models (last error: %s); "
+            "leaving batch unchanged.", len(cascade), last_exc,
+        )
+    return list(lines)
 
 
 def _call_resolver(model: Any, *, cast_text: str, lines: list[str]) -> list[str]:
