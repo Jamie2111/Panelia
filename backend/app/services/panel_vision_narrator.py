@@ -156,6 +156,29 @@ AVOID:
   smells okay', 'She mutters that it isn't safe'). The OCR text is
   provided to you for context only - it is NOT meant to be repeated
   verbatim in the narration.
+• Meta words like "panel", "frame", "image", "picture", "art",
+  "scene shows", "this shot", "the cover". The narration is read
+  as STORY VOICE. NEVER write 'The panel shows', 'In this panel',
+  'The frame focuses on', 'The image depicts', 'This scene shows',
+  'Page 3 panel 1'. Tell the story directly: 'Hiro stares at the
+  ceiling', 'The world tilts as she falls'. The viewer is watching
+  the panel already; do not announce it.
+
+SKIP RULES (return the literal token "__SKIP__" alone in PART 1):
+• Chapter title / cover / banner panels showing only series logos
+  or episode/chapter numbers (e.g. an "unORDINARY Episode 1" banner)
+  - never narrate these; the viewer can read the title themselves
+  and a TTS line over a title screen sounds robotic.
+• Pure-text panels: thought bubbles, signs, blackboards, books,
+  letters, or other panels whose entire content is text with no
+  meaningful character or action. These either get spoken via
+  the dialogue track or contribute nothing to the recap.
+• "Title page", "About the author", "Translation credits", "Next
+  chapter preview" panels.
+When you return "__SKIP__", the downstream pipeline drops the
+segment so it never gets audio or screen time. Do not return
+"__SKIP__" for a normal panel that happens to contain some text -
+only for panels whose ENTIRE purpose is title/credit/text display.
 
 PART 2 - CONTENT RATING (one of: "safe", "borderline", "explicit"):
 Classify by YouTube's Advertiser-Friendly Content Guidelines.
@@ -669,7 +692,63 @@ class PanelVisionNarrator:
         text = " ".join(text.split())
         # Strip trailing/leading bullets
         text = text.lstrip("•·-* ").rstrip()
+        # Meta-word scrubber: the model occasionally still writes "the panel
+        # focuses on...", "in this frame...", "the image shows...", "page 3
+        # panel 1" etc. despite the prompt. Rewrite into narrative voice.
+        text = _scrub_meta_panel_words(text)
         return text
+
+
+# Module-level helper so it can be tested in isolation. Returns the
+# original text with meta-narration openers ("The panel shows", "In this
+# frame", "The image depicts", "Page 3 panel 1:", etc.) rewritten or
+# dropped. Conservative: only touches a small list of obvious offenders
+# and leaves the rest of the sentence intact so we never corrupt good
+# narration.
+def _scrub_meta_panel_words(text: str) -> str:
+    import re as _re
+    if not text:
+        return text
+    s = text
+    # Drop a leading "Page N panel M:" stage direction outright.
+    s = _re.sub(
+        r"^\s*Page\s*\d+\s*[,;:.]?\s*panel\s*\d+\s*[,;:.-]\s*",
+        "",
+        s,
+        flags=_re.IGNORECASE,
+    )
+    # Rewrites - opener -> narrative voice. Order matters (longest first).
+    _OPENER_REWRITES = [
+        (r"\bThis\s+panel\s+focuses\s+on\b", "Focus shifts to"),
+        (r"\bThe\s+panel\s+focuses\s+on\b", "Focus shifts to"),
+        (r"\bThis\s+panel\s+shows\b", ""),
+        (r"\bThe\s+panel\s+shows\b", ""),
+        (r"\bThe\s+panel\s+depicts\b", ""),
+        (r"\bIn\s+this\s+panel\s*,?\s*", ""),
+        (r"\bIn\s+the\s+panel\s*,?\s*", ""),
+        (r"\bThe\s+next\s+panel\s+shows\b", ""),
+        (r"\bThis\s+frame\s+(?:shows|focuses\s+on|depicts)\b", ""),
+        (r"\bIn\s+this\s+frame\s*,?\s*", ""),
+        (r"\bThe\s+image\s+(?:shows|depicts|focuses\s+on)\b", ""),
+        (r"\bThe\s+scene\s+shows\b", ""),
+        (r"\bThis\s+scene\s+shows\b", ""),
+        (r"\bThis\s+shot\s+(?:shows|captures)\b", ""),
+        # Inline word "panel" without an opener context - replace with
+        # "scene" as a softer alternative since "panel" implies a comic
+        # frame which breaks the narrative illusion.
+        (r"\bpanels?\b", "scene"),
+        (r"\bThe\s+frame\b", "The shot"),
+    ]
+    for pattern, replacement in _OPENER_REWRITES:
+        s = _re.sub(pattern, replacement, s, flags=_re.IGNORECASE)
+    # Tidy double spaces / leading punctuation left by the strip.
+    s = _re.sub(r"\s+([,.;])", r"\1", s)
+    s = _re.sub(r"^[\s,.;:-]+", "", s)
+    s = _re.sub(r"\s+", " ", s).strip()
+    # Capitalise the new first letter if we stripped a leading clause.
+    if s and s[0].islower():
+        s = s[0].upper() + s[1:]
+    return s
 
     @classmethod
     def _parse_response(cls, raw: str) -> tuple[str, str, str]:
@@ -864,6 +943,22 @@ def write_narration_outputs(
             if not bool(panel.get("manual_keep")):
                 panel["content_blur"] = False
 
+        # ── Apply __SKIP__ marker from the narrator ─────────────────────────
+        # The vision narrator returns "__SKIP__" for cover pages, episode
+        # title banners, and pure-text panels (math boards, signs, credits)
+        # whose entire purpose is text/branding display. Drop them from the
+        # render so the recap stays narrative. Respects manual_keep so a
+        # user override still ships.
+        narration_text = (panel.get("narration") or "").strip()
+        if "__SKIP__" in narration_text and not bool(panel.get("manual_keep")):
+            panel["keep"] = False
+            panel["auto_skipped"] = True
+            panel["skip_reason"] = "vision_title_or_text_only"
+            panel["narration"] = ""
+            tag = "vision_skipped_title_or_text_only"
+            if tag not in flags:
+                flags.append(tag)
+
         panel["review_flags"] = flags
 
     write_json(project_dir / "panels.json", panels_json)
@@ -874,6 +969,11 @@ def write_narration_outputs(
     for idx, panel in enumerate(panel_order):
         r = result_by_id.get(panel.panel_id)
         narration_text = r.narration if (r and r.status == "ok") else ""
+        # Drop title/text-only panels from the script so they get no audio
+        # and no screen time, matching the panels.json keep=False edit above.
+        skip_segment = "__SKIP__" in (narration_text or "")
+        if skip_segment:
+            narration_text = ""
         script_lines.append(narration_text)
         story_segments.append({
             "id": f"segment_{idx + 1:04d}",
@@ -881,11 +981,13 @@ def write_narration_outputs(
             "order": idx + 1,
             "text": narration_text,
             "narration": narration_text,
-            "keep": True,
+            "keep": not skip_segment,
             "panel_count": 1,
             "panel_ids": [panel.panel_id],
             "needs_regenerate": bool(r and r.status != "ok"),
             "regenerate_reason": (r.reason if (r and r.status != "ok") else ""),
+            "suppression_reason": "title_or_text_only" if skip_segment else None,
+            "visual_only": skip_segment,
         })
 
     manifest = {

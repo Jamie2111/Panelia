@@ -26,6 +26,67 @@ from app.utils.files import ensure_dir, read_json, write_json
 logger = logging.getLogger(__name__)
 
 
+def _tighten_to_gutters(crop: "Image.Image") -> "Image.Image":
+    """Trim a panel crop inward until the top + bottom edges are clean.
+
+    Panel detection sometimes returns a bbox a few pixels too tall, so the
+    crop ends up with a thin strip of the previous / next panel along
+    one edge. That looks like a torn or distorted band in the final video.
+
+    Algorithm: convert to grayscale, compute the mean brightness of each
+    row near the top + bottom. A "gutter row" is one with brightness above
+    GUTTER_BRIGHTNESS_THRESHOLD (i.e. mostly white). Walk inward from each
+    edge until we find a non-gutter row (real content). Trim there.
+
+    Bounded by MAX_TRIM_PCT so a panel that legitimately starts with a
+    bright sky / page background isn't eaten - we'll only trim up to ~12%
+    of the panel height from each edge.
+    """
+    if crop is None or crop.size[0] == 0 or crop.size[1] == 0:
+        return crop
+    width, height = crop.size
+    if height < 20:
+        return crop  # too small to meaningfully tighten
+
+    MAX_TRIM_PCT = 0.12
+    GUTTER_BRIGHTNESS_THRESHOLD = 245  # 0-255, near-white
+    GUTTER_UNIFORMITY_THRESHOLD = 0.92  # >=92% of row pixels above threshold
+
+    max_trim = max(1, int(height * MAX_TRIM_PCT))
+
+    try:
+        gray = np.asarray(crop.convert("L"), dtype=np.uint8)
+    except Exception:  # noqa: BLE001
+        return crop
+
+    # Per-row fraction of bright pixels. shape: (height,)
+    bright_mask = gray >= GUTTER_BRIGHTNESS_THRESHOLD
+    bright_fraction = bright_mask.mean(axis=1)
+
+    def _find_content_edge(start: int, stop: int, step: int) -> int:
+        """Walk from start toward stop in `step`-sized increments. Return
+        the first row index whose bright fraction is BELOW the gutter
+        uniformity threshold (i.e. real content)."""
+        for row in range(start, stop, step):
+            if bright_fraction[row] < GUTTER_UNIFORMITY_THRESHOLD:
+                return row
+        return start  # never found a content row, leave edge alone
+
+    new_top = _find_content_edge(0, max_trim, 1)
+    new_bottom = _find_content_edge(height - 1, height - 1 - max_trim, -1)
+    # new_bottom is the last content row; convert to crop coord (exclusive).
+    new_bottom = min(height, new_bottom + 1)
+
+    if new_top == 0 and new_bottom == height:
+        return crop  # already tight
+
+    # Sanity: never tighten so much that we'd produce a degenerate strip.
+    if new_bottom - new_top < height * 0.5:
+        return crop
+
+    return crop.crop((0, new_top, width, new_bottom))
+
+
 @dataclass(slots=True)
 class CameraPose:
     panel_id: str
@@ -2411,7 +2472,7 @@ class VideoRenderService:
                         "width": int(panel.width),
                         "height": int(panel.height),
                     },
-                    "strategy": "panel_crop_v4_face_preserve",
+                    "strategy": "panel_crop_v5_gutter_tighten",
                     "blur_sigma": blur_sigma,
                 },
                 sort_keys=True,
@@ -2430,6 +2491,15 @@ class VideoRenderService:
             if right <= left or bottom <= top:
                 left, top, right, bottom = 0, 0, page.width, page.height
             crop = page.crop((left, top, right, bottom))
+            # Gutter-aware tightening: panel detection sometimes grabs a
+            # bbox a few pixels too tall, including a thin strip of the
+            # next panel's content at the bottom (or the previous panel's
+            # at the top). That looks like distortion in the final video.
+            # Scan rows from each edge and shrink to the first "gutter
+            # row" - a row that is overwhelmingly near-white. Bounded by
+            # MAX_TRIM so a real panel with a white-background top isn't
+            # eaten.
+            crop = _tighten_to_gutters(crop)
             if blur_sigma > 0:
                 # Try face-preserving blur first - keeps the emotional
                 # beat of the face visible while obscuring the body. If
