@@ -434,17 +434,36 @@ def _match_description_to_cast(
     if not desc_low.strip() or "indistinct" in desc_low or "low detail" in desc_low:
         return "unknown"
 
-    # Visual feature vocabulary — match cast bible descriptions against
-    # the same vocabulary in the LLM-generated description.
+    # Visual feature vocabulary - kept broad to match the richer
+    # cast-bible descriptions written by the enriched LLM prompt
+    # (face shape, accessories, common props, height, expression).
     color_words = {
         "pink", "blue", "red", "green", "blonde", "blond", "yellow",
         "brown", "black", "white", "purple", "violet", "orange", "silver",
-        "grey", "gray", "auburn", "magenta",
+        "grey", "gray", "auburn", "magenta", "cobalt", "navy", "crimson",
+        "cyan", "teal", "amber", "golden", "platinum", "ash", "ginger",
     }
     feature_words = {
-        "horns", "glasses", "scar", "tattoo", "mask", "visor", "cybernetic",
-        "helmet", "headband", "spiky", "long", "short", "curly", "ponytail",
+        # Hair length / style
+        "long", "short", "shoulder", "spiky", "straight", "curly", "wavy",
+        "messy", "ponytail", "braid", "braids", "bun", "twin", "twintails",
+        "bob", "buzzcut", "bald", "fringe", "bangs",
+        # Accessories
+        "horns", "glasses", "monocle", "scar", "tattoo", "mask", "visor",
+        "cybernetic", "helmet", "headband", "hat", "cap", "crown", "earring",
+        "necklace", "ring", "gloves", "scarf", "lollipop", "weapon", "sword",
+        "katana", "bow", "staff", "wand", "gun", "knife", "shield",
+        # Body / age
+        "tall", "short", "average", "slim", "athletic", "stocky", "muscular",
+        "petite", "child", "teen", "young", "adult", "elderly", "old",
+        # Face / expression
+        "round", "sharp", "angular", "narrow", "wide", "piercing", "gentle",
+        "stern", "smug", "anxious", "cheerful", "deadpan", "scowl", "smile",
+        "frown", "calm", "fierce", "kind", "menacing", "freckles",
+        # Outfit categories
         "uniform", "coat", "armor", "hoodie", "jacket", "dress", "robe",
+        "suit", "kimono", "cloak", "cape", "sweater", "shirt", "skirt",
+        "trousers", "trenchcoat", "labcoat",
     }
     cast_keywords: dict[str, set[str]] = {}
     for m in cast_members:

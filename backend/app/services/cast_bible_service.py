@@ -89,7 +89,12 @@ class CastBible:
 
 
 _BIBLE_PROMPT = """You are building a character cast bible for a YouTube
-manga / manhwa / webtoon / comic recap pipeline.
+manga / manhwa / webtoon / comic recap pipeline. The downstream system
+uses your visual descriptions to IDENTIFY which character appears in
+any given panel. Generic descriptions ("blue hair, school uniform")
+fail to distinguish characters from each other - many characters in
+the same series share those features. You MUST include DISCRIMINATING
+features that set each character apart from the rest of the cast.
 
 Series: {manga_title}
 Chapter focus: {chapter_title}
@@ -101,9 +106,32 @@ who are likely to appear in this chapter. For each entry:
   {{
     "name": "the canonical English name (e.g. 'Zero Two', 'Levi Ackerman')",
     "role": "one short phrase, e.g. 'pistil pilot of Strelizia'",
-    "visual_description": "the distinctive visible features the model
-      should use to identify them in a panel - hair color, eye color,
-      clothing, horns, scars, etc. Keep under 25 words."
+    "visual_description": "Pack in 40-70 words of distinguishing visible
+      features the model can use to identify this character in a panel
+      AND distinguish them from every other character in this cast list.
+      You MUST cover ALL of these dimensions when applicable:
+        - HAIR: color AND length (short / shoulder / long) AND style
+          (spiky / straight / messy / ponytail / braids / specific cut)
+        - EYE: color AND shape AND default expression (sharp /
+          half-lidded / wide / piercing / gentle)
+        - FACE: face shape (round / sharp / angular), skin tone if
+          distinct, scars / marks / makeup / freckles
+        - UNIQUE BODY: horns, ears, height (tall / short / average),
+          build (slim / athletic / stocky), age (child / teen / adult /
+          elderly)
+        - CLOTHING: specific outfit / uniform variation - if multiple
+          characters wear the same uniform, what distinguishes this
+          one's version? (color trim, missing tie, rolled sleeves,
+          coat color, badge color)
+        - SIGNATURE PROPS: weapon, instrument, lollipop, glasses,
+          headband, mask, gloves, scarf, necklace, prosthetic
+        - DEFAULT VIBE: stern, smug, anxious, cheerful, deadpan -
+          whatever expression / body language they're drawn with most
+      Bad: 'blue hair, blue eyes, school uniform'.
+      Good: 'Spiky cobalt blue hair cut short, sharp narrow blue eyes,
+      angular face with a default scowl, tall and athletic teen build,
+      wears the Squad 13 black-and-white uniform with the sleeves
+      rolled up, often holds a wooden sword or training bokken.'"
   }}
 
 Rules:
@@ -111,6 +139,9 @@ Rules:
   • Cap the list at 12 most-likely-relevant characters for this chapter.
   • If the series is too obscure or you don't have confident knowledge of
     it, return {{"cast": []}} - empty is better than wrong.
+  • If two characters share an obvious feature (same uniform, same hair
+    color), the descriptions MUST call out what distinguishes them
+    (length differs, height differs, accessory differs).
   • Return ONLY the JSON object. No prose, no code fences."""
 
 
@@ -228,7 +259,15 @@ class CastBibleService:
             gen_kwargs: dict[str, Any] = {
                 "temperature": 0.3,
                 "top_p": 0.9,
-                "max_output_tokens": 2048,
+                # Bumped from 2048 -> 8192: enriched descriptions are
+                # 40-70 words each, so 12 characters * ~70 words *
+                # ~1.4 tokens/word ~ 1.2k tokens of content, but JSON
+                # structure overhead plus Gemini's tendency to use
+                # longer-than-asked descriptions pushed past 4096 on
+                # Darling test runs (response truncated mid-Hachi entry).
+                # 8192 is overkill but cheap insurance against the
+                # next series having longer character lists.
+                "max_output_tokens": 8192,
             }
             try:
                 from google.generativeai.types import ThinkingConfig  # type: ignore
