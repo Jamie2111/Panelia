@@ -2548,8 +2548,10 @@ class VideoRenderService:
             # Atomic write: another concurrent renderer reading the same
             # cache hash mid-write would see a partial PNG and raise
             # PIL.UnidentifiedImageError. Write to .tmp, then rename.
+            # Explicit format="PNG" required because PIL can't infer
+            # format from the .png.tmp extension.
             tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
-            crop.save(tmp_path)
+            crop.save(tmp_path, format="PNG")
             os.replace(tmp_path, output_path)
         return output_path
 
