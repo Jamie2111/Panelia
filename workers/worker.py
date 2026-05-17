@@ -29,12 +29,13 @@ warnings.filterwarnings("ignore", message=".*No ccache found.*")
 warnings.filterwarnings("ignore", message="`lang` and `ocr_version` will be ignored when model names or model directories are not `None`\\.")
 warnings.filterwarnings("ignore", message="`torch.utils._pytree._register_pytree_node` is deprecated.*", category=FutureWarning)
 
+from app.pipeline.auto_run import continue_auto_run_pipeline, project_auto_run_enabled
 from app.pipeline.runner import run_job
 from app.services.dialogue_pipeline import DialogueExtractionPipeline
 from app.services.panel_detection_service import MagiPanelDetectionService
 from app.services.project_store import ProjectStore
 from app.services.queue_service import QueueService
-from app.schemas.project import JobStatus, StageStatus
+from app.schemas.project import JobStatus, PipelineStage, StageStatus
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("panelia-worker")
@@ -251,6 +252,61 @@ def _recover_interrupted_jobs(
             logger.info("Recovered %s stale interrupted job(s)", recovered)
 
 
+# Stages the auto-run cascade is allowed to (re-)enqueue automatically.
+# Mirrors the forward path in app.pipeline.auto_run.continue_auto_run_pipeline.
+_RESUMABLE_CASCADE_STAGES = (
+    PipelineStage.SCRIPT_GENERATION,
+    PipelineStage.NARRATION_GENERATION,
+    PipelineStage.VIDEO_RENDERING,
+    PipelineStage.YOUTUBE_BUNDLE,
+)
+
+
+def _resume_orphaned_cascades(store: ProjectStore, queue: QueueService) -> None:
+    """Find auto-run projects whose cascade silently stopped and restart them.
+
+    A stage handler can crash or be skipped between marking itself COMPLETED
+    and calling queue_stage_once for the next stage (e.g. a transient Redis
+    error or the child exiting non-zero AFTER context.complete). That leaves
+    the project with `auto_run_end_to_end=True`, no active job, and the next
+    stage sitting at READY forever. The recovery sweeper above only handles
+    RUNNING-without-heartbeat jobs, so without this second sweeper the
+    cascade is orphaned until a human notices.
+
+    Called from the worker idle loop on the same cadence as
+    `_recover_interrupted_jobs`. Cheap: only reads project metadata, only
+    acts when the auto-run guard agrees there's work to schedule.
+    """
+    resumed = 0
+    for project in store.list_projects():
+        try:
+            if not project_auto_run_enabled(project):
+                continue
+            if project.active_jobs:
+                continue
+            stage_states = project.stage_states or {}
+            ready_stages = [
+                stage for stage in _RESUMABLE_CASCADE_STAGES
+                if (state := stage_states.get(stage)) is not None
+                and state.status == StageStatus.READY
+            ]
+            if not ready_stages:
+                continue
+            if continue_auto_run_pipeline(
+                store, queue, project.id, source="orphaned cascade sweeper"
+            ):
+                resumed += 1
+                logger.info(
+                    "Resumed orphaned auto-run cascade for %s (ready stages: %s)",
+                    project.id,
+                    ", ".join(s.value for s in ready_stages),
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("Cascade sweeper failed for project %s", project.id)
+    if resumed:
+        logger.info("Cascade sweeper queued %s next-stage job(s)", resumed)
+
+
 def _acquire_worker_lock() -> None:
     global _WORKER_LOCK_HANDLE
     lock_path = _WORKER_LOCK_PATH
@@ -323,6 +379,9 @@ def main() -> None:
             now = time.monotonic()
             if now - last_recovery_check >= _STALE_JOB_RECOVERY_INTERVAL_SECONDS:
                 _recover_interrupted_jobs(store, queue)
+                # Same cadence: catch projects whose cascade stalled at a
+                # READY stage without an active job (auto-run safety net).
+                _resume_orphaned_cascades(store, queue)
                 last_recovery_check = now
             time.sleep(1)
             continue

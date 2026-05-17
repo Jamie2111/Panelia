@@ -2413,6 +2413,11 @@ def run_script_generation(context: PipelineContext) -> None:
             PipelineStage.NARRATION_GENERATION,
             "Queued automatically after script generation",
         )
+        # Auto-cascade safety net (mirrors panel stages). Pairs with
+        # _resume_orphaned_cascades in the worker so a queue/redis hiccup
+        # between context.complete and queue_stage_once doesn't strand
+        # the project at "narration_generation: ready" forever.
+        continue_auto_run_pipeline(store, context.queue, context.project_id, source="script generation")
 
 
 def run_narration_generation(context: PipelineContext) -> None:
@@ -2531,6 +2536,10 @@ def run_narration_generation(context: PipelineContext) -> None:
         PipelineStage.VIDEO_RENDERING,
         "Queued automatically after audio generation",
     )
+    # Auto-cascade safety net (mirrors the panel stages). If queue_stage_once
+    # silently no-ops (e.g. a stale active-job lookup), this still triggers
+    # the next forward stage based on stage_states.
+    continue_auto_run_pipeline(store, context.queue, context.project_id, source="narration generation")
 
 
 def run_video_rendering(context: PipelineContext) -> None:
@@ -2597,6 +2606,11 @@ def run_video_rendering(context: PipelineContext) -> None:
         cancel_callback=context.ensure_not_cancelled,
     )
     context.complete("Video exported")
+    # Auto-cascade safety net: video_rendering used to leave the bundle
+    # stage at PENDING/READY with no active job, requiring the cascade
+    # sweeper to catch up. Trigger the next stage inline so auto-run
+    # projects flow straight into bundle generation.
+    continue_auto_run_pipeline(store, context.queue, context.project_id, source="video rendering")
 
 
 def run_youtube_bundle(context: PipelineContext) -> None:
