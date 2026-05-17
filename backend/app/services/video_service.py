@@ -956,6 +956,48 @@ class VideoRenderService:
 
             text_fragments = self._distribute_segment_text(segment_text, len(covered_panels))
 
+            # Feature flag: per-panel audio sync (default) vs legacy
+            # segment-uniform division. Legacy mode preserves panel-clip
+            # cache compatibility for re-renders done before the fix.
+            use_per_panel_sync = bool(getattr(video_config, "audio_sync_per_panel", True))
+
+            if not use_per_panel_sync:
+                # Legacy path: one audio event per segment, hold durations
+                # divide the segment audio evenly across panels. Produces
+                # the ~1s narration-leads-panel offset on multi-panel
+                # segments but preserves the cache key for every clip
+                # rendered before D1-D3 shipped.
+                segment_audio = audio_by_panel_id.get(story_segment.id)
+                if segment_audio is None and segment_index - 1 < len(ordered_events):
+                    segment_audio = ordered_events[segment_index - 1]
+                audio_start = timeline_seconds
+                audio_duration = float(segment_audio.duration_seconds) if segment_audio else 0.0
+                per_panel_audio = audio_duration / max(len(covered_panels), 1) if audio_duration > 0 else 0.0
+                for panel_index, panel in enumerate(covered_panels, start=1):
+                    fragment = text_fragments[panel_index - 1] if panel_index - 1 < len(text_fragments) else ""
+                    hold_duration = self._panel_time(fragment, per_panel_audio, panel.duration_seconds)
+                    panel_poses = self._build_panel_poses(panel, video_config, sequence_seed=segment_index * 17 + panel_index)
+                    hold_segments, _final_pose = self._build_panel_hold_segments(
+                        panel_id=panel.id,
+                        script_id=story_segment.id,
+                        poses=panel_poses,
+                        hold_duration=hold_duration,
+                        sequence_seed=segment_index * 17 + panel_index,
+                        video_config=video_config,
+                    )
+                    segments.extend(hold_segments)
+                    timeline_seconds += sum(seg.duration_seconds for seg in hold_segments)
+                if segment_audio is not None:
+                    timed_audio_events.append(
+                        AudioEvent(
+                            panel_id=story_segment.id,
+                            path=segment_audio.path,
+                            start_seconds=audio_start,
+                            duration_seconds=audio_duration,
+                        )
+                    )
+                continue
+
             for panel_index, panel in enumerate(covered_panels, start=1):
                 fragment = text_fragments[panel_index - 1] if panel_index - 1 < len(text_fragments) else ""
 

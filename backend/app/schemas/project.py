@@ -206,6 +206,14 @@ class VideoConfig(BaseModel):
     title_card_enabled: bool = False
     title_card_seconds: float = 3.0    # Duration of title card in seconds
     title_card_accent_color: str = "#e11d48"  # Rose-600 - matches Panelia UI accent
+    # Audio-sync per-panel fix (commit add849d, Part D1-D3). When True
+    # each panel's hold duration matches its specific audio fragment
+    # duration, so narration starts exactly when the panel appears.
+    # When False, audio is divided uniformly across panels in a segment
+    # (legacy behavior — produces a ~1s lead-in on multi-panel segments
+    # but preserves panel-clip cache compatibility with renders done
+    # before the fix). Set False to reuse cached clips on a re-render.
+    audio_sync_per_panel: bool = True
 
 
 class NarrationMode(str, Enum):
