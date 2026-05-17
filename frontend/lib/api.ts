@@ -160,6 +160,16 @@ export const api = {
   listProjects: () => request<ProjectSummary[]>("/projects").then((projects) => asArray<ProjectSummary>(projects).map(normalizeProjectSummary)),
   getProjectSummary: (projectId: string) => request<ProjectSummary>(`/projects/${projectId}/summary`).then(normalizeProjectSummary),
   getProject: (projectId: string) => request<ProjectDetail>(`/projects/${projectId}`).then(normalizeProjectSummary),
+  // Lightweight script-only reader. Used as a fallback by the narration
+  // page when the full project payload stalls (e.g. while the worker is
+  // mid-write on TTS/render). Reads only script.json on the backend.
+  getStoryScript: (projectId: string) =>
+    request<{
+      chapter_summary: string;
+      story_segments: Array<Record<string, unknown>>;
+      script_lines: string[];
+      script_mode?: string;
+    }>(`/projects/${projectId}/story-script`),
   renameProject: (projectId: string, name: string) =>
     request<ProjectDetail>(`/projects/${projectId}/name`, {
       method: "PATCH",

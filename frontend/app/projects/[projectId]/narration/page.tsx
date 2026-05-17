@@ -294,7 +294,28 @@ export default function NarrationPage() {
       setProject(projectPayload);
       if (initial || !scriptDirtyRef.current) {
         const nextLineItems = buildNarrationLineItems(projectPayload);
-        const nextSegmentItems = buildStorySegmentItems(projectPayload);
+        let nextSegmentItems = buildStorySegmentItems(projectPayload);
+        // Fallback: when the worker is mid-write on TTS/render the heavy
+        // /api/projects/{id} endpoint sometimes returns an older project
+        // snapshot whose story_segments are empty or stale. Pull the
+        // lightweight script-only endpoint and merge any missing
+        // segments back in so the editor never goes blank just because
+        // the worker is busy.
+        if (nextSegmentItems.length === 0) {
+          try {
+            const scriptOnly = await api.getStoryScript(projectId);
+            const merged: ProjectDetail = {
+              ...projectPayload,
+              story_segments: (scriptOnly.story_segments ?? []) as ProjectDetail["story_segments"],
+            };
+            nextSegmentItems = buildStorySegmentItems(merged);
+            if (nextSegmentItems.length > 0) {
+              setProject(merged);
+            }
+          } catch (fallbackErr) {
+            // ignore, leave nextSegmentItems empty
+          }
+        }
         setLineItems(nextLineItems);
         setSegmentItems(nextSegmentItems);
         lineItemsRef.current = nextLineItems;

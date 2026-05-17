@@ -235,6 +235,42 @@ def get_project(project_id: str):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.get("/{project_id}/story-script")
+def get_story_script(project_id: str):
+    """Lightweight script reader used by the narration page when the full
+    /api/projects/{id} payload is slow (e.g. while the worker is mid-write
+    on TTS or render). Reads only script.json and ignores everything else
+    so it returns in milliseconds even under heavy contention.
+    """
+    if not store.project_exists(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    script_path = store._project_dir(project_id) / "script.json"
+    if not script_path.exists():
+        return {
+            "chapter_summary": "",
+            "story_segments": [],
+            "script_lines": [],
+        }
+    import json as _json
+    try:
+        payload = _json.loads(script_path.read_text(encoding="utf-8"))
+    except _json.JSONDecodeError as exc:
+        # script.json mid-write by the worker. Return empty rather than
+        # 500 - the page can keep its previous state.
+        logger.warning("story_script JSON decode error for %s: %s", project_id, exc)
+        return {
+            "chapter_summary": "",
+            "story_segments": [],
+            "script_lines": [],
+        }
+    return {
+        "chapter_summary": str(payload.get("chapter_summary") or ""),
+        "story_segments": payload.get("story_segments") or [],
+        "script_lines": payload.get("script_lines") or [],
+        "script_mode": payload.get("script_mode"),
+    }
+
+
 def _download_filename(project_name: str, extension: str) -> str:
     cleaned = re.sub(r'[\\/:*?"<>|]+', "", project_name).strip().rstrip(".")
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
