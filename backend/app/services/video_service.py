@@ -2517,7 +2517,12 @@ class VideoRenderService:
                     )
                 else:
                     crop = crop.filter(ImageFilter.GaussianBlur(radius=blur_sigma))
-            crop.save(output_path)
+            # Atomic write: another concurrent renderer reading the same
+            # cache hash mid-write would see a partial PNG and raise
+            # PIL.UnidentifiedImageError. Write to .tmp, then rename.
+            tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+            crop.save(tmp_path)
+            os.replace(tmp_path, output_path)
         return output_path
 
     def _faces_inside_panel(
