@@ -290,17 +290,51 @@ export default function NarrationPage() {
   async function loadProject(initial = false) {
     if (!projectId) return;
     try {
-      const projectPayload = await api.getProject(projectId);
+      // Race the heavy /api/projects/{id} call against a 6-second
+      // timeout. When the worker is mid-write on TTS/render the slow
+      // endpoint can take 8-15s, which on the initial page load leaves
+      // the editor blank. On timeout we fall back to the lightweight
+      // summary + script-only endpoints (both <200ms) so the page
+      // populates immediately with cached state. The full payload
+      // resolves in the background later (next poll tick).
+      const TIMEOUT_MS = 6000;
+      const slowProjectPromise = api.getProject(projectId);
+      let projectPayload: ProjectDetail | null = null;
+      try {
+        projectPayload = await Promise.race([
+          slowProjectPromise,
+          new Promise<ProjectDetail>((_, reject) =>
+            setTimeout(() => reject(new Error("getProject timeout")), TIMEOUT_MS),
+          ),
+        ]);
+      } catch (raceErr) {
+        // Timed out. Try summary + script-only as a fast path.
+        try {
+          const summary = await api.getProjectSummary(projectId);
+          // Merge summary fields with empty defaults for the deeper
+          // fields the page expects. The polling tick will overwrite
+          // with the real payload when the slow call eventually returns.
+          projectPayload = {
+            ...summary,
+            panels: [],
+            story_segments: [],
+            voice_config: summary.voice_config,
+            video_config: summary.video_config,
+            music_config: summary.music_config,
+          } as unknown as ProjectDetail;
+        } catch (summaryErr) {
+          throw raceErr;
+        }
+      }
       setProject(projectPayload);
       if (initial || !scriptDirtyRef.current) {
         const nextLineItems = buildNarrationLineItems(projectPayload);
         let nextSegmentItems = buildStorySegmentItems(projectPayload);
         // Fallback: when the worker is mid-write on TTS/render the heavy
         // /api/projects/{id} endpoint sometimes returns an older project
-        // snapshot whose story_segments are empty or stale. Pull the
-        // lightweight script-only endpoint and merge any missing
-        // segments back in so the editor never goes blank just because
-        // the worker is busy.
+        // snapshot whose story_segments are empty or stale, OR we fell
+        // through above with the summary-only payload. Pull the
+        // lightweight script-only endpoint and merge segments in.
         if (nextSegmentItems.length === 0) {
           try {
             const scriptOnly = await api.getStoryScript(projectId);

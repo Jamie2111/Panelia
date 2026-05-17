@@ -159,13 +159,17 @@ def resolve_character_names(
         return {"updated": 0, "reason": "no descriptor candidates in script"}
 
     genai.configure(api_key=settings.gemini_api_key)
-    primary_model = (settings.gemini_model or "gemini-2.5-flash").strip()
+    primary_model = (settings.gemini_model or "gemini-2.5-flash-lite").strip()
     if primary_model in {"gemini-2.0-flash", "gemini-2.0-flash-exp"}:
-        primary_model = "gemini-2.5-flash"
-    # Model cascade: each subsequent model has a separate quota bucket
-    # on the free tier, so a 429 on the primary doesn't kill the run.
-    # On the paid tier the primary essentially never 429s and the
-    # fallbacks are unused. Order matters - cheapest + fastest first.
+        primary_model = "gemini-2.5-flash-lite"
+    # Model cascade. ORDER matters: empirically gemini-2.5-flash-lite is
+    # the most willing to actually REWRITE descriptors into cast names
+    # for this task. gemini-2.5-flash is more conservative and tends to
+    # return the input unchanged even when a descriptor clearly maps to
+    # a cast member. Pro is the deepest fallback for the rare batch
+    # both lite + flash refuse to rewrite. Each model has its own free-
+    # tier quota bucket so per-model 429s don't kill the run; on paid
+    # tier the primary essentially never 429s.
     model_cascade: list[str] = []
     seen: set[str] = set()
     for name in (primary_model, "gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro"):
@@ -223,13 +227,32 @@ def resolve_character_names(
         return {"updated": 0, "reason": "no replacements suggested by model"}
 
     sm["script_lines"] = new_lines
+    # Also mirror into the manifest's story_segments[].text/narration if
+    # present, since the vision-mode renderer reads from that field
+    # rather than the legacy script_lines.
+    sm_segments = sm.get("story_segments") or []
+    for seg, new_line in zip(sm_segments, new_lines):
+        if isinstance(seg, dict) and (seg.get("keep", True)) and new_line:
+            seg["text"] = new_line
+            seg["narration"] = new_line
     sm_path.write_text(json.dumps(sm, indent=2, ensure_ascii=False), encoding="utf-8")
     script_path = project_dir / "script.json"
     if script_path.exists():
         try:
             other = json.loads(script_path.read_text(encoding="utf-8"))
-            if isinstance(other, dict) and "script_lines" in other:
-                other["script_lines"] = new_lines
+            if isinstance(other, dict):
+                if "script_lines" in other:
+                    other["script_lines"] = new_lines
+                # Critical: update story_segments[].text + narration too.
+                # The vision-mode video renderer reads each panel's
+                # narration from segments here, not from script_lines.
+                # Without this mirror, the resolver's rewrites never
+                # reach the rendered video.
+                other_segments = other.get("story_segments") or []
+                for seg, new_line in zip(other_segments, new_lines):
+                    if isinstance(seg, dict) and seg.get("keep", True) and new_line:
+                        seg["text"] = new_line
+                        seg["narration"] = new_line
                 script_path.write_text(
                     json.dumps(other, indent=2, ensure_ascii=False),
                     encoding="utf-8",
@@ -263,40 +286,62 @@ def _call_resolver_with_fallback(
 ) -> list[str]:
     """Try each model in `cascade` in order until one returns rewrites.
 
-    On a 429 quota error or transient failure on the primary model,
-    falls through to the next. Each Gemini model has its own quota
-    bucket on the free tier, so a primary 429 doesn't kill the run.
-    On paid-tier billing, the primary essentially never 429s and the
-    fallbacks never run.
+    Falls through to the next model in two cases:
+      1. The current model raised an exception (typically a 429 quota
+         or a transient API error). Each Gemini model has its own
+         free-tier quota bucket so 429s don't cascade.
+      2. The current model returned the input UNCHANGED for every line
+         in the batch. Empirically gemini-2.5-flash will sometimes
+         refuse to rewrite even clear-cut descriptor cases; the lighter
+         flash-lite model is more willing. We detect "fully identity"
+         and let the next model try.
+
+    Returns the first non-identity rewrite, or the input lines unchanged
+    if all models in the cascade gave up.
     """
+    def _normalised(s: str) -> str:
+        return " ".join((s or "").split()).strip().casefold()
+
     last_exc: Exception | None = None
-    for model_name in cascade:
+    input_signature = [_normalised(L) for L in lines]
+    for idx, model_name in enumerate(cascade):
         model = models_by_name.get(model_name)
         if model is None:
             continue
         try:
             rewritten = _call_resolver(model, cast_text=cast_text, lines=lines)
-            # _call_resolver returns the input list unchanged on failure.
-            # Treat a returned-identity result as "model couldn't help"
-            # only when it's also tied to an exception we caught.
-            return rewritten
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             err_str = str(exc).lower()
             is_quota = ("429" in err_str or "quota" in err_str or
                         "exhausted" in err_str or "resourceexhausted" in err_str)
-            if is_quota and model_name != cascade[-1]:
+            if is_quota:
                 logger.warning(
-                    "Name resolver hit quota on %s; falling through to next model in cascade",
+                    "Name resolver hit quota on %s; falling to next model",
                     model_name,
                 )
-                continue
-            # Non-quota error - log and move on; cascade continues
-            logger.warning(
-                "Name resolver %s call raised %s; trying next model",
-                model_name, exc,
+            else:
+                logger.warning(
+                    "Name resolver %s call raised %s; falling to next model",
+                    model_name, exc,
+                )
+            continue
+
+        # Identity-detection: when the model returned the input verbatim
+        # for every line, treat as "model declined to rewrite" and fall
+        # through to the next model in the cascade. We compare on a
+        # normalised form (whitespace + case) so trivial reformatting
+        # doesn't trigger a fall-through.
+        rewritten_sig = [_normalised(L) for L in rewritten]
+        if rewritten_sig == input_signature and idx < len(cascade) - 1:
+            logger.info(
+                "Name resolver %s returned identity for all %d lines; "
+                "trying %s next",
+                model_name, len(lines), cascade[idx + 1],
             )
             continue
+        return rewritten
+
     if last_exc is not None:
         logger.warning(
             "Name resolver exhausted all %d fallback models (last error: %s); "
@@ -310,10 +355,16 @@ def _call_resolver(model: Any, *, cast_text: str, lines: list[str]) -> list[str]
     prompt = _NAME_RESOLUTION_PROMPT.format(
         cast_text=cast_text, numbered=numbered, n=len(lines)
     )
+    # Per-line token budget: average rewritten line is ~30 tokens. Add
+    # generous overhead for any model that ignores the thinking-budget
+    # hint. 80 lines * 50 tokens = 4000 was the old budget that ran out;
+    # we now scale dynamically based on input size with a high ceiling.
+    per_line_budget = 60
+    dynamic_max = max(4096, len(lines) * per_line_budget + 1024)
     gen_kwargs: dict[str, Any] = {
         "temperature": 0.3,  # low temperature: this is editing, not creating
         "top_p": 0.9,
-        "max_output_tokens": 4096,
+        "max_output_tokens": min(dynamic_max, 16384),
     }
     try:
         from google.generativeai.types import ThinkingConfig  # type: ignore
@@ -321,6 +372,7 @@ def _call_resolver(model: Any, *, cast_text: str, lines: list[str]) -> list[str]
     except Exception:
         pass
 
+    response = None
     try:
         response = model.generate_content(
             prompt,
@@ -328,6 +380,24 @@ def _call_resolver(model: Any, *, cast_text: str, lines: list[str]) -> list[str]
         )
         text = (getattr(response, "text", "") or "").strip()
     except Exception as exc:  # noqa: BLE001
+        # Specific handling for the MAX_TOKENS case: Gemini returns a
+        # response object with no .text accessor (raises ValueError on
+        # access) when finish_reason=MAX_TOKENS. Detect and RE-RAISE so
+        # the caller's cascade can fall through to a model with bigger
+        # output capacity instead of silently returning identity.
+        err_str = str(exc)
+        is_max_tokens = (
+            "finish_reason" in err_str.lower()
+            or "MAX_TOKENS" in err_str
+            or "is 2" in err_str
+            or "valid `Part`" in err_str
+        )
+        if is_max_tokens:
+            logger.warning(
+                "Name-resolution batch hit MAX_TOKENS (%d lines); cascade will retry",
+                len(lines),
+            )
+            raise  # propagate so fallback caller switches models
         logger.warning("Name-resolution LLM call failed (%s); leaving batch unchanged.", exc)
         return list(lines)
 
