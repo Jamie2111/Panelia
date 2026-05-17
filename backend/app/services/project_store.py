@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+from threading import Lock
 from typing import Any, Iterable
 from uuid import uuid4
 
@@ -60,6 +61,22 @@ def _whole_progress(progress: object) -> int:
 
 
 class ProjectStore:
+    # Process-wide mtime-invalidated caches for the two hot loaders
+    # called on every API request. Without these, opening the unord
+    # editor (3447 pages, 3500 panels) blocks the API thread for
+    # 25+ seconds because `_page_size_lookup` opens every page image
+    # (just to read PIL header dimensions) and `load_panels` re-parses
+    # a 4 MB JSON file through pydantic on every fetch.
+    #
+    # Cache key = (project_id, source_file_mtime). When the worker
+    # writes panels.json or anything in the pages dir, the mtime
+    # changes and the next access misses + rebuilds. Threadsafe via
+    # a single class-level lock; the cached values are immutable
+    # after construction.
+    _PANELS_CACHE: dict[str, tuple[float, list["PanelBox"]]] = {}
+    _PAGE_SIZE_CACHE: dict[str, tuple[tuple[float, int], dict[int, tuple[int, int]]]] = {}
+    _CACHE_LOCK = Lock()
+
     def __init__(self) -> None:
         self.settings = get_settings()
         self.projects_root = ensure_dir(self.settings.data_dir / "projects")
@@ -619,8 +636,29 @@ class ProjectStore:
         self.update_project_metadata(project_id)
 
     def load_panels(self, project_id: str) -> list[PanelBox]:
-        payload = read_json(self._panels_path(project_id), default=[])
-        return [PanelBox.model_validate(item) for item in payload]
+        """Read + validate panels.json with mtime-keyed in-process cache.
+
+        Unord's panels.json is ~4 MB and pydantic-validating each entry
+        ~3500 times takes hundreds of ms. Every API request hit this
+        path. Now we stat() the file (cheap), key the cache by mtime,
+        and return the cached list as long as the file hasn't changed.
+        Worker writes bump the mtime -> next call misses + rebuilds.
+        Returns a SHALLOW COPY so downstream mutation is safe.
+        """
+        panels_path = self._panels_path(project_id)
+        try:
+            mtime = panels_path.stat().st_mtime
+        except FileNotFoundError:
+            return []
+        with type(self)._CACHE_LOCK:
+            cached = type(self)._PANELS_CACHE.get(project_id)
+            if cached is not None and cached[0] == mtime:
+                return list(cached[1])
+        payload = read_json(panels_path, default=[])
+        parsed = [PanelBox.model_validate(item) for item in payload]
+        with type(self)._CACHE_LOCK:
+            type(self)._PANELS_CACHE[project_id] = (mtime, parsed)
+        return list(parsed)
 
     def sanitize_panel_boxes(self, project_id: str, panels: Iterable[PanelBox]) -> list[PanelBox]:
         page_sizes = self._page_size_lookup(project_id)
@@ -659,6 +697,25 @@ class ProjectStore:
         return normalized
 
     def _page_size_lookup(self, project_id: str) -> dict[int, tuple[int, int]]:
+        # Cache page dimensions per project. The hot path is the panel
+        # editor on a 3447-page project, which used to open every page
+        # image (PIL header read) on every API request — about 25 s of
+        # blocking I/O. Pages do not change after ingestion, so we key
+        # the cache on the pages-directory mtime plus the entry count
+        # (cheap stat). If either changes we rebuild.
+        pages_dir = self._project_dir(project_id) / "pages"
+        try:
+            dir_stat = pages_dir.stat()
+            cache_key = (dir_stat.st_mtime, dir_stat.st_size)
+        except FileNotFoundError:
+            cache_key = (0.0, 0)
+
+        cls = type(self)
+        with cls._CACHE_LOCK:
+            cached = cls._PAGE_SIZE_CACHE.get(project_id)
+            if cached is not None and cached[0] == cache_key:
+                return dict(cached[1])
+
         page_sizes: dict[int, tuple[int, int]] = {}
         for index, page_path in enumerate(self.list_page_paths(project_id), start=1):
             try:
@@ -666,7 +723,10 @@ class ProjectStore:
                     page_sizes[index] = image.size
             except Exception:
                 logger.exception("Unable to read page size for %s", page_path)
-        return page_sizes
+
+        with cls._CACHE_LOCK:
+            cls._PAGE_SIZE_CACHE[project_id] = (cache_key, page_sizes)
+        return dict(page_sizes)
 
     def _sanitize_panel_box(self, panel: PanelBox, page_sizes: dict[int, tuple[int, int]]) -> PanelBox:
         page_size = page_sizes.get(int(panel.page))
