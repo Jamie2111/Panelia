@@ -1424,19 +1424,55 @@ def _run_script_generation_vision(
         raise RuntimeError(f"panels.json missing for project {context.project_id}")
 
     panels_json = _json.loads(panels_path.read_text(encoding="utf-8"))
-    # Load cast bible early so panels_from_store can use it to pre-populate
-    # character_hints from OCR text. This is the cheapest name-recognition
-    # signal: if a speech bubble says "Hiro!" the narrator knows Hiro is
-    # in the panel before Gemini Vision is even called.
+    # Two character-hint signals feed character_hints, BEFORE the vision
+    # narrator runs - so every per-panel Gemini Vision call already knows
+    # who is on-screen, dramatically improving naming.
+    #
+    #   Signal A: cast bible name list -> word-boundary scan over OCR text
+    #             per panel ("hiro!" mention -> hint=Hiro). Cheap, no
+    #             extra API calls.
+    #   Signal B: anime face detection -> CLIP clustering of all detected
+    #             faces -> ONE Gemini call to label each cluster with a
+    #             cast name -> per-panel hint backfill from cluster
+    #             membership. Single CLIP load, one Gemini call total,
+    #             yields hints for the ~50-80% of panels containing a
+    #             detectable face. Service is idempotent + cached.
     cast_names_for_hints: list[str] = []
+    cached_bible_for_id = None
     try:
         from app.services.cast_bible_service import CastBibleService as _CastSvc
-        _cached_bible = _CastSvc().load_cached(project_dir)
-        if _cached_bible and _cached_bible.members:
-            cast_names_for_hints = [m.name for m in _cached_bible.members if m.name]
+        cached_bible_for_id = _CastSvc().load_cached(project_dir)
+        if cached_bible_for_id and cached_bible_for_id.members:
+            cast_names_for_hints = [m.name for m in cached_bible_for_id.members if m.name]
     except Exception:
         pass
-    panel_inputs = panels_from_store(project_dir, panels_json, cast_member_names=cast_names_for_hints)
+
+    panel_hint_index: dict[str, list[str]] = {}
+    try:
+        if cast_names_for_hints:
+            context.progress(3, "Identifying characters across panels (face cluster + Gemini)")
+            from app.services.character_identifier_service import (
+                build_character_identity, load_panel_hint_index,
+            )
+            build_character_identity(
+                project_dir,
+                bible=cached_bible_for_id,
+                cancel_callback=context.ensure_not_cancelled,
+            )
+            panel_hint_index = load_panel_hint_index(project_dir)
+            logger.info(
+                "Character identity index: %d panels with face-based hints",
+                len(panel_hint_index),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Character identifier skipped (non-fatal): %s", exc)
+
+    panel_inputs = panels_from_store(
+        project_dir,
+        panels_json,
+        cast_member_names=cast_names_for_hints,
+        panel_hint_index=panel_hint_index,
+    )
     if not panel_inputs:
         context.fail("No kept panels to narrate.")
         return

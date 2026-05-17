@@ -857,16 +857,23 @@ def panels_from_store(
     project_dir: Path,
     panels_json: list[dict[str, Any]],
     cast_member_names: list[str] | None = None,
+    panel_hint_index: dict[str, list[str]] | None = None,
 ) -> list[PanelInput]:
     """Build the ordered PanelInput list from raw panels.json data.
 
-    When `cast_member_names` is supplied, OCR text on each panel is
-    scanned for cast-member name mentions and any hits are pre-populated
-    as `character_hints`. This is the cheapest character-ID signal we
-    have: if a panel's speech bubble says "Hiro!" or "Zero Two..." that
-    character is almost certainly in the panel, which lets the vision
-    narrator use the name confidently instead of falling back to a
-    generic descriptor.
+    Two character-hint signals fold into character_hints:
+
+      1. OCR-mention scan: if a panel's OCR text contains a cast name
+         word-boundary match, that name is added to hints.
+      2. Face-cluster index (`panel_hint_index`): per-panel names from
+         CharacterIdentifierService - whichever named clusters had a
+         face inside the panel's bbox. This is the visual-matching
+         signal; usually covers 50-80% of panels on a populated chapter.
+
+    Hints from both signals are merged and de-duplicated. They flow into
+    the vision narrator's "Likely on-panel characters" prompt line,
+    letting Gemini Vision name characters confidently instead of falling
+    back to "the boy with dark hair" / generic descriptors.
     """
     import re as _re
     kept = [p for p in panels_json if p.get("keep")]
@@ -893,12 +900,22 @@ def panels_from_store(
         order = int(p.get("order", 0))
         image_path = panel_dir / f"panel_{order:03d}.png"
         raw_ocr = str(p.get("ocr_text") or "")
-        ocr_hints: list[str] = []
+        merged_hints: list[str] = []
+        seen: set[str] = set()
+        # Signal 1: face-cluster index hints first (visual matching is
+        # generally more reliable than name-string OCR which can be
+        # noisy or mention a character not on-screen).
+        if panel_hint_index:
+            for name in panel_hint_index.get(str(p["id"]) or "", []) or []:
+                name_clean = str(name).strip()
+                if name_clean and name_clean not in seen:
+                    merged_hints.append(name_clean)
+                    seen.add(name_clean)
+        # Signal 2: OCR-mention scan
         if name_patterns and raw_ocr.strip():
-            seen: set[str] = set()
             for name, pattern in name_patterns:
                 if pattern.search(raw_ocr) and name not in seen:
-                    ocr_hints.append(name)
+                    merged_hints.append(name)
                     seen.add(name)
         inputs.append(PanelInput(
             panel_id=str(p["id"]),
@@ -907,6 +924,6 @@ def panels_from_store(
             panel=int(p.get("panel", 0)),
             image_path=image_path,
             ocr_text=raw_ocr,
-            character_hints=ocr_hints,
+            character_hints=merged_hints,
         ))
     return inputs
