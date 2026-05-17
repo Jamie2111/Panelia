@@ -109,6 +109,14 @@ GOOD narrations:
   eye color, signature outfit, horns, scars, etc.). Defaulting to a
   generic descriptor when the cast bible has a match is a worse
   failure mode than the occasional misidentification.
+• VISUAL REFERENCE PORTRAITS take priority: this prompt may be
+  followed by one or more reference portrait images, each prefixed
+  with "Reference portrait of NAME:". When the panel contains a
+  character whose FACE visually matches one of those reference
+  portraits, use that NAME in the narration. The visual match takes
+  priority over the text descriptions in the cast bible above. If
+  the panel character does not visually match any attached reference,
+  fall back to the text-description rules.
     - If the cast says "Zero Two: long pink hair, red horns" and the
       panel shows a character with pink hair OR red horns, that IS
       Zero Two - use her name.
@@ -292,6 +300,7 @@ class PanelVisionNarrator:
         panels: list[PanelInput],
         *,
         cast_block: str = "",
+        portrait_lookup: dict[str, Path] | None = None,
         progress_callback: Callable[[float, str], None] | None = None,
         cancel_callback: Callable[[], None] | None = None,
     ) -> NarrationBatch:
@@ -301,10 +310,30 @@ class PanelVisionNarrator:
         then by panel-within-page). When `cast_block` is non-empty it is
         prepended to every panel's prompt - that's how the cast bible
         threads into character recognition.
+
+        `portrait_lookup` maps cast member names to portrait jpg paths
+        on disk. When supplied, each per-panel Gemini Vision call gets
+        the named character portraits attached alongside the panel
+        image. This is the visual-grounding signal that lets the model
+        match faces to cast names instead of guessing from text
+        descriptions. Use `character_identifier_service.load_character_portraits`
+        to build it.
         """
         started = time.perf_counter()
         results: list[NarrationResult] = [None] * len(panels)  # type: ignore[list-item]
         cast_prefix = (cast_block + "\n\n") if cast_block else ""
+
+        # Pre-open the portrait images ONCE for the whole chapter so
+        # individual panels don't keep re-decoding the same jpgs. Keep
+        # only the ones we'll actually use (cap at 12; more reference
+        # images per call hurts more than it helps).
+        portrait_images: dict[str, Image.Image] = {}
+        if portrait_lookup:
+            for name, path in list(portrait_lookup.items())[:24]:
+                try:
+                    portrait_images[name] = Image.open(path).convert("RGB")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Could not load portrait for %s: %s", name, exc)
 
         # Build a rolling context window. To keep continuity meaningful we
         # process in small sequential chunks of size _MAX_CONCURRENCY: each
@@ -326,7 +355,11 @@ class PanelVisionNarrator:
             context_str = "\n".join(f"  • {line}" for line in context_lines) or "  (this is the opening panel)"
 
             tasks = [
-                self._narrate_one(panel, context_str, semaphore, cast_prefix=cast_prefix)
+                self._narrate_one(
+                    panel, context_str, semaphore,
+                    cast_prefix=cast_prefix,
+                    portrait_images=portrait_images,
+                )
                 for panel in chunk
             ]
             chunk_results = await asyncio.gather(*tasks, return_exceptions=False)
@@ -358,6 +391,7 @@ class PanelVisionNarrator:
         context_str: str,
         semaphore: asyncio.Semaphore,
         cast_prefix: str = "",
+        portrait_images: dict[str, Image.Image] | None = None,
     ) -> NarrationResult:
         async with semaphore:
             start = time.perf_counter()
@@ -380,6 +414,17 @@ class PanelVisionNarrator:
                         f"• Likely on-panel characters: {', '.join(panel.character_hints)}"
                     )
 
+                # Build the list of reference portraits to attach to this
+                # call. We only attach portraits for characters in this
+                # panel's hint list (cap at 4) so the model focuses on
+                # the plausible candidates rather than ALL cast members.
+                reference_portraits: list[tuple[str, Image.Image]] = []
+                if portrait_images and panel.character_hints:
+                    for hint_name in panel.character_hints[:4]:
+                        img = portrait_images.get(hint_name)
+                        if img is not None:
+                            reference_portraits.append((hint_name, img))
+
                 prompt = _NARRATION_PROMPT.format(
                     cast_block=cast_prefix,
                     context=context_str,
@@ -393,7 +438,10 @@ class PanelVisionNarrator:
                 # loop responsive across concurrent panels.
                 try:
                     response_text = await asyncio.wait_for(
-                        asyncio.to_thread(self._invoke_gemini, prompt, image, self._model),
+                        asyncio.to_thread(
+                            self._invoke_gemini, prompt, image, self._model,
+                            reference_portraits,
+                        ),
                         timeout=_PER_PANEL_TIMEOUT,
                     )
                 except RuntimeError as primary_err:
@@ -410,7 +458,8 @@ class PanelVisionNarrator:
                     )
                     response_text = await asyncio.wait_for(
                         asyncio.to_thread(
-                            self._invoke_gemini, prompt, image, self._fallback_model
+                            self._invoke_gemini, prompt, image, self._fallback_model,
+                            reference_portraits,
                         ),
                         timeout=_PER_PANEL_TIMEOUT,
                     )
@@ -465,7 +514,13 @@ class PanelVisionNarrator:
             image = image.resize(new_size, Image.LANCZOS)
         return image
 
-    def _invoke_gemini(self, prompt: str, image: Image.Image, model: Any = None) -> str:
+    def _invoke_gemini(
+        self,
+        prompt: str,
+        image: Image.Image,
+        model: Any = None,
+        reference_portraits: list[tuple[str, Image.Image]] | None = None,
+    ) -> str:
         model = model or self._model
         # Relaxed safety settings: manga content can trigger harmless flags on
         # violent/dramatic panels and silently produce empty output otherwise.
@@ -511,8 +566,22 @@ class PanelVisionNarrator:
             logger.warning("WebP encode failed (%s); falling back to PIL handoff", exc)
             image_part = image
 
+        # Build the multi-modal `parts` list: prompt, panel image, then
+        # zero or more named reference portraits. Each reference portrait
+        # is preceded by a labeling string so the model can tie the
+        # following image to the right cast member when it answers.
+        parts: list[Any] = [prompt, image_part]
+        for ref_name, ref_image in (reference_portraits or []):
+            try:
+                ref_buf = io.BytesIO()
+                ref_image.convert("RGB").save(ref_buf, format="WEBP", quality=80, method=4)
+                ref_part = {"mime_type": "image/webp", "data": ref_buf.getvalue()}
+            except Exception:
+                ref_part = ref_image
+            parts.append(f"Reference portrait of {ref_name}:")
+            parts.append(ref_part)
         response = model.generate_content(
-            [prompt, image_part],
+            parts,
             generation_config=genai.types.GenerationConfig(**gen_kwargs),
             safety_settings=safety,
         )

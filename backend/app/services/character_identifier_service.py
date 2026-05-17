@@ -300,6 +300,7 @@ def build_character_identity(
 
     # Persist named portraits (renames cluster portraits to cast names).
     portrait_paths: dict[str, str] = {}
+    name_to_centroid: dict[str, np.ndarray] = {}
     for cluster_id, name in cluster_to_name.items():
         if name == "unknown" or not name:
             continue
@@ -313,18 +314,35 @@ def build_character_identity(
             portrait_paths[name] = str(dest.relative_to(project_dir))
         except Exception:
             continue
+        # Reuse the cluster's CLIP centroid as that character's reference
+        # embedding. This is what the per-panel narrator will compare
+        # against to verify a named character is actually present.
+        if 0 <= cluster_id < len(cluster_centroids):
+            name_to_centroid[name] = cluster_centroids[cluster_id].astype(np.float32, copy=False)
+
+    # Persist embeddings to disk so per-panel narration + verification
+    # can load them without re-running CLIP. One file per project,
+    # ~6 KB/character (512 float32).
+    embeddings_path = out_dir / "embeddings.npz"
+    if name_to_centroid:
+        try:
+            np.savez_compressed(embeddings_path, **name_to_centroid)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not persist character embeddings: %s", exc)
 
     index_payload = {
         "version": _INDEX_VERSION,
         "cluster_to_name": {str(k): v for k, v in cluster_to_name.items()},
         "panel_to_names": panel_to_names,
         "portrait_paths": portrait_paths,
+        "embeddings_path": str(embeddings_path.relative_to(project_dir)) if name_to_centroid else None,
         "stats": {
             "total_faces": len(face_records),
             "total_clusters": len(cluster_members),
             "labeled_clusters": sum(1 for v in cluster_to_name.values() if v != "unknown"),
             "panels_with_hints": len(panel_to_names),
             "kept_panels": len(panel_id_set),
+            "embeddings_persisted": len(name_to_centroid),
         },
     }
     write_json(index_path, index_payload)
@@ -619,3 +637,47 @@ def load_panel_hint_index(project_dir: Path) -> dict[str, list[str]]:
     if not isinstance(pti, dict):
         return {}
     return {str(k): [str(n) for n in (v or []) if str(n).strip()] for k, v in pti.items()}
+
+
+def load_character_portraits(project_dir: Path) -> dict[str, Path]:
+    """Return {cast_name: absolute portrait jpg path} for all named cast members.
+
+    Used by panel_vision_narrator to attach visual references to per-panel
+    Gemini Vision calls. Empty dict when no portraits exist.
+    """
+    portraits_dir = project_dir / "output" / "character_identity" / _PORTRAIT_DIRNAME
+    if not portraits_dir.exists():
+        return {}
+    index_path = project_dir / "output" / "character_identity" / _INDEX_FILENAME
+    payload = read_json(index_path, default={}) if index_path.exists() else {}
+    if not isinstance(payload, dict):
+        return {}
+    portrait_paths = payload.get("portrait_paths") or {}
+    out: dict[str, Path] = {}
+    if isinstance(portrait_paths, dict):
+        for name, rel_path in portrait_paths.items():
+            if not name or not rel_path:
+                continue
+            full = project_dir / str(rel_path)
+            if full.exists():
+                out[str(name)] = full
+    return out
+
+
+def load_character_embeddings(project_dir: Path) -> dict[str, np.ndarray]:
+    """Return {cast_name: 512-dim float32 CLIP embedding} from disk.
+
+    Empty dict if the npz file doesn't exist or is unreadable. The
+    embeddings are produced by build_character_identity and used by
+    the per-panel verification step to confirm a named character's
+    face is actually present.
+    """
+    path = project_dir / "output" / "character_identity" / "embeddings.npz"
+    if not path.exists():
+        return {}
+    try:
+        loaded = np.load(path)
+        return {str(name): np.asarray(loaded[name], dtype=np.float32) for name in loaded.files}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not load character embeddings: %s", exc)
+        return {}

@@ -1448,11 +1448,13 @@ def _run_script_generation_vision(
         pass
 
     panel_hint_index: dict[str, list[str]] = {}
+    portrait_lookup: dict[str, Path] = {}
     try:
         if cast_names_for_hints:
             context.progress(3, "Identifying characters across panels (face cluster + Gemini)")
             from app.services.character_identifier_service import (
                 build_character_identity, load_panel_hint_index,
+                load_character_portraits,
             )
             build_character_identity(
                 project_dir,
@@ -1460,9 +1462,10 @@ def _run_script_generation_vision(
                 cancel_callback=context.ensure_not_cancelled,
             )
             panel_hint_index = load_panel_hint_index(project_dir)
+            portrait_lookup = load_character_portraits(project_dir)
             logger.info(
-                "Character identity index: %d panels with face-based hints",
-                len(panel_hint_index),
+                "Character identity index: %d panels with face-based hints, %d portraits available",
+                len(panel_hint_index), len(portrait_lookup),
             )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Character identifier skipped (non-fatal): %s", exc)
@@ -1516,6 +1519,7 @@ def _run_script_generation_vision(
         narrator.narrate_chapter(
             panel_inputs,
             cast_block=cast_block,
+            portrait_lookup=portrait_lookup,
             progress_callback=_progress,
             cancel_callback=context.ensure_not_cancelled,
         )

@@ -2396,6 +2396,10 @@ class VideoRenderService:
                 else self.NSFW_BLUR_SIGMA
             )
 
+        # When blur is active, attempt to keep the face(s) sharp via the
+        # cached anime face detector. Face geometry depends on the panel
+        # bbox + the page hash, both already in the digest; we also bake
+        # the strategy version so cached crops invalidate cleanly.
         digest = hashlib.sha1(
             json.dumps(
                 {
@@ -2407,7 +2411,7 @@ class VideoRenderService:
                         "width": int(panel.width),
                         "height": int(panel.height),
                     },
-                    "strategy": "panel_crop_v3",
+                    "strategy": "panel_crop_v4_face_preserve",
                     "blur_sigma": blur_sigma,
                 },
                 sort_keys=True,
@@ -2427,11 +2431,146 @@ class VideoRenderService:
                 left, top, right, bottom = 0, 0, page.width, page.height
             crop = page.crop((left, top, right, bottom))
             if blur_sigma > 0:
-                # Apply Gaussian blur in PIL so every downstream surface
-                # (card, thumbnail, etc.) gets the blurred version for free.
-                crop = crop.filter(ImageFilter.GaussianBlur(radius=blur_sigma))
+                # Try face-preserving blur first - keeps the emotional
+                # beat of the face visible while obscuring the body. If
+                # no face is found inside the panel, fall back to the
+                # original whole-panel blur (safer for body-only shots).
+                face_bboxes = self._faces_inside_panel(
+                    project_dir, panel, page_relative=True,
+                )
+                if face_bboxes:
+                    crop = self._face_preserving_blur(
+                        crop,
+                        panel_origin=(left, top),
+                        face_bboxes_on_page=face_bboxes,
+                        sigma=blur_sigma,
+                    )
+                else:
+                    crop = crop.filter(ImageFilter.GaussianBlur(radius=blur_sigma))
             crop.save(output_path)
         return output_path
+
+    def _faces_inside_panel(
+        self,
+        project_dir: Path,
+        panel: "PanelBox",
+        *,
+        page_relative: bool = True,
+    ) -> list[tuple[int, int, int, int]]:
+        """Return face bboxes (x, y, w, h) lying inside this panel.
+
+        Reads the cached anime face detection results for the panel's
+        page (no recompute). Returns face bboxes in PAGE coordinates by
+        default; callers translate to panel coordinates when masking.
+        Returns [] when no detector cache exists, the page has no
+        detected faces, or none fall inside the panel.
+        """
+        try:
+            cache_dir = self._shared_video_cache.parent / "_anime_face_cache"
+            cache_file = cache_dir / f"{project_dir.name}.json"
+            if not cache_file.exists():
+                return []
+            payload = read_json(cache_file, default={}) or {}
+        except Exception:
+            return []
+        if not isinstance(payload, dict):
+            return []
+        page_payload = payload.get(str(int(panel.page))) or payload.get(int(panel.page)) or {}
+        if not isinstance(page_payload, dict):
+            return []
+        characters = page_payload.get("characters") or []
+        if not isinstance(characters, list):
+            return []
+
+        panel_x, panel_y = int(panel.x), int(panel.y)
+        panel_x2 = panel_x + max(int(panel.width), 1)
+        panel_y2 = panel_y + max(int(panel.height), 1)
+        face_bboxes: list[tuple[int, int, int, int]] = []
+        for character in characters:
+            if not isinstance(character, dict):
+                continue
+            raw_bbox = character.get("bbox")
+            if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) < 4:
+                continue
+            try:
+                fx, fy, fw, fh = int(raw_bbox[0]), int(raw_bbox[1]), int(raw_bbox[2]), int(raw_bbox[3])
+            except (TypeError, ValueError):
+                continue
+            if fw <= 0 or fh <= 0:
+                continue
+            # Face center must lie inside the panel bbox to be attributed
+            # to this panel - same containment test the character
+            # identifier uses.
+            cx = fx + fw // 2
+            cy = fy + fh // 2
+            if panel_x <= cx <= panel_x2 and panel_y <= cy <= panel_y2:
+                face_bboxes.append((fx, fy, fw, fh))
+        return face_bboxes
+
+    @staticmethod
+    def _face_preserving_blur(
+        crop: Image.Image,
+        *,
+        panel_origin: tuple[int, int],
+        face_bboxes_on_page: list[tuple[int, int, int, int]],
+        sigma: int,
+    ) -> Image.Image:
+        """Blur the panel crop EXCEPT a soft-edged region around each face.
+
+        Builds a feathered alpha mask: white over each face (1.4x padded
+        to capture hair / neck, then Gaussian-blurred for a soft edge),
+        black elsewhere. Composites the original `crop` over a fully-blurred
+        copy using the mask - the face area shows the original pixels,
+        the rest shows blurred pixels.
+
+        Falls back to whole-crop blur when no usable face bboxes remain
+        after clipping to the panel bounds.
+        """
+        if sigma <= 0 or not face_bboxes_on_page:
+            return crop.filter(ImageFilter.GaussianBlur(radius=sigma)) if sigma > 0 else crop
+
+        panel_x, panel_y = panel_origin
+        crop_w, crop_h = crop.size
+
+        # Translate face bboxes from page coords -> panel-relative coords
+        # and clip to the panel bounds. Drop any face that ends up empty
+        # after clipping (e.g. face center inside but bbox extends way
+        # past panel edge).
+        face_rects: list[tuple[int, int, int, int]] = []
+        pad_factor = 1.4  # capture hair + neck around the face bbox
+        for fx, fy, fw, fh in face_bboxes_on_page:
+            # Apply padding around the face bbox center.
+            pad_w = int(fw * pad_factor)
+            pad_h = int(fh * pad_factor)
+            cx = fx + fw // 2
+            cy = fy + fh // 2
+            px = cx - pad_w // 2
+            py = cy - pad_h // 2
+            # Translate to panel-relative.
+            rel_x = max(0, px - panel_x)
+            rel_y = max(0, py - panel_y)
+            rel_x2 = min(crop_w, (px - panel_x) + pad_w)
+            rel_y2 = min(crop_h, (py - panel_y) + pad_h)
+            if rel_x2 <= rel_x or rel_y2 <= rel_y:
+                continue
+            face_rects.append((rel_x, rel_y, rel_x2, rel_y2))
+
+        if not face_rects:
+            return crop.filter(ImageFilter.GaussianBlur(radius=sigma))
+
+        blurred = crop.filter(ImageFilter.GaussianBlur(radius=sigma))
+        mask = Image.new("L", crop.size, 0)
+        draw = ImageDraw.Draw(mask)
+        for rel_x, rel_y, rel_x2, rel_y2 in face_rects:
+            # Use an ellipse (soft round face shape) rather than a rectangle
+            # so the edge of the unblurred region doesn't read as a sharp
+            # rectangular cutout.
+            draw.ellipse([rel_x, rel_y, rel_x2, rel_y2], fill=255)
+        # Feather the mask edge so the transition between sharp face and
+        # blurred body is smooth, not a hard cut.
+        feather_radius = max(8, sigma // 2)
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=feather_radius))
+        return Image.composite(crop, blurred, mask)
 
     def _prepare_subtitle_overlay_image(
         self,
