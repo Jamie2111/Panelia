@@ -35,18 +35,41 @@ class KokoroTTSEngine:
 
         sentence_jobs = self._collect_sentence_jobs(units, voice_config)
         ordered_jobs = list(sentence_jobs.items())
-        for index, (signature, payload) in enumerate(ordered_jobs, start=1):
+
+        # Parallelize the per-sentence synth loop. Was strictly sequential;
+        # on a 3500-sentence project that's a 2 h crawl even when most
+        # sentences are cache hits. Kokoro's underlying torch model is
+        # thread-safe for inference and uses MPS/CPU; 4 workers is a sweet
+        # spot that fills the GPU without thrashing.
+        cache_workers = max(1, min(int(self.settings.narration_sentence_cache_workers or 1), 4))
+        completed_count = 0
+        completed_lock = __import__("threading").Lock()
+
+        def _prepare_one(item: tuple[int, tuple[str, dict]]) -> int:
+            nonlocal completed_count
+            index, (signature, payload) = item
             if cancel_callback:
                 cancel_callback()
             cache_path = self._sentence_cache_dir / f"{signature}.wav"
-            if progress_callback:
-                start_progress = ((index - 1) / max(len(ordered_jobs), 1)) * 38
-                progress_callback(start_progress, f"Preparing narration sentence cache {index}/{len(ordered_jobs)}")
             if not cache_path.exists():
                 unit_voice = payload["voice_config"]
                 self._kokoro.synthesize_to_file(str(payload["text"]), cache_path, unit_voice)
+            with completed_lock:
+                completed_count += 1
+                done = completed_count
             if progress_callback:
-                progress_callback(index / max(len(ordered_jobs), 1) * 38, f"Prepared narration sentence cache {index}/{len(ordered_jobs)}")
+                progress_callback(
+                    done / max(len(ordered_jobs), 1) * 38,
+                    f"Prepared narration sentence cache {done}/{len(ordered_jobs)}",
+                )
+            return index
+
+        if cache_workers <= 1 or len(ordered_jobs) <= 1:
+            for item in enumerate(ordered_jobs, start=1):
+                _prepare_one(item)
+        else:
+            with ThreadPoolExecutor(max_workers=cache_workers) as executor:
+                list(executor.map(_prepare_one, enumerate(ordered_jobs, start=1)))
 
         assembly_payloads = [
             (

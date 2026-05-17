@@ -149,23 +149,44 @@ def generate_narration(
         cancel_callback()
 
     # Run the primary engine; if Edge TTS fails partway (Microsoft's
-    # public endpoint can rate-limit) we transparently retry the whole
-    # batch on Kokoro so the user always gets audio back.
-    try:
-        manifest = tts_engine.synthesize_units(
-            units,
-            output_dir,
-            voice_config,
-            progress_callback=(lambda progress, message: progress_callback(10 + progress * 0.68, message)) if progress_callback else None,
-            cancel_callback=cancel_callback,
-        )
-    except Exception as primary_err:  # noqa: BLE001
-        if not use_edge:
-            raise
-        logger.warning(
-            "Edge TTS synthesis failed (%s); falling back to Kokoro for this run.",
-            primary_err,
-        )
+    # public endpoint sometimes returns a transient 503 on the first
+    # WebSocket handshake) we retry the whole batch on Edge a couple of
+    # times before falling back to Kokoro. Without the retries a single
+    # transient 503 dumps the whole run onto Kokoro, which is sequential
+    # CPU TTS - roughly 20x slower (2 h instead of ~5 min for an unord-
+    # sized project). The per-sentence wav cache means a retry that
+    # picks up where the previous attempt left off is essentially free.
+    manifest = None
+    edge_attempts = 3 if use_edge else 1
+    last_edge_err: Exception | None = None
+    for attempt in range(1, edge_attempts + 1):
+        try:
+            manifest = tts_engine.synthesize_units(
+                units,
+                output_dir,
+                voice_config,
+                progress_callback=(lambda progress, message: progress_callback(10 + progress * 0.68, message)) if progress_callback else None,
+                cancel_callback=cancel_callback,
+            )
+            break
+        except Exception as primary_err:  # noqa: BLE001
+            last_edge_err = primary_err
+            if not use_edge:
+                raise
+            if attempt < edge_attempts:
+                backoff_seconds = min(2 * attempt, 8)
+                logger.warning(
+                    "Edge TTS synthesis failed on attempt %s/%s (%s); retrying in %ss",
+                    attempt, edge_attempts, primary_err, backoff_seconds,
+                )
+                import time as _time
+                _time.sleep(backoff_seconds)
+                continue
+            logger.warning(
+                "Edge TTS synthesis failed after %s attempts (%s); falling back to Kokoro for this run.",
+                edge_attempts, primary_err,
+            )
+    if manifest is None:
         fallback_voice = voice_config.model_copy(update={
             "voice": "af_bella",
             "lang_code": "a",
