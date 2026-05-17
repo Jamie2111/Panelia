@@ -73,7 +73,16 @@ class EdgeTTSEngine:
         except Exception:
             azure_on = False
         if azure_on:
-            cache_workers = max(2, min(int(getattr(self.settings, "azure_speech_max_workers", 16)), 32))
+            # Azure can handle 16 concurrent calls in theory but in practice
+            # we see waves of "Codec decoding is not started within 2s"
+            # transient errors when the Azure region is busy, and a single
+            # session-level segfault (SIGSEGV) in the SDK takes the whole
+            # worker child down. Cap concurrency at 6 - still gives ~500
+            # sentences/minute throughput (more than enough for narration)
+            # without piling enough simultaneous calls onto Azure to
+            # trigger the bad behaviour.
+            requested = int(getattr(self.settings, "azure_speech_max_workers", 16))
+            cache_workers = max(2, min(requested, 6))
         else:
             cache_workers = max(2, min(int(self.settings.narration_sentence_cache_workers or 2) * 2, 4))
         completed_count = 0
