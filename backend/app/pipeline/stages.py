@@ -1424,7 +1424,19 @@ def _run_script_generation_vision(
         raise RuntimeError(f"panels.json missing for project {context.project_id}")
 
     panels_json = _json.loads(panels_path.read_text(encoding="utf-8"))
-    panel_inputs = panels_from_store(project_dir, panels_json)
+    # Load cast bible early so panels_from_store can use it to pre-populate
+    # character_hints from OCR text. This is the cheapest name-recognition
+    # signal: if a speech bubble says "Hiro!" the narrator knows Hiro is
+    # in the panel before Gemini Vision is even called.
+    cast_names_for_hints: list[str] = []
+    try:
+        from app.services.cast_bible_service import CastBibleService as _CastSvc
+        _cached_bible = _CastSvc().load_cached(project_dir)
+        if _cached_bible and _cached_bible.members:
+            cast_names_for_hints = [m.name for m in _cached_bible.members if m.name]
+    except Exception:
+        pass
+    panel_inputs = panels_from_store(project_dir, panels_json, cast_member_names=cast_names_for_hints)
     if not panel_inputs:
         context.fail("No kept panels to narrate.")
         return

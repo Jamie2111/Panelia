@@ -856,25 +856,57 @@ def write_narration_outputs(
 def panels_from_store(
     project_dir: Path,
     panels_json: list[dict[str, Any]],
+    cast_member_names: list[str] | None = None,
 ) -> list[PanelInput]:
-    """Build the ordered PanelInput list from raw panels.json data."""
+    """Build the ordered PanelInput list from raw panels.json data.
+
+    When `cast_member_names` is supplied, OCR text on each panel is
+    scanned for cast-member name mentions and any hits are pre-populated
+    as `character_hints`. This is the cheapest character-ID signal we
+    have: if a panel's speech bubble says "Hiro!" or "Zero Two..." that
+    character is almost certainly in the panel, which lets the vision
+    narrator use the name confidently instead of falling back to a
+    generic descriptor.
+    """
+    import re as _re
     kept = [p for p in panels_json if p.get("keep")]
     kept_sorted = sorted(
         kept, key=lambda p: (int(p.get("page", 0)), int(p.get("panel", 0)))
     )
     panel_dir = project_dir / "panels"
 
+    # Precompile case-insensitive patterns for each cast name. Sort by
+    # length descending so "Zero Two" matches before "Zero" if both were
+    # in the cast (avoids the longer name being clipped by the shorter).
+    name_patterns: list[tuple[str, _re.Pattern]] = []
+    if cast_member_names:
+        for name in sorted({n.strip() for n in cast_member_names if n and n.strip()}, key=len, reverse=True):
+            try:
+                # Word-boundary match; tolerates trailing ! ? . , : ;
+                pattern = _re.compile(rf"\b{_re.escape(name)}\b", _re.IGNORECASE)
+                name_patterns.append((name, pattern))
+            except _re.error:
+                continue
+
     inputs: list[PanelInput] = []
     for p in kept_sorted:
         order = int(p.get("order", 0))
         image_path = panel_dir / f"panel_{order:03d}.png"
+        raw_ocr = str(p.get("ocr_text") or "")
+        ocr_hints: list[str] = []
+        if name_patterns and raw_ocr.strip():
+            seen: set[str] = set()
+            for name, pattern in name_patterns:
+                if pattern.search(raw_ocr) and name not in seen:
+                    ocr_hints.append(name)
+                    seen.add(name)
         inputs.append(PanelInput(
             panel_id=str(p["id"]),
             order=order,
             page=int(p.get("page", 0)),
             panel=int(p.get("panel", 0)),
             image_path=image_path,
-            ocr_text=str(p.get("ocr_text") or ""),
-            character_hints=[],  # populated later if character tracker results exist
+            ocr_text=raw_ocr,
+            character_hints=ocr_hints,
         ))
     return inputs
