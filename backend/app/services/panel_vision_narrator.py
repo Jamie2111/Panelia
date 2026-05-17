@@ -62,6 +62,148 @@ class PanelInput:
     image_path: Path
     ocr_text: str = ""
     character_hints: list[str] = field(default_factory=list)
+    # Geometry on the source page, used by FaceDisambiguator to crop the
+    # in-panel face for cosine matching against portrait embeddings.
+    # Optional; tie-breaker no-ops without these.
+    page_x: int = 0
+    page_y: int = 0
+    page_width: int = 0
+    page_height: int = 0
+    page_image_path: Path | None = None
+
+
+class FaceDisambiguator:
+    """Re-rank a panel's character_hints by cosine distance from the
+    in-panel face to each candidate's portrait embedding.
+
+    Solves the same-uniform look-alike problem (Arlo vs Gavin, Blyke vs
+    Cecile) where multiple cast members partially match a panel by text
+    description but only ONE actually has the visible face.
+
+    Pipeline:
+      1. Get face bboxes for the panel's page (cached by
+         AnimeFaceDetectionService).
+      2. Filter to faces whose CENTER lies inside the panel's bbox.
+      3. Pick the largest such face (most pixels = most discriminative
+         CLIP embedding).
+      4. CLIP-embed that crop using the same model used to build the
+         portrait embeddings.
+      5. Cosine-compare to each candidate's portrait embedding.
+      6. Return hints reordered best->worst.
+
+    No-ops (returns input order unchanged) when:
+      - hints has < 2 candidates (nothing to disambiguate),
+      - portrait_embeddings is empty,
+      - the panel has no detectable face inside its bbox,
+      - the embedding step fails for any reason.
+    """
+
+    def __init__(
+        self,
+        portrait_embeddings: dict,  # name -> np.ndarray
+        face_bboxes_by_page: dict,  # page_num -> list[(x,y,w,h)]
+        page_path_by_number: dict,  # page_num -> Path
+        embedder_callable,           # PIL.Image -> np.ndarray
+    ) -> None:
+        self._portraits = portrait_embeddings or {}
+        self._faces = face_bboxes_by_page or {}
+        self._page_paths = page_path_by_number or {}
+        self._embed = embedder_callable
+        # Cache panel-face embeddings keyed by (page, x, y, w, h) so
+        # repeat lookups in the same render don't re-embed.
+        self._face_embed_cache: dict[tuple, Any] = {}
+
+    @property
+    def is_armed(self) -> bool:
+        return bool(self._portraits) and bool(self._faces) and self._embed is not None
+
+    def disambiguate(self, panel: PanelInput, hints: list[str]) -> list[str]:
+        if not self.is_armed or len(hints) < 2:
+            return hints
+        # Filter portraits to only those candidates present in hints.
+        candidates_with_emb = [
+            (name, self._portraits.get(name))
+            for name in hints
+            if self._portraits.get(name) is not None
+        ]
+        if len(candidates_with_emb) < 2:
+            return hints
+
+        # Find face crops inside this panel.
+        face_emb = self._panel_face_embedding(panel)
+        if face_emb is None:
+            return hints
+
+        import numpy as _np
+        # Cosine on normalized vectors = dot product.
+        scored: list[tuple[float, str]] = []
+        for name, portrait_emb in candidates_with_emb:
+            try:
+                cos = float(_np.dot(face_emb, portrait_emb))
+            except Exception:
+                cos = -1.0
+            scored.append((cos, name))
+        # Untracked hints (no portrait embedding) trail at the end in
+        # their original relative order.
+        kept = {name for _, name in scored}
+        tail = [h for h in hints if h not in kept]
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [name for _, name in scored] + tail
+
+    def _panel_face_embedding(self, panel: PanelInput):
+        """Return a CLIP embedding of the largest face inside this
+        panel's bbox, or None if no face is detectable."""
+        page_path = self._page_paths.get(panel.page) or panel.page_image_path
+        if page_path is None or not Path(page_path).exists():
+            return None
+        if panel.page_width <= 0 or panel.page_height <= 0:
+            return None
+
+        page_faces = self._faces.get(panel.page) or self._faces.get(int(panel.page)) or []
+        if not page_faces:
+            return None
+
+        # Filter to faces whose center is inside the panel bbox.
+        px, py, pw, ph = panel.page_x, panel.page_y, panel.page_width, panel.page_height
+        inside: list[tuple[int, int, int, int]] = []
+        for face_box in page_faces:
+            try:
+                x, y, w, h = (int(v) for v in face_box[:4])
+            except (TypeError, ValueError):
+                continue
+            cx, cy = x + w // 2, y + h // 2
+            if px <= cx < px + pw and py <= cy < py + ph:
+                inside.append((x, y, w, h))
+        if not inside:
+            return None
+
+        largest = max(inside, key=lambda b: b[2] * b[3])
+        cache_key = (int(panel.page), *largest)
+        cached = self._face_embed_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            with Image.open(page_path) as source:
+                page_img = source.convert("RGB")
+                x, y, w, h = largest
+                # Pad face crop by ~20% on each side so CLIP sees a bit
+                # of hair/neck context, which helps disambiguation.
+                pad_x = max(int(w * 0.20), 4)
+                pad_y = max(int(h * 0.20), 4)
+                x0 = max(x - pad_x, 0)
+                y0 = max(y - pad_y, 0)
+                x1 = min(x + w + pad_x, page_img.width)
+                y1 = min(y + h + pad_y, page_img.height)
+                if x1 <= x0 or y1 <= y0:
+                    return None
+                crop = page_img.crop((x0, y0, x1, y1))
+            emb = self._embed(crop)
+            self._face_embed_cache[cache_key] = emb
+            return emb
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Face embedding failed for panel %s: %s", panel.panel_id, exc)
+            return None
 
 
 @dataclass
@@ -356,6 +498,7 @@ class PanelVisionNarrator:
         *,
         cast_block: str = "",
         portrait_lookup: dict[str, Path] | None = None,
+        face_disambiguator: "FaceDisambiguator | None" = None,
         progress_callback: Callable[[float, str], None] | None = None,
         cancel_callback: Callable[[], None] | None = None,
     ) -> NarrationBatch:
@@ -414,6 +557,7 @@ class PanelVisionNarrator:
                     panel, context_str, semaphore,
                     cast_prefix=cast_prefix,
                     portrait_images=portrait_images,
+                    face_disambiguator=face_disambiguator,
                 )
                 for panel in chunk
             ]
@@ -447,6 +591,7 @@ class PanelVisionNarrator:
         semaphore: asyncio.Semaphore,
         cast_prefix: str = "",
         portrait_images: dict[str, Image.Image] | None = None,
+        face_disambiguator: "FaceDisambiguator | None" = None,
     ) -> NarrationResult:
         async with semaphore:
             start = time.perf_counter()
@@ -463,19 +608,39 @@ class PanelVisionNarrator:
                     )
                 image = self._load_image(panel.image_path)
 
+                # Face-cosine tie-breaker: re-rank character_hints so
+                # the most likely candidate (by in-panel face embedding
+                # cosine to portrait embeddings) appears first. No-ops
+                # when there's <2 hints, no portrait embeddings, or no
+                # detectable in-panel face.
+                effective_hints = panel.character_hints
+                if face_disambiguator is not None and effective_hints:
+                    try:
+                        effective_hints = face_disambiguator.disambiguate(
+                            panel, effective_hints,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "Face disambiguation failed for %s: %s",
+                            panel.panel_id, exc,
+                        )
+
                 char_hint_line = ""
-                if panel.character_hints:
+                if effective_hints:
                     char_hint_line = (
-                        f"• Likely on-panel characters: {', '.join(panel.character_hints)}"
+                        f"• Likely on-panel characters (highest-confidence first): "
+                        f"{', '.join(effective_hints)}"
                     )
 
                 # Build the list of reference portraits to attach to this
                 # call. We only attach portraits for characters in this
                 # panel's hint list (cap at 4) so the model focuses on
                 # the plausible candidates rather than ALL cast members.
+                # Order matches effective_hints so the highest-confidence
+                # match appears FIRST in the parts list Gemini sees.
                 reference_portraits: list[tuple[str, Image.Image]] = []
-                if portrait_images and panel.character_hints:
-                    for hint_name in panel.character_hints[:4]:
+                if portrait_images and effective_hints:
+                    for hint_name in effective_hints[:4]:
                         img = portrait_images.get(hint_name)
                         if img is not None:
                             reference_portraits.append((hint_name, img))
@@ -1247,11 +1412,21 @@ def panels_from_store(
             except _re.error:
                 continue
 
+    pages_dir = project_dir / "pages"
     inputs: list[PanelInput] = []
     for p in kept_sorted:
         order = int(p.get("order", 0))
         image_path = panel_dir / f"panel_{order:03d}.png"
         raw_ocr = str(p.get("ocr_text") or "")
+        page_num = int(p.get("page", 0))
+        # Try standard zero-padded page filename first, then a few common
+        # alternates. Used by FaceDisambiguator to crop in-panel face.
+        page_image_path = None
+        for candidate in (f"{page_num:04d}.png", f"{page_num:03d}.png", f"{page_num}.png", f"{page_num:04d}.jpg"):
+            cp = pages_dir / candidate
+            if cp.exists():
+                page_image_path = cp
+                break
         merged_hints: list[str] = []
         seen: set[str] = set()
         # ORDERING NOTE: OCR-mention hints first, face-cluster hints
@@ -1280,10 +1455,15 @@ def panels_from_store(
         inputs.append(PanelInput(
             panel_id=str(p["id"]),
             order=order,
-            page=int(p.get("page", 0)),
+            page=page_num,
             panel=int(p.get("panel", 0)),
             image_path=image_path,
             ocr_text=raw_ocr,
             character_hints=merged_hints,
+            page_x=int(p.get("x", 0)),
+            page_y=int(p.get("y", 0)),
+            page_width=int(p.get("width", 0)),
+            page_height=int(p.get("height", 0)),
+            page_image_path=page_image_path,
         ))
     return inputs

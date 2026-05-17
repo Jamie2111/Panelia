@@ -283,26 +283,30 @@ def _call_resolver_with_fallback(
     cascade: list[str],
     cast_text: str,
     lines: list[str],
+    _depth: int = 0,
 ) -> list[str]:
     """Try each model in `cascade` in order until one returns rewrites.
 
     Falls through to the next model in two cases:
-      1. The current model raised an exception (typically a 429 quota
-         or a transient API error). Each Gemini model has its own
-         free-tier quota bucket so 429s don't cascade.
+      1. The current model raised an exception (typically a 429 quota,
+         MAX_TOKENS overflow, or transient API error). Each Gemini
+         model has its own free-tier quota bucket so 429s don't cascade.
       2. The current model returned the input UNCHANGED for every line
          in the batch. Empirically gemini-2.5-flash will sometimes
          refuse to rewrite even clear-cut descriptor cases; the lighter
          flash-lite model is more willing. We detect "fully identity"
          and let the next model try.
 
-    Returns the first non-identity rewrite, or the input lines unchanged
-    if all models in the cascade gave up.
+    Final fallback: if ALL models in the cascade fail with a token
+    overflow (thinking-tokens + output overshooting the cap on a
+    large-ish batch), we recursively split the batch in half and try
+    again. Bounded by _depth to avoid infinite recursion.
     """
     def _normalised(s: str) -> str:
         return " ".join((s or "").split()).strip().casefold()
 
     last_exc: Exception | None = None
+    last_was_max_tokens = False
     input_signature = [_normalised(L) for L in lines]
     for idx, model_name in enumerate(cascade):
         model = models_by_name.get(model_name)
@@ -312,9 +316,15 @@ def _call_resolver_with_fallback(
             rewritten = _call_resolver(model, cast_text=cast_text, lines=lines)
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
-            err_str = str(exc).lower()
-            is_quota = ("429" in err_str or "quota" in err_str or
-                        "exhausted" in err_str or "resourceexhausted" in err_str)
+            err_str = str(exc)
+            err_lower = err_str.lower()
+            is_quota = ("429" in err_lower or "quota" in err_lower or
+                        "exhausted" in err_lower or "resourceexhausted" in err_lower)
+            is_max_tokens = (
+                "finish_reason" in err_lower or "MAX_TOKENS" in err_str
+                or "is 2" in err_str or "valid `Part`" in err_str
+            )
+            last_was_max_tokens = is_max_tokens
             if is_quota:
                 logger.warning(
                     "Name resolver hit quota on %s; falling to next model",
@@ -327,11 +337,6 @@ def _call_resolver_with_fallback(
                 )
             continue
 
-        # Identity-detection: when the model returned the input verbatim
-        # for every line, treat as "model declined to rewrite" and fall
-        # through to the next model in the cascade. We compare on a
-        # normalised form (whitespace + case) so trivial reformatting
-        # doesn't trigger a fall-through.
         rewritten_sig = [_normalised(L) for L in rewritten]
         if rewritten_sig == input_signature and idx < len(cascade) - 1:
             logger.info(
@@ -341,6 +346,28 @@ def _call_resolver_with_fallback(
             )
             continue
         return rewritten
+
+    # All models exhausted. If the last error was MAX_TOKENS and the
+    # batch is still big enough to halve, split and recurse. Each half
+    # gets its own full cascade attempt. Bounded by _depth so we don't
+    # recurse forever; at _depth=3 we've gone batch_size -> /2 -> /4
+    # -> /8 which is plenty of granularity.
+    if last_was_max_tokens and len(lines) > 4 and _depth < 3:
+        midpoint = len(lines) // 2
+        logger.warning(
+            "Name resolver: all models hit MAX_TOKENS on %d-line batch; "
+            "splitting in half and retrying",
+            len(lines),
+        )
+        first_half = _call_resolver_with_fallback(
+            models_by_name, cascade=cascade, cast_text=cast_text,
+            lines=lines[:midpoint], _depth=_depth + 1,
+        )
+        second_half = _call_resolver_with_fallback(
+            models_by_name, cascade=cascade, cast_text=cast_text,
+            lines=lines[midpoint:], _depth=_depth + 1,
+        )
+        return first_half + second_half
 
     if last_exc is not None:
         logger.warning(
@@ -355,22 +382,28 @@ def _call_resolver(model: Any, *, cast_text: str, lines: list[str]) -> list[str]
     prompt = _NAME_RESOLUTION_PROMPT.format(
         cast_text=cast_text, numbered=numbered, n=len(lines)
     )
-    # Per-line token budget: average rewritten line is ~30 tokens. Add
-    # generous overhead for any model that ignores the thinking-budget
-    # hint. 80 lines * 50 tokens = 4000 was the old budget that ran out;
-    # we now scale dynamically based on input size with a high ceiling.
-    per_line_budget = 60
-    dynamic_max = max(4096, len(lines) * per_line_budget + 1024)
+    # Per-line token budget: average rewritten line is ~30 tokens but
+    # Gemini 2.5 models can spend hundreds of "thinking tokens" before
+    # producing visible output that count toward max_output_tokens. We
+    # try to disable thinking via ThinkingConfig + the dict form (SDK
+    # version differs in what it accepts) and then set a high ceiling
+    # as a belt-and-suspenders fallback. Calls that still hit
+    # MAX_TOKENS get caught in _call_resolver_with_fallback which
+    # split-recurses the batch.
+    # Per-line token budget: Gemini 2.5 models spend "thinking tokens"
+    # before producing visible output, and those count against
+    # max_output_tokens. SDK in use does NOT accept thinking_config in
+    # GenerationConfig so we can't disable thinking explicitly; instead
+    # we budget generously (200 tokens per line, 32k ceiling) and rely
+    # on _call_resolver_with_fallback's auto-split path to recurse on
+    # batches that still overflow.
+    per_line_budget = 200
+    dynamic_max = max(8192, len(lines) * per_line_budget + 2048)
     gen_kwargs: dict[str, Any] = {
         "temperature": 0.3,  # low temperature: this is editing, not creating
         "top_p": 0.9,
-        "max_output_tokens": min(dynamic_max, 16384),
+        "max_output_tokens": min(dynamic_max, 32768),
     }
-    try:
-        from google.generativeai.types import ThinkingConfig  # type: ignore
-        gen_kwargs["thinking_config"] = ThinkingConfig(thinking_budget=0)
-    except Exception:
-        pass
 
     response = None
     try:

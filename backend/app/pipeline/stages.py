@@ -1483,12 +1483,13 @@ def _run_script_generation_vision(
 
     panel_hint_index: dict[str, list[str]] = {}
     portrait_lookup: dict[str, Path] = {}
+    portrait_embeddings: dict[str, Any] = {}
     try:
         if cast_names_for_hints:
             context.progress(3, "Identifying characters across panels (face cluster + Gemini)")
             from app.services.character_identifier_service import (
                 build_character_identity, load_panel_hint_index,
-                load_character_portraits,
+                load_character_portraits, load_character_embeddings,
             )
             build_character_identity(
                 project_dir,
@@ -1497,9 +1498,12 @@ def _run_script_generation_vision(
             )
             panel_hint_index = load_panel_hint_index(project_dir)
             portrait_lookup = load_character_portraits(project_dir)
+            portrait_embeddings = load_character_embeddings(project_dir)
             logger.info(
-                "Character identity index: %d panels with face-based hints, %d portraits available",
+                "Character identity index: %d panels with face-based hints, "
+                "%d portraits available, %d portrait embeddings",
                 len(panel_hint_index), len(portrait_lookup),
+                len(portrait_embeddings),
             )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Character identifier skipped (non-fatal): %s", exc)
@@ -1549,11 +1553,70 @@ def _run_script_generation_vision(
         scaled = 5.0 + (pct * 0.9)
         context.progress(scaled, msg)
 
+    # Build the face-cosine disambiguator. No-ops when portrait
+    # embeddings aren't on disk (older projects). When armed, it
+    # re-ranks each panel's character_hints by face-to-portrait
+    # cosine similarity so the highest-confidence cast name appears
+    # first in the prompt + first in the reference-portrait slot the
+    # vision model sees.
+    face_disambiguator = None
+    try:
+        if portrait_embeddings and panel_hint_index:
+            from app.services.panel_vision_narrator import FaceDisambiguator
+            from app.services.anime_face_detection_service import AnimeFaceDetectionService
+            from app.services.character_clusterer import CharacterClusterer
+
+            face_detector = AnimeFaceDetectionService()
+            if face_detector.is_available():
+                page_paths = store.list_page_paths(context.project_id)
+                cache_dir = project_dir.parent.parent / "_anime_face_cache"
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                cache_path = cache_dir / f"{context.project_id}.json"
+                face_payloads = face_detector.detect_page_payloads(
+                    page_paths, cache_path=cache_path,
+                )
+                # Flatten to {page_num: [(x,y,w,h), ...]}
+                faces_by_page: dict[int, list[tuple[int, int, int, int]]] = {}
+                for page_num, payload in face_payloads.items():
+                    chars = payload.get("characters") or []
+                    bboxes = []
+                    for ch in chars:
+                        bbox = ch.get("bbox") if isinstance(ch, dict) else None
+                        if isinstance(bbox, list) and len(bbox) >= 4:
+                            bboxes.append(tuple(int(v) for v in bbox[:4]))
+                    if bboxes:
+                        faces_by_page[int(page_num)] = bboxes
+                page_path_by_number = {
+                    i: page_paths[i - 1] for i in range(1, len(page_paths) + 1)
+                }
+                # Build CLIP embedder from CharacterClusterer (the same
+                # model used to generate the portrait embeddings, so
+                # cosine is comparable).
+                clusterer = CharacterClusterer()
+                def _embed_pil(img):
+                    samples = [{"image": img, "bbox": [0, 0, img.width, img.height]}]
+                    embs = clusterer._embed_samples(samples)
+                    return embs[0] if embs else None
+                face_disambiguator = FaceDisambiguator(
+                    portrait_embeddings=portrait_embeddings,
+                    face_bboxes_by_page=faces_by_page,
+                    page_path_by_number=page_path_by_number,
+                    embedder_callable=_embed_pil,
+                )
+                logger.info(
+                    "Face disambiguator armed: %d portraits, faces on %d pages",
+                    len(portrait_embeddings), len(faces_by_page),
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Face disambiguator setup failed (non-fatal): %s", exc)
+        face_disambiguator = None
+
     batch = asyncio.run(
         narrator.narrate_chapter(
             panel_inputs,
             cast_block=cast_block,
             portrait_lookup=portrait_lookup,
+            face_disambiguator=face_disambiguator,
             progress_callback=_progress,
             cancel_callback=context.ensure_not_cancelled,
         )
