@@ -75,6 +75,19 @@ class AzureQuotaExhausted(RuntimeError):
     falling all subsequent calls back to free Edge TTS."""
 
 
+class _AzureRESTError(RuntimeError):
+    """Internal error envelope from the REST path. EdgeTTSService never
+    sees this directly - _render_to_wav_bytes converts it to either
+    AzureQuotaExhausted or plain RuntimeError before it leaves the
+    service."""
+
+    def __init__(self, *, code: str, detail: str, is_quota: bool) -> None:
+        super().__init__(f"{code}: {detail[:160]}")
+        self.code = code
+        self.detail = detail
+        self.is_quota = is_quota
+
+
 class AzureTTSService:
     """Sync wrapper around the Azure Speech REST API.
 
@@ -126,40 +139,129 @@ class AzureTTSService:
         voice = self._resolve_voice(voice_config)
         ssml = self._build_ssml(clean_text, voice, voice_config)
 
-        # NullStream sink so we don't write a file; we'll handle the
-        # PCM bytes directly via the Result's audio_data.
-        synth = speechsdk.SpeechSynthesizer(
-            speech_config=self._config,
-            audio_config=None,
-        )
-        result = synth.speak_ssml_async(ssml).get()
-
-        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-            pcm_bytes = bytes(result.audio_data)
+        # Route via the REST API instead of the C++ Speech SDK. The SDK
+        # consistently segfaults (SIGSEGV exit -11) when its internal
+        # codec layer fails to start ("Codec decoding is not started
+        # within 2s") - the failure path takes the worker child down
+        # entirely instead of raising a clean Python exception.
+        # The REST endpoint produces identical audio (same neural
+        # voice models on the same servers) with no SDK state to
+        # corrupt. Errors come back as standard HTTP responses we
+        # can handle cleanly.
+        try:
+            pcm_bytes = self._render_via_rest(ssml)
             return self._pcm_to_wav(pcm_bytes)
+        except _AzureRESTError as exc:
+            # Quota / auth → terminal; everything else → transient.
+            if exc.is_quota:
+                logger.warning("Azure TTS REST quota/auth: %s", exc.detail[:160])
+                raise AzureQuotaExhausted(exc.detail or exc.code) from exc
+            raise RuntimeError(f"Azure TTS REST failed ({exc.code}): {exc.detail[:160]}") from exc
 
-        if result.reason == speechsdk.ResultReason.Canceled:
-            cancellation = result.cancellation_details
-            code = getattr(cancellation, "error_code", None)
-            detail = getattr(cancellation, "error_details", "") or ""
-            reason_str = str(code) if code is not None else "unknown"
-            # Treat billing/quota/auth as terminal so the engine stops
-            # retrying Azure for this run.
-            quota_signals = (
-                "Forbidden", "QuotaExceeded", "Unauthorized",
-                "InvalidSubscription", "InsufficientBalance",
-                "TooManyRequests", "AuthenticationFailure",
-            )
-            if any(sig.lower() in (detail or "").lower() for sig in quota_signals) \
-               or any(sig in reason_str for sig in ("Forbidden", "Unauthorized", "Quota")):
-                logger.warning(
-                    "Azure TTS quota/auth signal (%s): %s",
-                    reason_str, detail[:160],
+    def _render_via_rest(self, ssml: str) -> bytes:
+        """Direct REST call to Azure Speech /cognitiveservices/v1.
+
+        Returns raw PCM bytes (Raw24Khz16BitMonoPcm format).
+        Raises _AzureRESTError on any non-200 response.
+        """
+        import httpx
+
+        # Build a short-lived auth token (10-min TTL). Reuse the cached
+        # token if it's still valid to avoid burning a call per synth.
+        token = self._get_or_refresh_token()
+        region = getattr(self.settings, "azure_speech_region", "") or "eastus"
+        url = f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/ssml+xml",
+            "X-Microsoft-OutputFormat": "raw-24khz-16bit-mono-pcm",
+            "User-Agent": "Panelia-AzureTTS/1.0",
+        }
+        # Short timeout per request; the caller (EdgeTTSService) handles
+        # retries with backoff if we raise transiently.
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(url, headers=headers, content=ssml.encode("utf-8"))
+        except httpx.HTTPError as exc:
+            raise _AzureRESTError(code="network", detail=str(exc), is_quota=False) from exc
+
+        if resp.status_code == 200:
+            return resp.content
+
+        # Map HTTP errors. 401/403 = auth/quota, 429 = rate limit,
+        # everything else = transient. Token might also be expired
+        # (Azure returns 401), so on 401 force a refresh + retry once.
+        body = (resp.text or "")[:500]
+        if resp.status_code == 401:
+            # Token may have expired between fetch and call. Force a
+            # refresh and retry once before declaring auth failure.
+            self._auth_token = None
+            self._auth_token_expires_at = 0.0
+            try:
+                token = self._get_or_refresh_token()
+                headers["Authorization"] = f"Bearer {token}"
+                with httpx.Client(timeout=30.0) as client:
+                    resp2 = client.post(url, headers=headers, content=ssml.encode("utf-8"))
+                if resp2.status_code == 200:
+                    return resp2.content
+                raise _AzureRESTError(
+                    code=f"http_{resp2.status_code}",
+                    detail=(resp2.text or "")[:500],
+                    is_quota=True,
                 )
-                raise AzureQuotaExhausted(detail or reason_str)
-            raise RuntimeError(f"Azure TTS cancelled ({reason_str}): {detail[:160]}")
+            except _AzureRESTError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise _AzureRESTError(
+                    code="auth_refresh_failed",
+                    detail=str(exc),
+                    is_quota=True,
+                ) from exc
+        is_quota = resp.status_code in (402, 403, 429)
+        raise _AzureRESTError(
+            code=f"http_{resp.status_code}",
+            detail=body,
+            is_quota=is_quota,
+        )
 
-        raise RuntimeError(f"Azure TTS unexpected reason: {result.reason}")
+    def _get_or_refresh_token(self) -> str:
+        """Cache the issued auth token for ~9 minutes (token TTL is 10).
+
+        Cheaper than burning a token fetch on every synth call.
+        """
+        import time as _time
+        import httpx
+
+        now = _time.time()
+        existing = getattr(self, "_auth_token", None)
+        expires = getattr(self, "_auth_token_expires_at", 0.0)
+        if existing and now < expires - 30:
+            return existing
+
+        region = getattr(self.settings, "azure_speech_region", "") or "eastus"
+        key = getattr(self.settings, "azure_speech_key", "")
+        if not key:
+            raise _AzureRESTError(code="no_key", detail="azure_speech_key not configured", is_quota=True)
+        token_url = f"https://{region}.api.cognitive.microsoft.com/sts/v1.0/issueToken"
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.post(
+                    token_url,
+                    headers={"Ocp-Apim-Subscription-Key": key, "Content-Length": "0"},
+                )
+        except httpx.HTTPError as exc:
+            raise _AzureRESTError(code="token_network", detail=str(exc), is_quota=False) from exc
+        if resp.status_code != 200:
+            is_quota = resp.status_code in (401, 403)
+            raise _AzureRESTError(
+                code=f"token_http_{resp.status_code}",
+                detail=(resp.text or "")[:300],
+                is_quota=is_quota,
+            )
+        self._auth_token = resp.text
+        # Tokens are valid for 10 minutes; refresh after 9.
+        self._auth_token_expires_at = now + 9 * 60
+        return self._auth_token
 
     def _pcm_to_wav(self, pcm_bytes: bytes) -> bytes:
         """Wrap raw 24 kHz 16-bit mono PCM in a WAV container."""
