@@ -75,6 +75,13 @@ class ProjectStore:
     # after construction.
     _PANELS_CACHE: dict[str, tuple[float, list["PanelBox"]]] = {}
     _PAGE_SIZE_CACHE: dict[str, tuple[tuple[float, int], dict[int, tuple[int, int]]]] = {}
+    # list_jobs is called on every /api/projects/{id} request. With 60+
+    # job files per project + worker writing progress every few seconds,
+    # the API endpoint spends 10-20 s re-reading every job file under
+    # heavy render load. Cache keyed by (jobs-dir mtime, dir size) so
+    # any worker write invalidates and the next reader rebuilds; reads
+    # in between are O(1).
+    _JOBS_CACHE: dict[str, tuple[tuple[float, int], list["JobRecord"]]] = {}
     _CACHE_LOCK = Lock()
 
     def __init__(self) -> None:
@@ -2154,17 +2161,38 @@ class ProjectStore:
         return JobRecord.model_validate(payload)
 
     def list_jobs(self, project_id: str) -> list[JobRecord]:
+        # mtime-keyed cache. Jobs dir mtime changes when ANY job file
+        # is added/removed/touched (which happens on every update_job
+        # call from the worker). Stable between updates → cache hits.
+        jobs_dir = self._project_dir(project_id) / "jobs"
+        try:
+            dir_stat = jobs_dir.stat()
+            cache_key = (dir_stat.st_mtime, dir_stat.st_size)
+        except FileNotFoundError:
+            cache_key = (0.0, 0)
+
+        cls = type(self)
+        with cls._CACHE_LOCK:
+            cached = cls._JOBS_CACHE.get(project_id)
+            if cached is not None and cached[0] == cache_key:
+                return list(cached[1])
+
         jobs: list[JobRecord] = []
-        for path in sorted((self._project_dir(project_id) / "jobs").glob("*.json")):
-            try:
-                payload = read_json(path)
-                if not payload:
-                    continue
-                jobs.append(JobRecord.model_validate(payload))
-            except Exception:
-                logger.exception("Skipping unreadable job record %s", path)
+        if jobs_dir.exists():
+            for path in sorted(jobs_dir.glob("*.json")):
+                try:
+                    payload = read_json(path)
+                    if not payload:
+                        continue
+                    jobs.append(JobRecord.model_validate(payload))
+                except Exception:
+                    logger.exception("Skipping unreadable job record %s", path)
         jobs = self._reconcile_stale_direct_runner_jobs(project_id, jobs)
-        return sorted(jobs, key=lambda job: job.created_at, reverse=True)
+        jobs.sort(key=lambda job: job.created_at, reverse=True)
+
+        with cls._CACHE_LOCK:
+            cls._JOBS_CACHE[project_id] = (cache_key, jobs)
+        return list(jobs)
 
     def update_job(self, project_id: str, job_id: str, **updates: object) -> JobRecord:
         job = self.get_job(project_id, job_id)
@@ -2259,12 +2287,22 @@ class ProjectStore:
 
     def list_audio_files(self, project_id: str) -> list[AudioFile]:
         audio_dir = self._project_dir(project_id) / "audio"
+        # PERF: read manifest.json ONCE, not once per wav. With 3469
+        # wavs on an unord-sized project + worker disk-write
+        # contention from an active render, the in-loop read pinned
+        # the /api/projects/{id} endpoint at 165 SECONDS during heavy
+        # ffmpeg load. One read = ~290 ms cold, then cached.
+        manifest_path = audio_dir / "manifest.json"
+        manifest = read_json(manifest_path, default={})
+        if not isinstance(manifest, dict):
+            manifest = {}
         files: list[AudioFile] = []
         for audio_path in sorted(audio_dir.glob("*.wav")):
-            manifest_path = audio_dir / "manifest.json"
-            manifest = read_json(manifest_path, default={})
-            panel_id = manifest.get(audio_path.name, {}).get("panel_id", audio_path.stem)
-            duration = float(manifest.get(audio_path.name, {}).get("duration_seconds", 0))
+            entry = manifest.get(audio_path.name) or {}
+            if not isinstance(entry, dict):
+                entry = {}
+            panel_id = entry.get("panel_id", audio_path.stem)
+            duration = float(entry.get("duration_seconds", 0) or 0)
             files.append(
                 AudioFile(
                     panel_id=panel_id,
